@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(for dir in \"API Error\" \"Login\" \"GameOpened\" \"PopupModule\")",
+      "Bash(do echo \"=== $dir ===\")",
+      "Bash(done)"
+    ]
+  }
+}
