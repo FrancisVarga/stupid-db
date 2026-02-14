@@ -1,0 +1,48 @@
+[package]
+name = "stupid-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+stupid-core = { path = "../core" }
+stupid-segment = { path = "../segment" }
+stupid-ingest = { path = "../ingest" }
+
+# Cloud storage
+object_store = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+url = { workspace = true }
+lru = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+# Parquet (for streaming reads)
+parquet = { workspace = true }
+arrow = { workspace = true }
+
+# Compression
+zstd = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# IDs
+uuid = { workspace = true }
+
+# Filesystem
+walkdir = { workspace = true }

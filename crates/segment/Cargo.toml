@@ -1,0 +1,16 @@
+[package]
+name = "stupid-segment"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+stupid-core = { path = "../core" }
+stupid-ingest = { path = "../ingest" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = { workspace = true }
+memmap2 = { workspace = true }
+tracing = { workspace = true }
+zstd = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

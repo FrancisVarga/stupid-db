@@ -1,0 +1,13 @@
+[package]
+name = "stupid-ingest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+stupid-core = { path = "../core" }
+parquet = { workspace = true }
+arrow = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

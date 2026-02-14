@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+:root {
+  --background: #06080d;
+  --foreground: #e0e6f0;
+  --accent-cyan: #00f0ff;
+  --accent-purple: #a855f7;
+  --accent-pink: #f472b6;
+  --surface: #0c1018;
+  --surface-raised: #111827;
+  --border: #1e293b;
+  --border-glow: rgba(0, 240, 255, 0.15);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Glow effects */
+.glow-cyan {
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.1), inset 0 1px 0 rgba(0, 240, 255, 0.05);
+}
+
+.glow-border {
+  border: 1px solid rgba(0, 240, 255, 0.12);
+}
+
+.stat-card {
+  background: linear-gradient(135deg, #0c1018 0%, #111827 100%);
+  border: 1px solid rgba(0, 240, 255, 0.1);
+  box-shadow: 0 0 30px rgba(0, 240, 255, 0.03);
+  transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+  border-color: rgba(0, 240, 255, 0.25);
+  box-shadow: 0 0 40px rgba(0, 240, 255, 0.08);
+}
+
+/* Scanline effect on graph background */
+.graph-bg {
+  background:
+    radial-gradient(ellipse at 50% 50%, rgba(0, 240, 255, 0.03) 0%, transparent 70%),
+    var(--background);
+}
+
+/* Chat bubbles */
+.chat-bubble-user {
+  background: linear-gradient(135deg, rgba(0, 240, 255, 0.12) 0%, rgba(0, 240, 255, 0.06) 100%);
+  border: 1px solid rgba(0, 240, 255, 0.15);
+  color: #e0e6f0;
+}
+
+.chat-bubble-system {
+  background: linear-gradient(135deg, #0c1018 0%, #111827 100%);
+  border: 1px solid rgba(100, 116, 139, 0.15);
+  color: #cbd5e1;
+}
+
+.chat-input-container {
+  background: rgba(12, 16, 24, 0.8);
+  border: 1px solid rgba(0, 240, 255, 0.1);
+  transition: border-color 0.2s ease;
+}
+
+.chat-input-container:focus-within {
+  border-color: rgba(0, 240, 255, 0.3);
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.05);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #06080d;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
