@@ -268,74 +268,56 @@ fn build_graph(data_dir: &Path, segment_id: &str) -> anyhow::Result<(stupid_grap
     Ok((graph, doc_count))
 }
 
-/// Per-segment extraction result for parallel loading.
-struct SegmentData {
-    segment_id: String,
-    docs: Vec<stupid_core::Document>,
-}
-
 fn build_graph_multi(data_dir: &Path, segment_ids: &[String]) -> anyhow::Result<(stupid_graph::GraphStore, u64)> {
-    use rayon::prelude::*;
-
-    info!("Reading {} segments in parallel...", segment_ids.len());
+    info!("Reading {} segments sequentially (one at a time to limit memory)...", segment_ids.len());
     let start = std::time::Instant::now();
 
-    // Phase 1: parallel I/O — read + decompress all segments
-    let segment_data: Vec<SegmentData> = segment_ids
-        .par_iter()
-        .filter_map(|seg_id| {
-            let reader = match stupid_segment::reader::SegmentReader::open(data_dir, seg_id) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("Skipping segment '{}': {}", seg_id, e);
-                    return None;
-                }
-            };
-
-            let docs: Vec<stupid_core::Document> = reader
-                .iter()
-                .filter_map(|r| r.ok())
-                .collect();
-
-            Some(SegmentData {
-                segment_id: seg_id.clone(),
-                docs,
-            })
-        })
-        .collect();
-
-    let read_elapsed = start.elapsed();
-    let total_docs: u64 = segment_data.iter().map(|s| s.docs.len() as u64).sum();
-    info!(
-        "  Read {} docs from {} segments in {:.1}s",
-        total_docs,
-        segment_data.len(),
-        read_elapsed.as_secs_f64()
-    );
-
-    // Phase 2: sequential graph build (graph needs &mut self)
-    info!("Building graph from {} documents...", total_docs);
-    let graph_start = std::time::Instant::now();
     let mut graph = stupid_graph::GraphStore::new();
+    let mut total_docs: u64 = 0;
+    let mut skipped: u64 = 0;
 
-    for (i, seg) in segment_data.iter().enumerate() {
-        for doc in &seg.docs {
-            stupid_connector::entity_extract::EntityExtractor::extract(doc, &mut graph, &seg.segment_id);
+    for (i, seg_id) in segment_ids.iter().enumerate() {
+        let reader = match stupid_segment::reader::SegmentReader::open(data_dir, seg_id) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Skipping segment '{}': {}", seg_id, e);
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let mut seg_docs: u64 = 0;
+        for doc_result in reader.iter() {
+            match doc_result {
+                Ok(doc) => {
+                    stupid_connector::entity_extract::EntityExtractor::extract(&doc, &mut graph, seg_id);
+                    seg_docs += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("Bad document in '{}': {}", seg_id, e);
+                }
+            }
         }
-        if (i + 1) % 20 == 0 || i + 1 == segment_data.len() {
+        // reader is dropped here — frees decompressed segment data
+
+        total_docs += seg_docs;
+        if (i + 1) % 5 == 0 || i + 1 == segment_ids.len() {
             info!(
-                "  Graph: {}/{} segments processed",
+                "  Progress: {}/{} segments, {} docs total ({:.1}s)",
                 i + 1,
-                segment_data.len()
+                segment_ids.len(),
+                total_docs,
+                start.elapsed().as_secs_f64()
             );
         }
     }
 
-    let graph_elapsed = graph_start.elapsed();
     info!(
-        "  Graph built in {:.1}s (total: {:.1}s)",
-        graph_elapsed.as_secs_f64(),
-        start.elapsed().as_secs_f64()
+        "Graph built: {} docs from {} segments in {:.1}s ({} skipped)",
+        total_docs,
+        segment_ids.len() - skipped as usize,
+        start.elapsed().as_secs_f64(),
+        skipped
     );
 
     Ok((graph, total_docs))
