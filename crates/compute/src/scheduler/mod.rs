@@ -17,7 +17,7 @@ pub use metrics::SchedulerMetrics;
 pub use runner::Scheduler;
 pub use state::{KnowledgeState, SharedKnowledgeState, new_shared_state};
 pub use task::{ComputeError, ComputeTask};
-pub use tasks::{CommunityDetectionTask, DegreeCentralityTask, PageRankTask};
+pub use tasks::{AnomalyDetectionTask, CommunityDetectionTask, DegreeCentralityTask, FullKmeansTask, PageRankTask};
 pub use types::{
     ComputeResult, LoadLevel, Priority, SchedulerConfig, assess_load,
 };

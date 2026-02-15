@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use stupid_graph::GraphStore;
+use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::algorithms::communities::label_propagation_default;
@@ -10,14 +11,17 @@ use crate::scheduler::state::KnowledgeState;
 use crate::scheduler::task::{ComputeError, ComputeTask};
 use crate::scheduler::types::{ComputeResult, Priority};
 
+/// Shared graph handle (matches server's SharedGraph type).
+type SharedGraph = Arc<RwLock<GraphStore>>;
+
 /// Wraps label propagation community detection as a schedulable compute task.
 pub struct CommunityDetectionTask {
-    graph: Arc<GraphStore>,
+    graph: SharedGraph,
     interval: Duration,
 }
 
 impl CommunityDetectionTask {
-    pub fn new(graph: Arc<GraphStore>, interval: Duration) -> Self {
+    pub fn new(graph: SharedGraph, interval: Duration) -> Self {
         Self { graph, interval }
     }
 }
@@ -37,7 +41,9 @@ impl ComputeTask for CommunityDetectionTask {
 
     fn execute(&self, state: &mut KnowledgeState) -> Result<ComputeResult, ComputeError> {
         let start = Instant::now();
-        let communities = label_propagation_default(&self.graph);
+        let graph = self.graph.blocking_read();
+        let communities = label_propagation_default(&graph);
+        drop(graph);
         let count = communities.len();
         state.communities = communities;
         let duration = start.elapsed();

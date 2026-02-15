@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use stupid_graph::GraphStore;
+use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::algorithms::pagerank::pagerank_default;
@@ -10,14 +11,17 @@ use crate::scheduler::state::KnowledgeState;
 use crate::scheduler::task::{ComputeError, ComputeTask};
 use crate::scheduler::types::{ComputeResult, Priority};
 
+/// Shared graph handle (matches server's SharedGraph type).
+type SharedGraph = Arc<RwLock<GraphStore>>;
+
 /// Wraps the PageRank algorithm as a schedulable compute task.
 pub struct PageRankTask {
-    graph: Arc<GraphStore>,
+    graph: SharedGraph,
     interval: Duration,
 }
 
 impl PageRankTask {
-    pub fn new(graph: Arc<GraphStore>, interval: Duration) -> Self {
+    pub fn new(graph: SharedGraph, interval: Duration) -> Self {
         Self { graph, interval }
     }
 }
@@ -37,7 +41,9 @@ impl ComputeTask for PageRankTask {
 
     fn execute(&self, state: &mut KnowledgeState) -> Result<ComputeResult, ComputeError> {
         let start = Instant::now();
-        let scores = pagerank_default(&self.graph);
+        let graph = self.graph.blocking_read();
+        let scores = pagerank_default(&graph);
+        drop(graph);
         let count = scores.len();
         state.pagerank = scores;
         let duration = start.elapsed();

@@ -144,6 +144,44 @@ pub struct AnomalyScore {
     pub is_anomalous: bool,
 }
 
+/// Multi-signal anomaly result with per-detector breakdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnomalyResult {
+    /// Combined weighted score in [0.0, 1.0].
+    pub score: f64,
+    /// Classification based on score thresholds.
+    pub classification: AnomalyClassification,
+    /// Per-detector signal breakdown: (detector_name, raw_score).
+    pub signals: Vec<(String, f64)>,
+}
+
+/// Anomaly classification based on combined score thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnomalyClassification {
+    /// Score 0.0 - 0.3: no action.
+    Normal,
+    /// Score 0.3 - 0.5: log, include in reports.
+    Mild,
+    /// Score 0.5 - 0.7: push as insight.
+    Anomalous,
+    /// Score 0.7 - 1.0: high-priority insight + alert.
+    HighlyAnomalous,
+}
+
+impl AnomalyClassification {
+    pub fn from_score(score: f64) -> Self {
+        if score >= 0.7 {
+            Self::HighlyAnomalous
+        } else if score >= 0.5 {
+            Self::Anomalous
+        } else if score >= 0.3 {
+            Self::Mild
+        } else {
+            Self::Normal
+        }
+    }
+}
+
 /// A temporal pattern detected across events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemporalPattern {

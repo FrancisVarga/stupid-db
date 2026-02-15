@@ -4,6 +4,8 @@ use std::sync::{Arc, RwLock};
 use stupid_core::{EntityType, NodeId};
 
 use crate::algorithms::degree::DegreeInfo;
+use crate::algorithms::prefixspan::TemporalPattern as PrefixSpanPattern;
+use crate::pipeline::cooccurrence::CooccurrenceMatrix;
 
 use super::types::{
     AnomalyScore, ClusterId, ClusterInfo, CommunityId, Insight, SparseMatrix, TemporalPattern,
@@ -30,8 +32,12 @@ pub struct KnowledgeState {
     pub anomalies: HashMap<NodeId, AnomalyScore>,
     /// Detected temporal patterns.
     pub patterns: Vec<TemporalPattern>,
-    /// Co-occurrence matrices keyed by entity type pair.
+    /// PrefixSpan temporal patterns (from sequence mining).
+    pub prefixspan_patterns: Vec<PrefixSpanPattern>,
+    /// Co-occurrence matrices keyed by entity type pair (raw counts only).
     pub cooccurrence: HashMap<(EntityType, EntityType), SparseMatrix>,
+    /// Co-occurrence matrices with PMI scoring.
+    pub cooccurrence_pmi: HashMap<(EntityType, EntityType), CooccurrenceMatrix>,
     /// Trends: metric name -> trend data.
     pub trends: HashMap<String, Trend>,
     /// Proactive insights queue (newest at back).

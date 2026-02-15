@@ -84,6 +84,21 @@ impl Scheduler {
         self.shutdown.store(true, Ordering::Relaxed);
     }
 
+    /// Get an Arc to the shutdown flag (for external shutdown signaling).
+    pub fn shutdown_signal(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.shutdown)
+    }
+
+    /// Get an Arc to the metrics (for external reads without cloning).
+    pub fn metrics_handle(&self) -> Arc<RwLock<SchedulerMetrics>> {
+        Arc::clone(&self.metrics)
+    }
+
+    /// Get a reference to the registered tasks.
+    pub fn registered_tasks(&self) -> &[Arc<dyn ComputeTask>] {
+        &self.registered_tasks
+    }
+
     /// Execute a P0 task immediately on the current thread.
     pub fn execute_immediate(&self, task: &dyn ComputeTask) -> Result<(), ComputeError> {
         debug!("Executing P0 task: {}", task.name());
