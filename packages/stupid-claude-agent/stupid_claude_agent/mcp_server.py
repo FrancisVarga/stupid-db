@@ -87,12 +87,16 @@ async def get_settings() -> str:
     )
 
 
-def run_mcp_server():
+def run_mcp_server_stdio():
     """Run the MCP server in stdio mode for Claude Desktop integration."""
-    import sys
-
     mcp.run(transport="stdio")
 
 
+def run_mcp_server_sse():
+    """Run the MCP server in SSE mode for HTTP integration."""
+    mcp.run(transport="sse", host=settings.host, port=settings.mcp_port)
+
+
 if __name__ == "__main__":
-    run_mcp_server()
+    # Default to stdio for Claude Desktop
+    run_mcp_server_stdio()

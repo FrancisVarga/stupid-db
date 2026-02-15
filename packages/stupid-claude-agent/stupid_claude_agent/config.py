@@ -19,7 +19,8 @@ class Settings(BaseSettings):
 
     # Server
     host: str = Field(default="0.0.0.0", description="API server host")
-    port: int = Field(default=8000, description="API server port")
+    port: int = Field(default=39048, description="FastAPI server port")
+    mcp_port: int = Field(default=39049, description="MCP SSE server port")
     cors_origin: str = Field(default="*", description="CORS allowed origins")
 
     # Claude Code SDK

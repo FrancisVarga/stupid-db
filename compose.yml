@@ -1,0 +1,41 @@
+services:
+  stupid-claude-agent:
+    build:
+      context: ./packages/stupid-claude-agent
+      dockerfile: Dockerfile
+    container_name: stupid-claude-agent
+    ports:
+      - "39048:39048"  # FastAPI REST API
+      - "39049:39049"  # MCP SSE server
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=39048
+      - MCP_PORT=39049
+    volumes:
+      - ./packages/stupid-claude-agent/.claude:/app/.claude:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:39048/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: stupid-db-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://stupid-db-server:8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

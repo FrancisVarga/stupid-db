@@ -33,6 +33,9 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# connection credentials & encryption keys
+/.data/
+
 # vercel
 .vercel
 
