@@ -1,0 +1,69 @@
+# ============================================================
+# Metric Trend Spike Detection
+# ============================================================
+# Mirrors the compute pipeline's TrendDetector which tracks
+# hourly metrics (events per type, unique members, error rate,
+# total events) against a 7-day rolling baseline (168 samples).
+#
+# Fires when any metric's z-score exceeds 3.0 (Significant
+# severity). The compute pipeline thresholds:
+#   |z| > 2.0 → Notable
+#   |z| > 3.0 → Significant  ← this rule
+#   |z| > 4.0 → Critical
+#
+# Runs every hour to match the hourly metric extraction window.
+#
+# To activate: set `enabled: true`.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: trend-spike
+  name: Metric Trend Spike
+  description: >
+    Detect significant metric deviations (|z| > 3.0) from the
+    7-day rolling baseline. Mirrors compute pipeline TrendDetector
+    at Significant severity level. Tracks events per type, unique
+    members, error rate, and total events.
+  tags: [trends, z-score, compute-default]
+  enabled: true
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "0 * * * *"                 # every hour (matches hourly metrics)
+  timezone: UTC
+  cooldown: "1h"                    # suppress re-alerts for 1 hour
+
+# ── What to detect ───────────────────────────────────────────
+# Uses compose to check z_score signal against the 3.0 threshold
+# matching the compute pipeline's Significant severity.
+detection:
+  compose:
+    operator: or
+    conditions:
+      - signal: z_score
+        threshold: 3.0              # Significant: |z| > 3.0
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  entity_types: [Member]
+  min_score: 0.3                    # above Normal classification
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  - channel: webhook
+    on: [trigger]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "score": {{ score }},
+        "z_score": {{ z_score }},
+        "message": "Significant metric trend detected (|z| > 3.0)"
+      }

@@ -1,0 +1,56 @@
+# ============================================================
+# Login Spike Detection
+# ============================================================
+# Detects members whose login frequency exceeds 3x the cluster
+# centroid baseline, suggesting credential stuffing or bot
+# activity. Runs every 15 minutes.
+#
+# To activate: set `enabled: true` and configure WEBHOOK_URL.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: login-spike
+  name: Login Spike Detection
+  description: >
+    Alert when a member's login_count exceeds 3x the cluster
+    centroid baseline within the current evaluation window.
+  tags: [security, login, spike]
+  enabled: false                    # flip to true after review
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "*/15 * * * *"              # every 15 minutes
+  timezone: UTC
+
+# ── What to detect ───────────────────────────────────────────
+detection:
+  template: spike
+  params:
+    feature: login_count            # from 10-dim feature vector
+    multiplier: 3.0                 # 3x above baseline triggers
+    baseline: cluster_centroid      # compare against K-Means centroid
+    min_samples: 5                  # need >= 5 observations
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  entity_types: [Member]
+  min_score: 0.5                    # ignore low-confidence entities
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  - channel: webhook
+    on: [trigger]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "score": {{ score }},
+        "message": "{{ summary }}"
+      }

@@ -1,0 +1,72 @@
+# ============================================================
+# Behavioral Drift Detection
+# ============================================================
+# Mirrors the compute pipeline's Signal 3: behavioral deviation
+# using cosine distance between recent behavior and baseline.
+# Fires when a member's feature vector diverges significantly
+# from their cluster centroid (cosine distance > 0.4).
+#
+# Weight in multi-signal scoring: 0.3 (highest tied weight).
+# Runs every 15 minutes.
+#
+# To activate: set `enabled: true`.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: behavioral-drift
+  name: Behavioral Drift Detection
+  description: >
+    Detect members whose recent behavior has drifted significantly
+    from their cluster baseline using cosine distance across the
+    full 10-dimensional feature vector. Mirrors compute pipeline
+    Signal 3 (behavioral_deviation_score) with weight 0.3.
+  tags: [behavioral, drift, compute-default]
+  enabled: true
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "*/15 * * * *"              # every 15 minutes
+  timezone: UTC
+  cooldown: "30m"                   # suppress re-alerts for 30 min
+
+# ── What to detect ───────────────────────────────────────────
+detection:
+  template: drift
+  params:
+    features:
+      - login_count
+      - game_count
+      - unique_games
+      - error_count
+      - popup_count
+      - platform_mobile_ratio
+      - session_count
+      - avg_session_gap_hours
+      - vip_group_numeric
+      - currency_numeric
+    method: cosine                  # cosine distance (1 - similarity)
+    threshold: 0.4                  # deviation > 0.4 triggers alert
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  entity_types: [Member]
+  min_score: 0.3                    # only members above Normal threshold
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  - channel: webhook
+    on: [trigger]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "score": {{ score }},
+        "message": "Behavioral drift detected: cosine distance {{ value }} exceeds threshold"
+      }

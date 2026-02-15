@@ -1,0 +1,55 @@
+# ============================================================
+# Error Burst Detection
+# ============================================================
+# Fires when a member's error_count crosses 100 within a single
+# evaluation window. The 1-hour cooldown prevents alert fatigue
+# during sustained incidents. Runs every 5 minutes.
+#
+# To activate: set `enabled: true` and configure WEBHOOK_URL.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: error-burst
+  name: Error Burst Threshold
+  description: >
+    Trigger an alert when any member accumulates 100+ errors,
+    indicating a broken flow or integration issue.
+  tags: [errors, threshold, operations]
+  enabled: true
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "*/5 * * * *"              # every 5 minutes
+  timezone: UTC
+  cooldown: "1h"                   # suppress re-alerts for 1 hour
+
+# ── What to detect ───────────────────────────────────────────
+detection:
+  template: threshold
+  params:
+    feature: error_count            # from 10-dim feature vector
+    operator: gte                   # greater than or equal to
+    value: 100                      # 100 errors threshold
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  entity_types: [Member]
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  - channel: webhook
+    on: [trigger, resolve]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "error_count": {{ value }},
+        "event": "{{ event }}"
+      }

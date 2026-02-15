@@ -1,0 +1,67 @@
+# ============================================================
+# Graph Anomaly Detection
+# ============================================================
+# Mirrors the compute pipeline's Signal 4: graph anomaly scoring.
+# Detects unusual graph topology patterns:
+#
+#   1. Device proliferation: neighbor_count > avg × 3.0 → +0.5
+#   2. Cross-community connections: community_count > 3  → +0.3
+#
+# Weight in multi-signal scoring: 0.2.
+# Combined score capped at 1.0.
+#
+# This standalone rule fires at graph_anomaly > 0.4, catching
+# either device proliferation alone (0.5) or cross-community
+# alone (0.3) combined with any other minor signal.
+#
+# To activate: set `enabled: true`.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: graph-anomaly
+  name: Graph Anomaly Detection
+  description: >
+    Detect members with unusual graph connectivity patterns such
+    as device proliferation (>3x average neighbors) or cross-community
+    connections (>3 communities). Mirrors compute pipeline Signal 4
+    (graph_anomaly_score) with weight 0.2.
+  tags: [graph, topology, device-proliferation, compute-default]
+  enabled: true
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "*/30 * * * *"              # every 30 minutes
+  timezone: UTC
+  cooldown: "1h"                    # suppress re-alerts for 1 hour
+
+# ── What to detect ───────────────────────────────────────────
+detection:
+  compose:
+    operator: and
+    conditions:
+      - signal: graph_anomaly
+        threshold: 0.4              # catches proliferation (0.5) or combined signals
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  entity_types: [Member]
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  - channel: webhook
+    on: [trigger]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "score": {{ score }},
+        "graph_anomaly": {{ graph_anomaly }},
+        "message": "Graph anomaly detected: unusual connectivity pattern"
+      }

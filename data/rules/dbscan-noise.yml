@@ -1,0 +1,67 @@
+# ============================================================
+# DBSCAN Noise Detection
+# ============================================================
+# Mirrors the compute pipeline's Signal 2: DBSCAN noise ratio.
+# Fires when a member's events are predominantly classified as
+# noise by DBSCAN clustering (noise ratio > 0.6), indicating
+# they don't fit any established behavioral pattern.
+#
+# Weight in multi-signal scoring: 0.3 (highest tied weight).
+#
+# In the multi-signal pipeline:
+#   noise_ratio = noise_count / total_count
+#   A ratio of 1.0 means all events are noise (member in no cluster).
+#   A ratio of 0.6+ strongly suggests anomalous behavior.
+#
+# To activate: set `enabled: true`.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: dbscan-noise
+  name: DBSCAN Noise Detection
+  description: >
+    Detect members whose events are mostly classified as noise by
+    DBSCAN density clustering. Mirrors compute pipeline Signal 2
+    (dbscan_noise_score) with weight 0.3. Fires when the noise
+    ratio exceeds 0.6.
+  tags: [dbscan, noise, clustering, compute-default]
+  enabled: true
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "*/15 * * * *"              # every 15 minutes
+  timezone: UTC
+  cooldown: "30m"                   # suppress re-alerts for 30 min
+
+# ── What to detect ───────────────────────────────────────────
+detection:
+  compose:
+    operator: and
+    conditions:
+      - signal: dbscan_noise
+        threshold: 0.6              # >60% of events are noise
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  entity_types: [Member]
+  min_score: 0.3                    # above Normal classification
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  - channel: webhook
+    on: [trigger]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "score": {{ score }},
+        "dbscan_noise": {{ dbscan_noise }},
+        "message": "High DBSCAN noise ratio detected (>0.6)"
+      }

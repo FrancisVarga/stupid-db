@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: AnomalyRule
+metadata:
+  id: statistical-outlier
+  name: Statistical Outlier Detection
+  description: |
+    Detect members whose feature vector is a statistical outlier relative to the population. Mirrors compute pipeline Signal 1 (statistical_outlier_score) with weight 0.2. Fires when the population-level z-score exceeds 2.5 on any dimension.
+  tags:
+  - statistical
+  - outlier
+  - z-score
+  - compute-default
+  enabled: true
+schedule:
+  cron: '*/15 * * * *'
+  timezone: UTC
+  cooldown: null
+detection:
+  template: null
+  params: null
+  compose:
+    operator: and
+    conditions:
+    - signal: z_score
+      feature: null
+      threshold: 2.5
+  enrich: null
+filters:
+  entity_types:
+  - Member
+  classifications: null
+  min_score: null
+  exclude_keys: null
+  where: null
+notifications:
+- channel: webhook
+  on:
+  - trigger
+  template: null
+  url: ${WEBHOOK_URL}
+  method: POST
+  headers:
+    Content-Type: application/json
+  body_template: |
+    {
+      "rule": "{{ rule_id }}",
+      "entity": "{{ entity_key }}",
+      "score": {{ score }},
+      "z_score": {{ z_score }},
+      "message": "Statistical outlier detected (z > 2.5)"
+    }
+  smtp_host: null
+  smtp_port: null
+  tls: null
+  from: null
+  to: null
+  subject: null
+  bot_token: null
+  chat_id: null
+  parse_mode: null

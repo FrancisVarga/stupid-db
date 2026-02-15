@@ -3,6 +3,7 @@
 
 use stupid_rules::schema::{
     AnomalyRule, ChannelType, Condition, DetectionTemplate, LogicalOperator, NotifyEvent,
+    SignalType,
 };
 
 /// Resolve the examples directory relative to the workspace root.
@@ -10,6 +11,20 @@ use stupid_rules::schema::{
 fn examples_dir() -> std::path::PathBuf {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     manifest.join("../../data/rules/examples")
+}
+
+/// Resolve the default rules directory (root of data/rules/).
+fn defaults_dir() -> std::path::PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest.join("../../data/rules")
+}
+
+fn load_default_rule(filename: &str) -> AnomalyRule {
+    let path = defaults_dir().join(filename);
+    let yaml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    serde_yaml::from_str(&yaml)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {}", path.display(), e))
 }
 
 fn tags(rule: &AnomalyRule) -> Vec<&str> {
@@ -179,6 +194,146 @@ fn parse_multi_signal_fraud_example() {
     assert_eq!(rule.notifications[1].channel, ChannelType::Telegram);
 }
 
+// ── Default rules: compute pipeline mirrors ─────────────────
+
+#[test]
+fn parse_behavioral_drift_default() {
+    let rule = load_default_rule("behavioral-drift.yml");
+
+    assert_eq!(rule.metadata.id, "behavioral-drift");
+    assert!(rule.metadata.enabled);
+    assert!(tags(&rule).contains(&"compute-default"));
+
+    // Detection: drift template with all 10 features
+    assert_eq!(rule.detection.template, Some(DetectionTemplate::Drift));
+    let params = rule.detection.parse_drift_params().unwrap().unwrap();
+    assert_eq!(params.features.len(), 10);
+    assert_eq!(params.method.as_deref(), Some("cosine"));
+    assert_eq!(params.threshold, 0.4);
+
+    assert_eq!(entity_types(&rule), vec!["Member"]);
+}
+
+#[test]
+fn parse_trend_spike_default() {
+    let rule = load_default_rule("trend-spike.yml");
+
+    assert_eq!(rule.metadata.id, "trend-spike");
+    assert!(rule.metadata.enabled);
+    assert!(tags(&rule).contains(&"compute-default"));
+
+    // Detection: compose with z_score signal
+    assert!(rule.detection.template.is_none());
+    let comp = rule.detection.compose.as_ref().unwrap();
+    assert_eq!(comp.operator, LogicalOperator::Or);
+    match &comp.conditions[0] {
+        Condition::Signal { signal, threshold, .. } => {
+            assert_eq!(*signal, SignalType::ZScore);
+            assert_eq!(*threshold, 3.0);
+        }
+        _ => panic!("Expected z_score signal condition"),
+    }
+
+    // Hourly schedule
+    assert_eq!(rule.schedule.cron, "0 * * * *");
+    assert_eq!(rule.schedule.cooldown.as_deref(), Some("1h"));
+}
+
+#[test]
+fn parse_statistical_outlier_default() {
+    let rule = load_default_rule("statistical-outlier.yml");
+
+    assert_eq!(rule.metadata.id, "statistical-outlier");
+    assert!(rule.metadata.enabled);
+    assert!(tags(&rule).contains(&"compute-default"));
+
+    // Compose: z_score > 2.5
+    let comp = rule.detection.compose.as_ref().unwrap();
+    match &comp.conditions[0] {
+        Condition::Signal { signal, threshold, .. } => {
+            assert_eq!(*signal, SignalType::ZScore);
+            assert_eq!(*threshold, 2.5);
+        }
+        _ => panic!("Expected z_score signal condition"),
+    }
+}
+
+#[test]
+fn parse_dbscan_noise_default() {
+    let rule = load_default_rule("dbscan-noise.yml");
+
+    assert_eq!(rule.metadata.id, "dbscan-noise");
+    assert!(rule.metadata.enabled);
+    assert!(tags(&rule).contains(&"compute-default"));
+
+    // Compose: dbscan_noise > 0.6
+    let comp = rule.detection.compose.as_ref().unwrap();
+    match &comp.conditions[0] {
+        Condition::Signal { signal, threshold, .. } => {
+            assert_eq!(*signal, SignalType::DbscanNoise);
+            assert_eq!(*threshold, 0.6);
+        }
+        _ => panic!("Expected dbscan_noise signal condition"),
+    }
+
+    assert_eq!(rule.schedule.cooldown.as_deref(), Some("30m"));
+}
+
+#[test]
+fn parse_graph_anomaly_default() {
+    let rule = load_default_rule("graph-anomaly.yml");
+
+    assert_eq!(rule.metadata.id, "graph-anomaly");
+    assert!(rule.metadata.enabled);
+    assert!(tags(&rule).contains(&"compute-default"));
+
+    // Compose: graph_anomaly > 0.4
+    let comp = rule.detection.compose.as_ref().unwrap();
+    match &comp.conditions[0] {
+        Condition::Signal { signal, threshold, .. } => {
+            assert_eq!(*signal, SignalType::GraphAnomaly);
+            assert_eq!(*threshold, 0.4);
+        }
+        _ => panic!("Expected graph_anomaly signal condition"),
+    }
+
+    assert_eq!(rule.schedule.cron, "*/30 * * * *");
+    assert_eq!(rule.schedule.cooldown.as_deref(), Some("1h"));
+}
+
+// ── Default rules loaded by RuleLoader ──────────────────────
+
+#[test]
+fn rule_loader_loads_all_defaults() {
+    let loader = stupid_rules::loader::RuleLoader::new(defaults_dir());
+    let results = loader.load_all().unwrap();
+
+    let loaded: Vec<_> = results
+        .iter()
+        .filter_map(|r| match &r.status {
+            stupid_rules::loader::LoadStatus::Loaded { rule_id } => Some(rule_id.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // All 9 default rules should load (4 original + 5 new compute-default)
+    let expected = vec![
+        "behavioral-drift",
+        "dbscan-noise",
+        "error-burst",
+        "graph-anomaly",
+        "login-spike",
+        "multi-signal-fraud",
+        "statistical-outlier",
+        "trend-spike",
+        "vip-absence",
+    ];
+
+    let mut sorted = loaded.clone();
+    sorted.sort();
+    assert_eq!(sorted, expected, "Expected all 9 default rules to load");
+}
+
 // ── Round-trip: all examples survive serialize → deserialize ─
 
 #[test]
@@ -190,6 +345,24 @@ fn all_examples_round_trip() {
         "multi-signal-fraud.yml",
     ] {
         let rule = load_rule(filename);
+        let yaml = serde_yaml::to_string(&rule)
+            .unwrap_or_else(|e| panic!("Failed to serialize {}: {}", filename, e));
+        let rule2: AnomalyRule = serde_yaml::from_str(&yaml)
+            .unwrap_or_else(|e| panic!("Failed to re-parse {}: {}", filename, e));
+        assert_eq!(rule, rule2, "Round-trip failed for {}", filename);
+    }
+}
+
+#[test]
+fn all_defaults_round_trip() {
+    for filename in &[
+        "behavioral-drift.yml",
+        "dbscan-noise.yml",
+        "graph-anomaly.yml",
+        "statistical-outlier.yml",
+        "trend-spike.yml",
+    ] {
+        let rule = load_default_rule(filename);
         let yaml = serde_yaml::to_string(&rule)
             .unwrap_or_else(|e| panic!("Failed to serialize {}: {}", filename, e));
         let rule2: AnomalyRule = serde_yaml::from_str(&yaml)

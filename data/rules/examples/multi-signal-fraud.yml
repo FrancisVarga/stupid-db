@@ -1,0 +1,97 @@
+# ============================================================
+# Multi-Signal Fraud Detection
+# ============================================================
+# Composite rule that combines multiple anomaly signals using
+# boolean logic instead of a single template. Fires when:
+#   z_score > 3.0  AND  (dbscan_noise > 0.6  OR  graph_anomaly > 0.5)
+#
+# After detection, enriches the alert with recent login data
+# from OpenSearch. Runs every 30 minutes with a 30-minute
+# cooldown to avoid duplicate investigations.
+#
+# To activate: set `enabled: true` and configure notification
+# environment variables.
+
+apiVersion: v1
+kind: AnomalyRule
+
+# ── Identity & lifecycle ─────────────────────────────────────
+metadata:
+  id: multi-signal-fraud
+  name: Multi-Signal Fraud Detection
+  description: >
+    Composite detection combining z-score outliers with cluster
+    noise or graph anomalies for high-confidence fraud signals.
+  tags: [fraud, composite, multi-signal]
+  enabled: false
+
+# ── When to run ──────────────────────────────────────────────
+schedule:
+  cron: "*/30 * * * *"             # every 30 minutes
+  timezone: UTC
+  cooldown: "30m"                  # suppress re-alerts for 30 min
+
+# ── What to detect ───────────────────────────────────────────
+# Uses `compose` instead of `template` for boolean signal logic.
+detection:
+  compose:
+    operator: and
+    conditions:
+      # Signal 1: statistical outlier
+      - signal: z_score
+        threshold: 3.0              # 3 standard deviations
+
+      # Signal 2: either cluster noise OR graph anomaly
+      - operator: or
+        conditions:
+          - signal: dbscan_noise
+            threshold: 0.6          # high noise probability
+          - signal: graph_anomaly
+            threshold: 0.5          # unusual graph connectivity
+
+  # Post-detection enrichment from OpenSearch
+  enrich:
+    opensearch:
+      query:
+        bool:
+          must:
+            - range:
+                "@timestamp":
+                  gte: "now-1h"
+          filter:
+            - term:
+                action: login
+      min_hits: 20                  # require at least 20 recent events
+      rate_limit: 30                # max 30 queries/min to OpenSearch
+
+# ── Who to evaluate ──────────────────────────────────────────
+filters:
+  min_score: 0.7                    # only high-confidence entities
+
+# ── Where to send alerts ─────────────────────────────────────
+notifications:
+  # Webhook for incident management
+  - channel: webhook
+    on: [trigger]
+    url: "${WEBHOOK_URL}"
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "rule": "{{ rule_id }}",
+        "entity": "{{ entity_key }}",
+        "score": {{ score }},
+        "signals": {
+          "z_score": {{ z_score }},
+          "dbscan_noise": {{ dbscan_noise }},
+          "graph_anomaly": {{ graph_anomaly }}
+        }
+      }
+
+  # Telegram for real-time ops awareness
+  - channel: telegram
+    on: [trigger, resolve]
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"
+    parse_mode: MarkdownV2
