@@ -1,0 +1,27 @@
+# Rust
+/target/
+Cargo.lock
+
+# Data
+/data/
+
+# Node
+node_modules/
+.next/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# verrueckt-task
+.claude/*.local.md
+.claude/verrueckt-metadata.json

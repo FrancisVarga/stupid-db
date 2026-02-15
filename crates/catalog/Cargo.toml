@@ -1,0 +1,13 @@
+[package]
+name = "stupid-catalog"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+stupid-core = { path = "../core" }
+stupid-graph = { path = "../graph" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }

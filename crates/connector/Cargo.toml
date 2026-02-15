@@ -1,0 +1,9 @@
+[package]
+name = "stupid-connector"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+stupid-core = { path = "../core" }
+stupid-graph = { path = "../graph" }
+tracing = { workspace = true }
