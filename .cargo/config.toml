@@ -1,0 +1,4 @@
+# Fast linker for dev builds on Windows
+# rust-lld ships with the Rust toolchain — 30-50% faster linking than default MSVC
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

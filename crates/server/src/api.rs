@@ -1121,9 +1121,9 @@ pub async fn connections_credentials(
 }
 
 // ── Queue Connection CRUD endpoints (AWS feature) ───────────────
-#[cfg(feature = "aws")]
 
 /// List all queue connections (credentials masked).
+#[cfg(feature = "aws")]
 pub async fn queue_connections_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<QueueConnectionSafe>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
@@ -1139,6 +1139,7 @@ pub async fn queue_connections_list(
 }
 
 /// Add a new queue connection.
+#[cfg(feature = "aws")]
 pub async fn queue_connections_add(
     State(state): State<Arc<AppState>>,
     Json(input): Json<QueueConnectionInput>,
@@ -1155,6 +1156,7 @@ pub async fn queue_connections_add(
 }
 
 /// Get a single queue connection (credentials masked).
+#[cfg(feature = "aws")]
 pub async fn queue_connections_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1168,6 +1170,7 @@ pub async fn queue_connections_get(
 }
 
 /// Update an existing queue connection.
+#[cfg(feature = "aws")]
 pub async fn queue_connections_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1182,6 +1185,7 @@ pub async fn queue_connections_update(
 }
 
 /// Delete a queue connection.
+#[cfg(feature = "aws")]
 pub async fn queue_connections_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1195,6 +1199,7 @@ pub async fn queue_connections_delete(
 }
 
 /// Get decrypted credentials for a queue connection (used by SQS consumer).
+#[cfg(feature = "aws")]
 pub async fn queue_connections_credentials(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1207,9 +1212,10 @@ pub async fn queue_connections_credentials(
     }
 }
 
-// ── Athena Connection CRUD endpoints ─────────────────────────────
+// ── Athena Connection CRUD endpoints (AWS feature) ──────────────
 
 /// List all Athena connections (credentials masked).
+#[cfg(feature = "aws")]
 pub async fn athena_connections_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<AthenaConnectionSafe>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
