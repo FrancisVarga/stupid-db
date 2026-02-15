@@ -10,6 +10,7 @@ import {
   fetchSession,
   renameSession,
   deleteSession,
+  executeInSession,
   executeAgentInSession,
   executeTeamInSession,
   type AgentInfo,
@@ -33,7 +34,7 @@ interface ChatMessage {
   strategy?: string;
 }
 
-type ExecutionMode = "agent" | "team";
+type ExecutionMode = "direct" | "agent" | "team";
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -93,11 +94,17 @@ export default function AgentsPage() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [selectedStrategy, setSelectedStrategy] = useState<string>("architect_only");
-  const [mode, setMode] = useState<ExecutionMode>("agent");
+  const [mode, setMode] = useState<ExecutionMode>("direct");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("agents-advanced-open") === "true";
+    }
+    return false;
+  });
 
   // Session state
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -238,25 +245,16 @@ export default function AgentsPage() {
       setLoading(true);
 
       try {
-        if (mode === "agent") {
-          const res = await executeAgentInSession(
-            activeSessionId,
-            selectedAgent,
-            task
-          );
-          // Replace with server truth (includes both user + agent messages)
-          const session = await fetchSession(activeSessionId);
-          setMessages(session.messages.map(sessionMessageToChatMessage));
+        if (mode === "direct") {
+          await executeInSession(activeSessionId, task);
+        } else if (mode === "agent") {
+          await executeAgentInSession(activeSessionId, selectedAgent, task);
         } else {
-          await executeTeamInSession(
-            activeSessionId,
-            task,
-            selectedStrategy
-          );
-          // Replace with server truth
-          const session = await fetchSession(activeSessionId);
-          setMessages(session.messages.map(sessionMessageToChatMessage));
+          await executeTeamInSession(activeSessionId, task, selectedStrategy);
         }
+        // Replace with server truth (includes both user + response messages)
+        const session = await fetchSession(activeSessionId);
+        setMessages(session.messages.map(sessionMessageToChatMessage));
         setRefreshKey((k) => k + 1);
       } catch (err) {
         // Keep user message, append error
@@ -341,97 +339,140 @@ export default function AgentsPage() {
         </Link>
       </header>
 
-      {/* Controls bar */}
+      {/* Advanced panel toggle */}
       <div
-        className="px-6 py-3 flex items-center gap-4 shrink-0"
+        className="px-6 shrink-0"
         style={{
           borderBottom: "1px solid rgba(0, 240, 255, 0.05)",
           background: "rgba(0, 240, 255, 0.01)",
         }}
       >
-        {/* Mode toggle */}
-        <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid rgba(0, 240, 255, 0.15)" }}>
-          <button
-            onClick={() => setMode("agent")}
-            className="px-3 py-1.5 text-xs font-bold tracking-wider uppercase transition-all"
-            style={{
-              background: mode === "agent" ? "rgba(0, 240, 255, 0.15)" : "transparent",
-              color: mode === "agent" ? "#00f0ff" : "#64748b",
-            }}
-          >
-            Single Agent
-          </button>
-          <button
-            onClick={() => setMode("team")}
-            className="px-3 py-1.5 text-xs font-bold tracking-wider uppercase transition-all"
-            style={{
-              background: mode === "team" ? "rgba(168, 85, 247, 0.15)" : "transparent",
-              color: mode === "team" ? "#a855f7" : "#64748b",
-              borderLeft: "1px solid rgba(0, 240, 255, 0.15)",
-            }}
-          >
-            Team
-          </button>
-        </div>
-
-        {/* Agent selector (single mode) */}
-        {mode === "agent" && (
-          <div className="flex items-center gap-2">
-            <label className="text-[10px] text-slate-500 tracking-widest uppercase">
-              Agent
-            </label>
-            <select
-              value={selectedAgent}
-              onChange={(e) => setSelectedAgent(e.target.value)}
-              className="rounded-lg px-3 py-1.5 text-xs font-mono appearance-none cursor-pointer outline-none"
-              style={{
-                background: "rgba(0, 240, 255, 0.06)",
-                border: "1px solid rgba(0, 240, 255, 0.15)",
-                color: "#e2e8f0",
-              }}
-            >
-              {agents.map((a) => (
-                <option key={a.name} value={a.name}>
-                  [{a.tier}] {a.name}
-                </option>
-              ))}
-            </select>
-            {agents.find((a) => a.name === selectedAgent) && (
-              <AgentBadge agent={agents.find((a) => a.name === selectedAgent)!} />
+        <button
+          onClick={() => {
+            setAdvancedOpen((prev) => {
+              const next = !prev;
+              localStorage.setItem("agents-advanced-open", String(next));
+              return next;
+            });
+          }}
+          className="w-full flex items-center justify-between py-2 text-[10px] tracking-widest uppercase font-bold transition-colors hover:opacity-80"
+          style={{ color: "#64748b" }}
+        >
+          <span className="flex items-center gap-2">
+            Advanced
+            {mode !== "direct" && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded normal-case tracking-normal"
+                style={{
+                  background: mode === "agent" ? "rgba(0, 240, 255, 0.08)" : "rgba(168, 85, 247, 0.08)",
+                  color: mode === "agent" ? "#00f0ff" : "#a855f7",
+                }}
+              >
+                {mode === "agent" ? selectedAgent : `team: ${selectedStrategy}`}
+              </span>
             )}
-          </div>
-        )}
+          </span>
+          <span style={{ fontSize: "8px" }}>{advancedOpen ? "\u25B2" : "\u25BC"}</span>
+        </button>
 
-        {/* Strategy selector (team mode) */}
-        {mode === "team" && (
-          <div className="flex items-center gap-2">
-            <label className="text-[10px] text-slate-500 tracking-widest uppercase">
-              Strategy
-            </label>
-            <select
-              value={selectedStrategy}
-              onChange={(e) => setSelectedStrategy(e.target.value)}
-              className="rounded-lg px-3 py-1.5 text-xs font-mono appearance-none cursor-pointer outline-none"
-              style={{
-                background: "rgba(168, 85, 247, 0.06)",
-                border: "1px solid rgba(168, 85, 247, 0.15)",
-                color: "#e2e8f0",
-              }}
-            >
-              {strategies.length > 0 ? (
-                strategies.map((s) => (
-                  <option key={s.name} value={s.name}>
-                    {s.name}
-                  </option>
-                ))
-              ) : (
-                <>
-                  <option value="architect_only">architect_only</option>
-                  <option value="leads_only">leads_only</option>
-                  <option value="full_hierarchy">full_hierarchy</option>
-                </>
-              )}
-            </select>
+        {advancedOpen && (
+          <div className="flex items-center gap-4 pb-3">
+            {/* Mode toggle */}
+            <div className="flex rounded-lg overflow-hidden" style={{ border: "1px solid rgba(0, 240, 255, 0.15)" }}>
+              <button
+                onClick={() => setMode("direct")}
+                className="px-3 py-1.5 text-xs font-bold tracking-wider uppercase transition-all"
+                style={{
+                  background: mode === "direct" ? "rgba(6, 214, 160, 0.15)" : "transparent",
+                  color: mode === "direct" ? "#06d6a0" : "#64748b",
+                }}
+              >
+                Direct
+              </button>
+              <button
+                onClick={() => setMode("agent")}
+                className="px-3 py-1.5 text-xs font-bold tracking-wider uppercase transition-all"
+                style={{
+                  background: mode === "agent" ? "rgba(0, 240, 255, 0.15)" : "transparent",
+                  color: mode === "agent" ? "#00f0ff" : "#64748b",
+                  borderLeft: "1px solid rgba(0, 240, 255, 0.15)",
+                }}
+              >
+                Agent
+              </button>
+              <button
+                onClick={() => setMode("team")}
+                className="px-3 py-1.5 text-xs font-bold tracking-wider uppercase transition-all"
+                style={{
+                  background: mode === "team" ? "rgba(168, 85, 247, 0.15)" : "transparent",
+                  color: mode === "team" ? "#a855f7" : "#64748b",
+                  borderLeft: "1px solid rgba(0, 240, 255, 0.15)",
+                }}
+              >
+                Team
+              </button>
+            </div>
+
+            {/* Agent selector (agent mode) */}
+            {mode === "agent" && (
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-slate-500 tracking-widest uppercase">
+                  Agent
+                </label>
+                <select
+                  value={selectedAgent}
+                  onChange={(e) => setSelectedAgent(e.target.value)}
+                  className="rounded-lg px-3 py-1.5 text-xs font-mono appearance-none cursor-pointer outline-none"
+                  style={{
+                    background: "rgba(0, 240, 255, 0.06)",
+                    border: "1px solid rgba(0, 240, 255, 0.15)",
+                    color: "#e2e8f0",
+                  }}
+                >
+                  {agents.map((a) => (
+                    <option key={a.name} value={a.name}>
+                      [{a.tier}] {a.name}
+                    </option>
+                  ))}
+                </select>
+                {agents.find((a) => a.name === selectedAgent) && (
+                  <AgentBadge agent={agents.find((a) => a.name === selectedAgent)!} />
+                )}
+              </div>
+            )}
+
+            {/* Strategy selector (team mode) */}
+            {mode === "team" && (
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] text-slate-500 tracking-widest uppercase">
+                  Strategy
+                </label>
+                <select
+                  value={selectedStrategy}
+                  onChange={(e) => setSelectedStrategy(e.target.value)}
+                  className="rounded-lg px-3 py-1.5 text-xs font-mono appearance-none cursor-pointer outline-none"
+                  style={{
+                    background: "rgba(168, 85, 247, 0.06)",
+                    border: "1px solid rgba(168, 85, 247, 0.15)",
+                    color: "#e2e8f0",
+                  }}
+                >
+                  {strategies.length > 0 ? (
+                    strategies.map((s) => (
+                      <option key={s.name} value={s.name}>
+                        {s.name}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="architect_only">architect_only</option>
+                      <option value="leads_only">leads_only</option>
+                      <option value="full_hierarchy">full_hierarchy</option>
+                    </>
+                  )}
+                </select>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -457,16 +498,18 @@ export default function AgentsPage() {
                 <div className="text-center max-w-md">
                   <div
                     className="text-sm font-bold tracking-wider uppercase mb-2"
-                    style={{ color: "#00f0ff" }}
+                    style={{ color: mode === "direct" ? "#06d6a0" : mode === "agent" ? "#00f0ff" : "#a855f7" }}
                   >
-                    {mode === "agent" ? "Agent Chat" : "Team Chat"}
+                    {mode === "direct" ? "Chat" : mode === "agent" ? "Agent Chat" : "Team Chat"}
                   </div>
                   <p className="text-slate-500 text-xs leading-relaxed">
-                    {mode === "agent"
-                      ? "Send a task to the selected agent. Messages persist across page refreshes."
-                      : "Send a task to the team. Multiple agents will collaborate using the selected strategy."}
+                    {mode === "direct"
+                      ? "Just type your question. No agent selection needed."
+                      : mode === "agent"
+                        ? "Send a task to the selected agent. Messages persist across page refreshes."
+                        : "Send a task to the team. Multiple agents will collaborate using the selected strategy."}
                   </p>
-                  {agents.length > 0 && (
+                  {mode !== "direct" && agents.length > 0 && (
                     <div className="mt-4 flex flex-wrap justify-center gap-1.5">
                       {agents.map((a) => (
                         <span
@@ -496,9 +539,11 @@ export default function AgentsPage() {
               <div className="flex items-center gap-3 px-4 py-3">
                 <Spinner />
                 <span className="text-xs text-slate-500 animate-pulse">
-                  {mode === "agent"
-                    ? `${selectedAgent} is processing...`
-                    : `Team executing with ${selectedStrategy} strategy...`}
+                  {mode === "direct"
+                    ? "Thinking..."
+                    : mode === "agent"
+                      ? `${selectedAgent} is processing...`
+                      : `Team executing with ${selectedStrategy} strategy...`}
                 </span>
               </div>
             )}
@@ -529,9 +574,11 @@ export default function AgentsPage() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder={
-                  mode === "agent"
-                    ? `Ask ${selectedAgent || "an agent"}...`
-                    : `Describe a task for the team...`
+                  mode === "direct"
+                    ? "Type your message..."
+                    : mode === "agent"
+                      ? `Ask ${selectedAgent || "an agent"}...`
+                      : `Describe a task for the team...`
                 }
                 disabled={loading || !activeSessionId}
                 className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-600 outline-none font-mono"
@@ -542,11 +589,13 @@ export default function AgentsPage() {
                 className="px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all disabled:opacity-30"
                 style={{
                   background:
-                    mode === "agent"
-                      ? "rgba(0, 240, 255, 0.15)"
-                      : "rgba(168, 85, 247, 0.15)",
-                  border: `1px solid ${mode === "agent" ? "rgba(0, 240, 255, 0.3)" : "rgba(168, 85, 247, 0.3)"}`,
-                  color: mode === "agent" ? "#00f0ff" : "#a855f7",
+                    mode === "direct"
+                      ? "rgba(6, 214, 160, 0.15)"
+                      : mode === "agent"
+                        ? "rgba(0, 240, 255, 0.15)"
+                        : "rgba(168, 85, 247, 0.15)",
+                  border: `1px solid ${mode === "direct" ? "rgba(6, 214, 160, 0.3)" : mode === "agent" ? "rgba(0, 240, 255, 0.3)" : "rgba(168, 85, 247, 0.3)"}`,
+                  color: mode === "direct" ? "#06d6a0" : mode === "agent" ? "#00f0ff" : "#a855f7",
                 }}
               >
                 {loading ? "Running..." : "Send"}

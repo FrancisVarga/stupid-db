@@ -524,6 +524,25 @@ export async function executeAgentInSession(
   return res.json();
 }
 
+export async function executeInSession(
+  sessionId: string,
+  task: string,
+  maxHistory = 10
+): Promise<SessionExecuteResponse<AgentResponse>> {
+  const res = await checkedFetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/execute`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        task,
+        max_history: maxHistory,
+      }),
+    }
+  );
+  return res.json();
+}
+
 export async function executeTeamInSession(
   sessionId: string,
   task: string,

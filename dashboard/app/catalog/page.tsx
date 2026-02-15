@@ -196,13 +196,13 @@ function EntitiesTab({
                 </td>
                 <td className="px-4 py-2.5 text-xs">
                   {e.source_types.map((s) => (
-                    <span key={s} style={{ color: ENTITY_COLORS[s] || "#94a3b8" }}>
+                    <span key={`src-${s}`} style={{ color: ENTITY_COLORS[s] || "#94a3b8" }}>
                       {s}
                     </span>
                   ))}
                   <span className="text-slate-600 mx-1">→</span>
                   {e.target_types.map((t) => (
-                    <span key={t} style={{ color: ENTITY_COLORS[t] || "#94a3b8" }}>
+                    <span key={`tgt-${t}`} style={{ color: ENTITY_COLORS[t] || "#94a3b8" }}>
                       {t}
                     </span>
                   ))}
