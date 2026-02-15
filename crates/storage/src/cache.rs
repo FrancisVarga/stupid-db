@@ -51,7 +51,7 @@ impl SegmentCache {
             return Ok(path);
         }
 
-        debug!("Cache miss: {} — downloading from S3", segment_id);
+        info!("Cache miss: {} — downloading from S3...", segment_id);
 
         let prefix = backend.prefix();
         let store = backend.store();

@@ -71,74 +71,51 @@ Edge weights (occurrence counts) are incorporated:
 - PageRank flows more through high-weight edges
 - This means "primary device" and "favorite game" contribute more
 
-## Louvain Community Detection
+## Label Propagation Community Detection
 
 ### Purpose
 Discover **natural communities** — groups of entities that are more densely connected to each other than to the rest of the graph. Think: "these 500 members form a cohesive group based on their game choices, devices, and VIP tiers."
 
 ### Algorithm
 
-Louvain method (modularity optimization):
+Label Propagation:
 
-1. Start: each node is its own community
-2. For each node, try moving it to each neighbor's community
-3. Pick the move that maximizes modularity gain
-4. Repeat until no improvement
-5. Collapse communities into super-nodes
-6. Repeat from step 2 on the super-graph
+1. Start: assign each node a unique label (0..N)
+2. For each node, adopt the most frequent label among its neighbors
+3. Break ties by choosing the smallest label (deterministic)
+4. Repeat until no labels change or max iterations reached
+
+This is a fast, near-linear-time algorithm that naturally discovers connected components and densely-connected groups without requiring a modularity function.
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_iterations` | 10 | Maximum iterations before stopping |
 
 ### Execution (P2, hourly)
 
 ```mermaid
 flowchart TD
-    A[Read Graph Snapshot] --> B[Initialize: Each Node = Own Community]
-    B --> C[Phase 1: Local Modularity Optimization]
-    C --> D[Move Nodes Between Communities]
-    D --> E{Modularity Improved?}
-    E -->|Yes| D
-    E -->|No| F[Phase 2: Collapse Communities to Super-Nodes]
-    F --> G{More Than 1 Super-Node?}
-    G -->|Yes| C
-    G -->|No| H[Final Communities Determined]
-    H --> I[Compute Community Statistics]
-    I --> J[Label Communities via LLM]
-    J --> K[Detect Community Drift]
+    A[Read Graph Snapshot] --> B[Initialize: Each Node Gets Unique Label 0..N]
+    B --> C[For Each Node: Adopt Most Frequent Neighbor Label]
+    C --> D{Any Labels Changed?}
+    D -->|Yes| E{Max Iterations?}
+    E -->|No| C
+    E -->|Yes| F[Return Current Labels]
+    D -->|No| F
+    F --> G[Store Community Assignments in KnowledgeState]
 ```
 
 ### Output
 
 ```rust
-struct CommunityResult {
-    assignments: HashMap<NodeId, CommunityId>,
-    communities: Vec<CommunityInfo>,
-    modularity_score: f64,
-    num_communities: usize,
-}
-
-struct CommunityInfo {
-    id: CommunityId,
-    member_count: usize,
-    // Dominant traits
-    top_games: Vec<(String, f64)>,
-    top_platforms: Vec<(String, f64)>,
-    top_currencies: Vec<(String, f64)>,
-    top_vip_groups: Vec<(String, f64)>,
-    // Internal connectivity
-    internal_edge_density: f64,
-    // LLM-generated label
-    label: Option<String>,
-}
+// Returns HashMap<NodeId, CommunityId> where CommunityId is u64
+fn label_propagation(graph: &GraphStore, max_iterations: usize) -> HashMap<NodeId, u64>
+fn label_propagation_default(graph: &GraphStore) -> HashMap<NodeId, u64>  // max_iterations=10
 ```
 
-### Community Labels (LLM-Generated)
-
-```
-Community 7: 2,340 members, 89% mobile, 76% THB, top games: [poker, baccarat]
-→ "Thai mobile card game enthusiasts"
-
-Community 12: 890 members, 95% desktop, 92% VND, top games: [slots_*], VIPG+
-→ "Vietnamese high-VIP desktop slot regulars"
-```
+The scheduler task (`CommunityDetectionTask`, P2) wraps this algorithm and writes results to `KnowledgeState.communities`. The API endpoint `/compute/communities` groups results by community ID and returns member counts with top node samples.
 
 ## Shortest Path
 
