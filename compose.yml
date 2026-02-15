@@ -1,4 +1,30 @@
 services:
+  stupid-db-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stupid-db-server
+    ports:
+      - "39100:39100"
+    env_file:
+      - .env
+    environment:
+      - PORT=39100
+      - HOST=0.0.0.0
+      - DATA_DIR=/data
+      - RUST_LOG=info
+    volumes:
+      - stupid-db-data:/data
+      # Bind-mount rules directory so host edits are live-reloaded
+      - ./data/rules:/data/rules
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:39100/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
   stupid-claude-agent:
     build:
       context: ./packages/stupid-claude-agent
@@ -29,13 +55,19 @@ services:
       dockerfile: Dockerfile
     container_name: stupid-db-dashboard
     ports:
-      - "3000:3000"
+      - "39300:39300"
     environment:
-      - NEXT_PUBLIC_API_URL=http://stupid-db-server:8080
+      - NEXT_PUBLIC_API_URL=http://stupid-db-server:39100
+    depends_on:
+      stupid-db-server:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:39300').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 10s
       retries: 3
+
+volumes:
+  stupid-db-data:

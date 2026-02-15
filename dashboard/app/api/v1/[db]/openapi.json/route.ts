@@ -13,7 +13,7 @@ export async function GET(
   try {
     const sql = await getPool(db);
     const proto = req.headers.get("x-forwarded-proto") ?? "http";
-    const host = req.headers.get("host") ?? "localhost:3000";
+    const host = req.headers.get("host") ?? "localhost:39300";
     const baseUrl = `${proto}://${host}`;
 
     const spec = await generateOpenAPISpec(sql, db, baseUrl);

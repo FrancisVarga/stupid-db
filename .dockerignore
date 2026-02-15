@@ -1,0 +1,41 @@
+# Build artifacts
+target/
+*.pdb
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data (parquet segments excluded, rules YAML baked in as defaults)
+data/*
+!data/rules/
+D:/w88_data/
+
+# Dashboard (has its own Dockerfile)
+dashboard/
+
+# Python agent (has its own Dockerfile)
+packages/
+
+# Documentation
+docs/
+*.md
+!Cargo.toml
+
+# Claude config
+.claude/
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# OS
+Thumbs.db
+.DS_Store

@@ -8,7 +8,7 @@ export async function GET(
 ): Promise<Response> {
   const { db } = await params;
   const proto = req.headers.get("x-forwarded-proto") ?? "http";
-  const host = req.headers.get("host") ?? "localhost:3000";
+  const host = req.headers.get("host") ?? "localhost:39300";
   const specUrl = `${proto}://${host}/api/v1/${db}/openapi.json`;
 
   const html = `<!DOCTYPE html>
