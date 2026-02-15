@@ -9,12 +9,15 @@ use axum::response::sse::{Event, Sse};
 use futures::stream;
 use serde::Deserialize;
 use std::convert::Infallible;
+#[cfg(feature = "aws")]
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::connections::{ConnectionCredentials, ConnectionInput, ConnectionSafe};
+#[cfg(feature = "aws")]
 use crate::athena_connections::{
     AthenaConnectionCredentials, AthenaConnectionInput, AthenaConnectionSafe,
 };
+#[cfg(feature = "aws")]
 use crate::queue_connections::{
     QueueConnectionCredentials, QueueConnectionInput, QueueConnectionSafe,
 };
@@ -1117,7 +1120,8 @@ pub async fn connections_credentials(
     }
 }
 
-// ── Queue Connection CRUD endpoints ──────────────────────────────
+// ── Queue Connection CRUD endpoints (AWS feature) ───────────────
+#[cfg(feature = "aws")]
 
 /// List all queue connections (credentials masked).
 pub async fn queue_connections_list(

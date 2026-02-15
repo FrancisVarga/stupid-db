@@ -824,20 +824,37 @@ async fn background_load(
         }
     };
 
+    load_segments_and_compute(
+        &data_dir, &effective_data_dir, &segments,
+        shared_graph, knowledge, pipeline, catalog,
+        segment_ids_shared, doc_count_shared, loading, app_state,
+    ).await
+}
+
+/// Shared graph building + catalog + compute logic used by both AWS and local loaders.
+async fn load_segments_and_compute(
+    _data_dir: &std::path::Path,
+    effective_data_dir: &std::path::Path,
+    segments: &[String],
+    shared_graph: state::SharedGraph,
+    knowledge: stupid_compute::SharedKnowledgeState,
+    pipeline: state::SharedPipeline,
+    catalog: Arc<RwLock<Option<stupid_catalog::Catalog>>>,
+    segment_ids_shared: Arc<RwLock<Vec<String>>>,
+    doc_count_shared: Arc<std::sync::atomic::AtomicU64>,
+    loading: Arc<LoadingState>,
+    app_state: Arc<state::AppState>,
+) -> anyhow::Result<()> {
     let total = segments.len() as u64;
     loading.set_progress(0, total);
 
     // Store segment IDs immediately so /stats can show them.
     {
         let mut ids = segment_ids_shared.write().await;
-        *ids = segments.clone();
+        *ids = segments.to_vec();
     }
 
     // Phase 2: Build graph from segments.
-    // Strategy: rayon workers read + parse + extract graph ops in parallel,
-    // then send lightweight GraphOp batches through a bounded channel.
-    // The consumer replays ops into the single-threaded GraphStore.
-    // Memory: only graph ops (~50-100 bytes each) are buffered, not full Documents.
     loading.set_phase(LoadingPhase::LoadingSegments).await;
     let reader_threads = 4usize;
     info!(
@@ -853,7 +870,6 @@ async fn background_load(
         let mut graph = stupid_graph::GraphStore::new();
         let mut total_docs: u64 = 0;
 
-        // Each SegmentResult is lightweight: just the extracted graph ops, not raw docs.
         struct SegmentResult {
             seg_id: String,
             ops: Vec<GraphOp>,
@@ -863,8 +879,8 @@ async fn background_load(
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<SegmentResult>(1);
 
-        let segments_for_pool = segments.clone();
-        let data_dir_for_pool = effective_data_dir.clone();
+        let segments_for_pool: Vec<String> = segments.to_vec();
+        let data_dir_for_pool = effective_data_dir.to_path_buf();
         let skipped = Arc::new(AtomicU64::new(0));
         let skipped_clone = skipped.clone();
 
@@ -890,7 +906,6 @@ async fn background_load(
                         }
                     };
 
-                    // Stream docs from mmap, extract ops, drop doc immediately.
                     let mut ops = Vec::new();
                     let mut doc_count = 0u64;
                     for doc_result in reader.iter() {
@@ -904,7 +919,6 @@ async fn background_load(
                             }
                         }
                     }
-                    // reader + mmap dropped here.
 
                     let _ = tx.send(SegmentResult {
                         seg_id: seg_id.clone(), ops, doc_count,
@@ -914,7 +928,6 @@ async fn background_load(
             });
         });
 
-        // Consumer: replay ops into graph.
         let mut seg_num = 0u64;
         while let Ok(result) = rx.recv() {
             for op in &result.ops {
@@ -953,88 +966,80 @@ async fn background_load(
         stats.node_count, stats.edge_count, doc_count, segments.len()
     );
 
-    // Swap the populated graph into shared state.
     {
         let mut graph_lock = shared_graph.write().await;
         *graph_lock = graph;
     }
 
-    // Graph is loaded — mark server as ready immediately.
-    // API endpoints for graph/nodes, stats, etc. work now.
     loading.set_phase(LoadingPhase::Ready).await;
     info!(
         "Graph loaded and server ready in {:.1}s — catalog and compute will build in background",
         loading.started_at.elapsed().as_secs_f64()
     );
 
-    // Phase 3+4: Build catalog and compute AFTER server is ready.
-    // These are non-blocking — /catalog and /compute endpoints return
-    // empty/503 until they finish, but graph endpoints work immediately.
     info!("Building catalog in background...");
     {
         let graph_read = shared_graph.read().await;
         let mut cat = stupid_catalog::Catalog::from_graph(&graph_read);
 
-        // Merge Athena schemas into the catalog as external SQL sources.
-        let athena_store = app_state.athena_connections.read().await;
-        if let Ok(conns) = athena_store.list() {
-            let sources: Vec<stupid_catalog::ExternalSource> = conns
-                .iter()
-                .filter(|c| c.enabled && c.schema.is_some())
-                .map(|c| {
-                    let schema = c.schema.as_ref().unwrap();
-                    stupid_catalog::ExternalSource {
-                        name: c.name.clone(),
-                        kind: "athena".to_string(),
-                        connection_id: c.id.clone(),
-                        databases: schema
-                            .databases
-                            .iter()
-                            .map(|db| stupid_catalog::ExternalDatabase {
-                                name: db.name.clone(),
-                                tables: db
-                                    .tables
-                                    .iter()
-                                    .map(|t| stupid_catalog::ExternalTable {
-                                        name: t.name.clone(),
-                                        columns: t
-                                            .columns
-                                            .iter()
-                                            .map(|col| stupid_catalog::ExternalColumn {
-                                                name: col.name.clone(),
-                                                data_type: col.data_type.clone(),
-                                            })
-                                            .collect(),
-                                    })
-                                    .collect(),
-                            })
-                            .collect(),
-                    }
-                })
-                .collect();
+        // Merge Athena schemas into the catalog as external SQL sources (AWS feature).
+        #[cfg(feature = "aws")]
+        {
+            let athena_store = app_state.athena_connections.read().await;
+            if let Ok(conns) = athena_store.list() {
+                let sources: Vec<stupid_catalog::ExternalSource> = conns
+                    .iter()
+                    .filter(|c| c.enabled && c.schema.is_some())
+                    .map(|c| {
+                        let schema = c.schema.as_ref().unwrap();
+                        stupid_catalog::ExternalSource {
+                            name: c.name.clone(),
+                            kind: "athena".to_string(),
+                            connection_id: c.id.clone(),
+                            databases: schema
+                                .databases
+                                .iter()
+                                .map(|db| stupid_catalog::ExternalDatabase {
+                                    name: db.name.clone(),
+                                    tables: db
+                                        .tables
+                                        .iter()
+                                        .map(|t| stupid_catalog::ExternalTable {
+                                            name: t.name.clone(),
+                                            columns: t
+                                                .columns
+                                                .iter()
+                                                .map(|col| stupid_catalog::ExternalColumn {
+                                                    name: col.name.clone(),
+                                                    data_type: col.data_type.clone(),
+                                                })
+                                                .collect(),
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        }
+                    })
+                    .collect();
 
-            if !sources.is_empty() {
-                info!("Adding {} Athena source(s) to catalog", sources.len());
-                cat = cat.with_external_sources(sources);
+                if !sources.is_empty() {
+                    info!("Adding {} Athena source(s) to catalog", sources.len());
+                    cat = cat.with_external_sources(sources);
+                }
             }
+            drop(athena_store);
         }
-        drop(athena_store);
 
         let mut catalog_lock = catalog.write().await;
         *catalog_lock = Some(cat);
     }
     info!("Catalog ready");
 
-    // Start the continuous compute scheduler.
-    // Tasks take an Arc<GraphStore> snapshot — they see the graph as loaded at startup.
-    // Live segment watcher will trigger re-runs via ingest queue depth signal.
     info!("Starting compute scheduler in background...");
     {
         let sched_config = stupid_compute::SchedulerConfig::default();
         let mut scheduler = stupid_compute::Scheduler::new(sched_config, knowledge.clone());
 
-        // Register tasks per docs/compute/scheduler.md.
-        // Tasks take SharedGraph and use blocking_read() — they always see the latest graph.
         let p2_interval = std::time::Duration::from_secs(3600);
         scheduler.register_task(Arc::new(
             stupid_compute::scheduler::tasks::PageRankTask::new(shared_graph.clone(), p2_interval),
@@ -1049,15 +1054,9 @@ async fn background_load(
             stupid_compute::AnomalyDetectionTask::new(p2_interval),
         ));
 
-        // Dependencies per docs: entity_extraction -> pagerank/community_detection
         scheduler.add_dependency("entity_extraction", "pagerank");
         scheduler.add_dependency("entity_extraction", "community_detection");
 
-        // Run initial compute immediately so data is available ASAP.
-        // We call algorithms directly here instead of using task.execute(),
-        // because tasks use blocking_read() which panics inside tokio runtime.
-        // The scheduler's own .run() loop runs on a dedicated std::thread where
-        // blocking_read() is safe.
         info!("Running initial PageRank, degree, community computations...");
         {
             let graph_read = shared_graph.read().await;
@@ -1080,7 +1079,6 @@ async fn background_load(
             state.degrees = degrees;
             state.communities = communities;
         }
-        // Verify knowledge state is populated.
         {
             let k = knowledge.read().unwrap();
             info!(
@@ -1089,16 +1087,13 @@ async fn background_load(
             );
         }
 
-        // Run pipeline (hot_connect + warm_compute) over all segments.
-        // This populates anomalies, trends, co-occurrence, and cluster assignments.
-        // Re-reads segments from mmap (fast — no decompression, just iteration).
         info!("Running compute pipeline (hot_connect + warm_compute)...");
         {
             let pipeline_start = std::time::Instant::now();
             let mut all_docs: Vec<stupid_core::Document> = Vec::new();
 
-            for seg_id in &segments {
-                let reader = match stupid_segment::reader::SegmentReader::open(&effective_data_dir, seg_id) {
+            for seg_id in segments {
+                let reader = match stupid_segment::reader::SegmentReader::open(effective_data_dir, seg_id) {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
@@ -1110,7 +1105,6 @@ async fn background_load(
                     }
                 }
 
-                // Feed through hot path (feature extraction + streaming k-means).
                 {
                     let mut pipe = pipeline.lock().unwrap();
                     let mut state = knowledge.write().unwrap();
@@ -1119,7 +1113,6 @@ async fn background_load(
 
                 all_docs.extend(seg_docs);
 
-                // Periodically run warm_compute to avoid unbounded doc accumulation.
                 if all_docs.len() > 100_000 {
                     let mut pipe = pipeline.lock().unwrap();
                     let mut state = knowledge.write().unwrap();
@@ -1128,7 +1121,6 @@ async fn background_load(
                 }
             }
 
-            // Final warm_compute for remaining docs.
             if !all_docs.is_empty() {
                 let mut pipe = pipeline.lock().unwrap();
                 let mut state = knowledge.write().unwrap();
@@ -1146,7 +1138,6 @@ async fn background_load(
             );
         }
 
-        // Store scheduler handle for shutdown + metrics access.
         let shutdown = scheduler.shutdown_signal();
         let metrics = scheduler.metrics_handle();
         {
@@ -1154,7 +1145,6 @@ async fn background_load(
             *sched_lock = Some(state::SchedulerHandle { shutdown, metrics });
         }
 
-        // Spawn scheduler loop on a dedicated OS thread (it's blocking).
         std::thread::spawn(move || {
             scheduler.run();
         });
@@ -1183,10 +1173,12 @@ async fn main() -> anyhow::Result<()> {
             let path = args.get(2).expect("Usage: server import-dir <directory>");
             import_dir(&config, Path::new(path))?;
         }
+        #[cfg(feature = "aws")]
         Some("import-s3") => {
             let prefix = args.get(2).expect("Usage: server import-s3 <s3-prefix>");
             import_s3(&config, prefix).await?;
         }
+        #[cfg(feature = "aws")]
         Some("export") => {
             let flag = args.get(2).map(|s| s.as_str()).unwrap_or("--all");
             let (do_segments, do_graph) = match flag {
