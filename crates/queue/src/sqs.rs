@@ -1,8 +1,8 @@
 //! AWS SQS consumer implementation.
 
 use async_trait::async_trait;
-use aws_config::BehaviorVersion;
 use aws_credential_types::Credentials;
+use aws_sdk_sqs::config::BehaviorVersion;
 use aws_sdk_sqs::types::QueueAttributeName;
 use aws_sdk_sqs::Client;
 use chrono::{TimeZone, Utc};
@@ -24,11 +24,16 @@ pub struct SqsConsumer {
 impl SqsConsumer {
     /// Create a new SQS consumer from project config.
     pub async fn new(aws: &AwsConfig, queue: &QueueConfig) -> Result<Self, QueueError> {
-        let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
-            .region(aws_sdk_sqs::config::Region::new(aws.region.clone()));
+        let region = aws_sdk_sqs::config::Region::new(aws.region.clone());
+
+        // Build SQS client config directly — do NOT use aws_config::defaults()
+        // because it reads AWS_ENDPOINT_URL from the environment, which may point
+        // to S3 and would route all SQS requests to the wrong service.
+        let mut sqs_config = aws_sdk_sqs::Config::builder()
+            .region(region.clone())
+            .behavior_version(BehaviorVersion::latest());
 
         // Use static credentials if provided (local dev / explicit config).
-        // Otherwise, fall back to the default credential chain (env, profile, IMDS).
         if let (Some(key_id), Some(secret)) =
             (&aws.access_key_id, &aws.secret_access_key)
         {
@@ -39,9 +44,10 @@ impl SqsConsumer {
                 None,
                 "stupid-queue-static",
             );
-            config_loader = config_loader.credentials_provider(creds);
+            sqs_config = sqs_config.credentials_provider(creds);
         }
 
+        // Only apply endpoint override if QUEUE_AWS_ENDPOINT_URL is explicitly set.
         if let Some(ref endpoint) = aws.endpoint_url {
             if !endpoint.is_empty() {
                 let url = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
@@ -49,12 +55,11 @@ impl SqsConsumer {
                 } else {
                     format!("https://{endpoint}")
                 };
-                config_loader = config_loader.endpoint_url(&url);
+                sqs_config = sqs_config.endpoint_url(&url);
             }
         }
 
-        let sdk_config = config_loader.load().await;
-        let client = Client::new(&sdk_config);
+        let client = Client::from_conf(sqs_config.build());
 
         info!(
             queue_url = %queue.queue_url,

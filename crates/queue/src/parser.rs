@@ -31,12 +31,35 @@ fn json_to_field_value(v: &Value) -> FieldValue {
     }
 }
 
+/// Well-known field names for event type (tried in order).
+const EVENT_TYPE_KEYS: &[&str] = &[
+    "event_type", "eventType", "EventType",
+    "type", "Type",
+    "action", "Action",
+    "event", "Event",
+];
+
+/// Well-known field names for document ID.
+const ID_KEYS: &[&str] = &["id", "Id", "ID", "uuid", "messageId"];
+
+/// Well-known field names for timestamp.
+const TIMESTAMP_KEYS: &[&str] = &[
+    "timestamp", "Timestamp",
+    "created_at", "createdAt",
+    "time", "date", "datetime",
+    "occurred_at", "occurredAt",
+    "sent_at", "sentAt",
+];
+
 /// Parse a single queue message body into a [`Document`].
 ///
-/// The JSON body must be an object with at least an `event_type` field.
-/// Optional `id` (UUID) and `timestamp` (RFC 3339) fields are extracted;
-/// if missing, a new UUID is generated and the message timestamp is used.
-/// All remaining fields are stored in the `fields` map as typed [`FieldValue`]s.
+/// Dynamically adapts to any JSON object schema:
+/// - **event_type**: probes common field names; defaults to `"Unknown"` if none found
+/// - **id**: probes common ID fields; generates a UUID if missing
+/// - **timestamp**: probes common time fields; falls back to SQS message timestamp
+/// - **fields**: all key-value pairs are preserved as typed [`FieldValue`]s
+///
+/// Only rejects messages that are not valid JSON or not a JSON object.
 pub fn parse_message(msg: &QueueMessage) -> Result<Document, QueueError> {
     let json: Value = serde_json::from_str(&msg.body)
         .map_err(|e| QueueError::Parse(format!("Invalid JSON in message {}: {}", msg.id, e)))?;
@@ -45,33 +68,32 @@ pub fn parse_message(msg: &QueueMessage) -> Result<Document, QueueError> {
         .as_object()
         .ok_or_else(|| QueueError::Parse(format!("Message {} body is not a JSON object", msg.id)))?;
 
-    // event_type is required
-    let event_type = obj
-        .get("event_type")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            QueueError::Parse(format!("Message {} missing 'event_type' field", msg.id))
-        })?
+    // event_type: probe well-known keys, default to "Unknown"
+    let event_type = EVENT_TYPE_KEYS
+        .iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
+        .unwrap_or("Unknown")
         .to_string();
 
-    // Extract or generate id
-    let id = obj
-        .get("id")
-        .and_then(|v| v.as_str())
+    // id: probe well-known keys, fall back to generated UUID
+    let id = ID_KEYS
+        .iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
         .and_then(|s| Uuid::parse_str(s).ok())
         .unwrap_or_else(Uuid::new_v4);
 
-    // Extract or fall back to message timestamp
-    let timestamp = obj
-        .get("timestamp")
-        .and_then(|v| v.as_str())
+    // timestamp: probe well-known keys, fall back to SQS message timestamp
+    let timestamp = TIMESTAMP_KEYS
+        .iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
         .and_then(|s| s.parse::<DateTime<Utc>>().ok())
         .unwrap_or(msg.timestamp);
 
-    // All fields except `id` go into the fields map (event_type kept for consistency)
+    // All fields go into the map (except the extracted id key, to avoid duplication)
+    let id_key_used = ID_KEYS.iter().find(|k| obj.contains_key(**k));
     let fields = obj
         .iter()
-        .filter(|(k, _)| *k != "id")
+        .filter(|(k, _)| id_key_used.map_or(true, |ik| k != ik))
         .map(|(k, v)| (k.clone(), json_to_field_value(v)))
         .collect();
 
@@ -172,13 +194,28 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_missing_event_type() {
+    fn test_parse_missing_event_type_defaults_to_unknown() {
         let body = r#"{"memberCode": "M001"}"#;
-        let msg = make_msg("msg-bad", body);
-        let err = parse_message(&msg).unwrap_err();
+        let msg = make_msg("msg-no-type", body);
+        let doc = parse_message(&msg).unwrap();
 
-        assert!(matches!(err, QueueError::Parse(_)));
-        assert!(err.to_string().contains("event_type"));
+        assert_eq!(doc.event_type, "Unknown");
+        assert_eq!(doc.fields.get("memberCode"), Some(&FieldValue::Text("M001".into())));
+    }
+
+    #[test]
+    fn test_parse_alternate_type_field_names() {
+        // "eventType" (camelCase)
+        let msg = make_msg("msg-camel", r#"{"eventType":"Login","x":1}"#);
+        assert_eq!(parse_message(&msg).unwrap().event_type, "Login");
+
+        // "type"
+        let msg = make_msg("msg-type", r#"{"type":"Signup","x":1}"#);
+        assert_eq!(parse_message(&msg).unwrap().event_type, "Signup");
+
+        // "action"
+        let msg = make_msg("msg-action", r#"{"action":"Click","x":1}"#);
+        assert_eq!(parse_message(&msg).unwrap().event_type, "Click");
     }
 
     #[test]
@@ -196,17 +233,17 @@ mod tests {
             make_msg("good-1", r#"{"event_type":"Login","memberCode":"M001"}"#),
             make_msg("bad-1", "invalid json"),
             make_msg("good-2", r#"{"event_type":"GameOpened","game":"slots"}"#),
-            make_msg("bad-2", r#"{"no_event_type":"oops"}"#),
+            make_msg("no-type", r#"{"foo":"bar"}"#),
+            make_msg("bad-2", "not an object"),
         ];
 
         let (docs, errors) = parse_batch(&messages);
 
-        assert_eq!(docs.len(), 2);
-        assert_eq!(errors.len(), 2);
+        assert_eq!(docs.len(), 3); // good-1, good-2, no-type (defaults to Unknown)
+        assert_eq!(errors.len(), 2); // bad-1 (invalid json), bad-2 (invalid json)
         assert_eq!(docs[0].event_type, "Login");
         assert_eq!(docs[1].event_type, "GameOpened");
-        assert_eq!(errors[0].0, "bad-1");
-        assert_eq!(errors[1].0, "bad-2");
+        assert_eq!(docs[2].event_type, "Unknown");
     }
 
     #[test]
