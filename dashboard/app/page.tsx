@@ -1,23 +1,50 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import ChatPanel, { type ChatMessage } from "@/components/chat/ChatPanel";
 import ForceGraph from "@/components/viz/ForceGraph";
 import PageRankChart from "@/components/viz/PageRankChart";
 import DegreeChart from "@/components/viz/DegreeChart";
+import InsightSidebar, {
+  type Insight,
+  type SystemStatus,
+} from "@/components/InsightSidebar";
 import {
   fetchStats,
   fetchForceGraph,
   fetchPageRank,
   fetchCommunities,
   fetchDegrees,
+  fetchPatterns,
+  fetchCooccurrence,
+  fetchTrends,
+  fetchAnomalies,
+  fetchQueueStatus,
   postQuery,
   type Stats,
+  type QueueStatus,
   type ForceGraphData,
   type PageRankEntry,
   type CommunityEntry,
   type DegreeEntry,
+  type TemporalPattern,
+  type CooccurrenceData,
+  type TrendEntry,
+  type AnomalyEntry,
 } from "@/lib/api";
+import PatternList from "@/components/viz/PatternList";
+import CooccurrenceHeatmap from "@/components/viz/CooccurrenceHeatmap";
+import TrendChart from "@/components/viz/TrendChart";
+import AnomalyChart from "@/components/viz/AnomalyChart";
+import { useWebSocket, type WsCallbacks } from "@/lib/useWebSocket";
+import {
+  saveReport,
+  saveQueryHistory,
+  loadQueryHistory,
+  type ReportMessage,
+  type QueryHistoryItem,
+} from "@/lib/reports";
 
 const ENTITY_COLORS: Record<string, string> = {
   Member: "#00d4ff",
@@ -32,7 +59,7 @@ const ENTITY_COLORS: Record<string, string> = {
   Provider: "#2ec4b6",
 };
 
-type VizTab = "graph" | "pagerank" | "communities" | "degrees";
+type VizTab = "graph" | "pagerank" | "communities" | "degrees" | "patterns" | "cooccurrence" | "trends" | "anomalies";
 
 function StatCard({
   label,
@@ -82,12 +109,17 @@ function EntityBadge({ type, count }: { type: string; count: number }) {
 }
 
 let msgIdCounter = 0;
-function makeMsg(role: "user" | "system", content: string): ChatMessage {
+function makeMsg(
+  role: "user" | "system",
+  content: string,
+  extra?: { suggestions?: string[] }
+): ChatMessage {
   return {
     id: `msg-${++msgIdCounter}`,
     role,
     content,
     timestamp: new Date(),
+    suggestions: extra?.suggestions,
   };
 }
 
@@ -97,9 +129,74 @@ export default function Home() {
   const [pageRankData, setPageRankData] = useState<PageRankEntry[]>([]);
   const [communityData, setCommunityData] = useState<CommunityEntry[]>([]);
   const [degreeData, setDegreeData] = useState<DegreeEntry[]>([]);
+  const [patternData, setPatternData] = useState<TemporalPattern[]>([]);
+  const [cooccurrenceData, setCooccurrenceData] = useState<CooccurrenceData | null>(null);
+  const [trendData, setTrendData] = useState<TrendEntry[]>([]);
+  const [anomalyData, setAnomalyData] = useState<AnomalyEntry[]>([]);
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [activeTab, setActiveTab] = useState<VizTab>("graph");
   const [error, setError] = useState<string | null>(null);
+
+  // Insight sidebar state
+  const [insights, setInsights] = useState<Insight[]>([]);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+
+  // Query history
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Load query history on mount
+  useEffect(() => {
+    const history = loadQueryHistory();
+    queueMicrotask(() => setQueryHistory(history));
+  }, []);
+
+  // WebSocket for realtime updates — updates stats when server pushes new data.
+  const handleWsStats = useCallback((wsStats: Stats) => {
+    setStats((prev) => {
+      if (!prev) return wsStats;
+      // Only update if data actually changed (avoid unnecessary re-renders).
+      if (
+        prev.doc_count === wsStats.doc_count &&
+        prev.node_count === wsStats.node_count &&
+        prev.edge_count === wsStats.edge_count
+      ) {
+        return prev;
+      }
+      return wsStats;
+    });
+    // Clear cached compute data so tabs re-fetch with new graph data.
+    setPageRankData([]);
+    setCommunityData([]);
+    setDegreeData([]);
+    setPatternData([]);
+    setCooccurrenceData(null);
+    setTrendData([]);
+    setAnomalyData([]);
+    // Re-fetch force graph for the updated graph.
+    fetchForceGraph(300).then(setGraphData).catch(() => {});
+  }, []);
+
+  // WebSocket callbacks for insight and system status messages
+  const wsCallbacks: WsCallbacks = {
+    onInsight: useCallback((insight: Insight) => {
+      setInsights((prev) => {
+        // Avoid duplicates
+        if (prev.some((i) => i.id === insight.id)) return prev;
+        return [insight, ...prev];
+      });
+    }, []),
+    onInsightResolved: useCallback((insightId: string) => {
+      setInsights((prev) => prev.filter((i) => i.id !== insightId));
+    }, []),
+    onSystemStatus: useCallback((status: SystemStatus) => {
+      setSystemStatus(status);
+    }, []),
+  };
+
+  const wsEnabled = !error && stats !== null;
+  const { status: wsStatus } = useWebSocket(handleWsStats, wsEnabled, wsCallbacks);
 
   // Community map for graph coloring — expand top_nodes from each community summary
   const communityMap =
@@ -111,7 +208,7 @@ export default function Home() {
         )
       : undefined;
 
-  // Initial data fetch
+  // Initial data fetch (HTTP fallback — WS will push updates after this)
   useEffect(() => {
     const load = async () => {
       try {
@@ -125,7 +222,16 @@ export default function Home() {
           ``,
           `Try the visualization tabs on the right, or ask a question below.`,
         ].join("\n");
-        setMessages([makeMsg("system", welcome)]);
+        setMessages([makeMsg("system", welcome, {
+          suggestions: [
+            "Show me the top influencers",
+            "What communities exist?",
+            "Show anomalies",
+            "What patterns did you find?",
+          ],
+        })]);
+
+        fetchQueueStatus().then(setQueueStatus).catch(() => {});
 
         const gd = await fetchForceGraph(300);
         setGraphData(gd);
@@ -162,13 +268,49 @@ export default function Home() {
         ]);
       });
     }
-  }, [activeTab, pageRankData.length, communityData.length, degreeData.length]);
+    if (activeTab === "patterns" && patternData.length === 0) {
+      fetchPatterns().then(setPatternData).catch(() => {
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Failed to load pattern data. Is the compute engine running?"),
+        ]);
+      });
+    }
+    if (activeTab === "cooccurrence" && !cooccurrenceData) {
+      fetchCooccurrence().then(setCooccurrenceData).catch(() => {
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Failed to load co-occurrence data."),
+        ]);
+      });
+    }
+    if (activeTab === "trends" && trendData.length === 0) {
+      fetchTrends().then(setTrendData).catch(() => {
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Failed to load trend data."),
+        ]);
+      });
+    }
+    if (activeTab === "anomalies" && anomalyData.length === 0) {
+      fetchAnomalies(50).then(setAnomalyData).catch(() => {
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Failed to load anomaly data. Is the compute engine running?"),
+        ]);
+      });
+    }
+  }, [activeTab, pageRankData.length, communityData.length, degreeData.length, patternData.length, cooccurrenceData, trendData.length, anomalyData.length]);
 
   const handleSend = useCallback(
     (text: string) => {
       setMessages((prev) => [...prev, makeMsg("user", text)]);
 
-      // Local command handling (stub for future /query integration)
+      // Save to query history
+      saveQueryHistory(text);
+      setQueryHistory(loadQueryHistory());
+
+      // Local command handling
       const lower = text.toLowerCase();
       if (lower.includes("stats") || lower.includes("status")) {
         if (stats) {
@@ -182,31 +324,77 @@ export default function Home() {
               .sort(([, a], [, b]) => b - a)
               .map(([t, c]) => `  ${t}: ${c.toLocaleString()}`),
           ].join("\n");
-          setMessages((prev) => [...prev, makeMsg("system", reply)]);
+          setMessages((prev) => [...prev, makeMsg("system", reply, {
+            suggestions: [
+              "Show me the knowledge graph",
+              "Who are the top influencers?",
+              "What anomalies exist?",
+            ],
+          })]);
         }
       } else if (lower.includes("pagerank") || lower.includes("rank")) {
         setActiveTab("pagerank");
         setMessages((prev) => [
           ...prev,
-          makeMsg("system", "Switched to PageRank view. Loading top nodes by influence..."),
+          makeMsg("system", "Switched to PageRank view. Loading top nodes by influence...", {
+            suggestions: ["Show degree centrality", "Show communities"],
+          }),
         ]);
       } else if (lower.includes("communit")) {
         setActiveTab("communities");
         setMessages((prev) => [
           ...prev,
-          makeMsg("system", "Switched to Communities view. Nodes are now colored by Louvain cluster."),
+          makeMsg("system", "Switched to Communities view. Nodes are now colored by Louvain cluster.", {
+            suggestions: ["Show PageRank", "Show co-occurrence patterns"],
+          }),
         ]);
       } else if (lower.includes("degree")) {
         setActiveTab("degrees");
         setMessages((prev) => [
           ...prev,
-          makeMsg("system", "Switched to Degrees view. Showing most connected nodes..."),
+          makeMsg("system", "Switched to Degrees view. Showing most connected nodes...", {
+            suggestions: ["Show PageRank", "Show anomalies"],
+          }),
+        ]);
+      } else if (lower.includes("pattern")) {
+        setActiveTab("patterns");
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Switched to Patterns view. Loading temporal patterns...", {
+            suggestions: ["Show trends", "Show co-occurrence heatmap"],
+          }),
+        ]);
+      } else if (lower.includes("cooccurrence") || lower.includes("co-occurrence") || lower.includes("heatmap")) {
+        setActiveTab("cooccurrence");
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Switched to Co-occurrence view. Loading PMI heatmap...", {
+            suggestions: ["Show patterns", "Show trends"],
+          }),
+        ]);
+      } else if (lower.includes("trend")) {
+        setActiveTab("trends");
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Switched to Trends view. Loading anomaly detection...", {
+            suggestions: ["Show anomalies", "Show patterns"],
+          }),
+        ]);
+      } else if (lower.includes("anomal")) {
+        setActiveTab("anomalies");
+        setMessages((prev) => [
+          ...prev,
+          makeMsg("system", "Switched to Anomalies view. Loading anomaly scores...", {
+            suggestions: ["Show trends", "Show degree centrality"],
+          }),
         ]);
       } else if (lower.includes("graph") || lower.includes("force")) {
         setActiveTab("graph");
         setMessages((prev) => [
           ...prev,
-          makeMsg("system", "Switched to Force Graph view."),
+          makeMsg("system", "Switched to Force Graph view.", {
+            suggestions: ["Show communities", "Show PageRank"],
+          }),
         ]);
       } else {
         // Send to LLM query endpoint
@@ -224,7 +412,13 @@ export default function Home() {
               const filtered = prev.filter((m) => m.content !== "Thinking...");
               return [
                 ...filtered,
-                makeMsg("system", resultText),
+                makeMsg("system", resultText, {
+                  suggestions: [
+                    "Tell me more about this",
+                    "Export as CSV",
+                    "Show the knowledge graph",
+                  ],
+                }),
               ];
             });
           })
@@ -244,6 +438,39 @@ export default function Home() {
     },
     [stats]
   );
+
+  const handleCooccurrenceTypeChange = useCallback((typeA: string, typeB: string) => {
+    fetchCooccurrence(typeA, typeB).then(setCooccurrenceData).catch(() => {});
+  }, []);
+
+  // Insight handlers
+  const handleInsightClick = useCallback(
+    (query: string) => {
+      handleSend(query);
+    },
+    [handleSend]
+  );
+
+  const handleDismissInsight = useCallback((id: string) => {
+    setInsights((prev) => prev.filter((i) => i.id !== id));
+  }, []);
+
+  // Save current conversation as report
+  const handleSaveReport = useCallback(() => {
+    const reportMessages: ReportMessage[] = messages.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      timestamp: m.timestamp.toISOString(),
+      renderBlocks: m.renderBlocks,
+      suggestions: m.suggestions,
+    }));
+    const report = saveReport(reportMessages);
+    setMessages((prev) => [
+      ...prev,
+      makeMsg("system", `Report saved! View it at /reports/${report.id}`),
+    ]);
+  }, [messages]);
 
   if (error) {
     return (
@@ -276,6 +503,10 @@ export default function Home() {
     { key: "pagerank", label: "PageRank" },
     { key: "communities", label: "Communities" },
     { key: "degrees", label: "Degrees" },
+    { key: "patterns", label: "Patterns" },
+    { key: "cooccurrence", label: "Co-occur" },
+    { key: "trends", label: "Trends" },
+    { key: "anomalies", label: "Anomalies" },
   ];
 
   return (
@@ -300,14 +531,90 @@ export default function Home() {
             knowledge engine
           </span>
         </div>
-        {stats && (
+        <div className="flex items-center gap-3">
+          {/* Query history dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className="text-[10px] font-bold tracking-wider uppercase px-2.5 py-1.5 rounded-lg transition-all"
+              style={{
+                color: "#64748b",
+                background: "rgba(100, 116, 139, 0.06)",
+                border: "1px solid rgba(100, 116, 139, 0.12)",
+              }}
+            >
+              History
+            </button>
+            {showHistory && queryHistory.length > 0 && (
+              <div
+                className="absolute right-0 top-full mt-1 z-50 rounded-lg overflow-hidden max-h-60 overflow-y-auto"
+                style={{
+                  width: 280,
+                  background: "rgba(12, 16, 24, 0.95)",
+                  border: "1px solid rgba(0, 240, 255, 0.1)",
+                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.5)",
+                }}
+              >
+                {queryHistory.slice(0, 15).map((item, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      handleSend(item.question);
+                      setShowHistory(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-[10px] text-slate-400 hover:text-slate-200 transition-colors font-mono truncate"
+                    style={{
+                      borderBottom: "1px solid rgba(30, 41, 59, 0.5)",
+                    }}
+                  >
+                    {item.question}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Save report */}
+          <button
+            onClick={handleSaveReport}
+            className="text-[10px] font-bold tracking-wider uppercase px-2.5 py-1.5 rounded-lg transition-all"
+            style={{
+              color: "#06d6a0",
+              background: "rgba(6, 214, 160, 0.06)",
+              border: "1px solid rgba(6, 214, 160, 0.12)",
+            }}
+          >
+            Save Report
+          </button>
+
+          {/* Queue link */}
+          {queueStatus?.enabled && (
+            <Link href="/queue" className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity" style={{ background: 'rgba(0, 240, 255, 0.08)', border: '1px solid rgba(0, 240, 255, 0.2)', color: '#00f0ff' }}>
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: queueStatus.connected ? '#00ff88' : '#64748b' }} />
+              Queue
+            </Link>
+          )}
+
+          {/* WebSocket status */}
           <div className="flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            <div
+              className={`w-1.5 h-1.5 rounded-full ${
+                wsStatus === "connected"
+                  ? "bg-green-400 animate-pulse"
+                  : wsStatus === "reconnecting"
+                  ? "bg-yellow-400 animate-pulse"
+                  : "bg-slate-600"
+              }`}
+            />
             <span className="text-slate-500 text-xs font-mono">
-              {stats.segment_count} segments
+              {stats
+                ? `${stats.segment_count} segments`
+                : wsStatus === "connecting"
+                ? "connecting..."
+                : ""}
             </span>
           </div>
-        )}
+        </div>
       </header>
 
       {/* Stats bar */}
@@ -332,13 +639,13 @@ export default function Home() {
         </div>
       )}
 
-      {/* Main: Chat (left 60%) + Viz (right 40%) */}
+      {/* Main: Chat (left) + Viz (center) + Insights (right) */}
       <div className="flex-1 flex min-h-0">
         {/* Chat panel */}
         <div
           className="flex flex-col"
           style={{
-            width: "60%",
+            width: "35%",
             borderRight: "1px solid rgba(0, 240, 255, 0.08)",
           }}
         >
@@ -346,7 +653,7 @@ export default function Home() {
         </div>
 
         {/* Viz panel */}
-        <div className="flex flex-col" style={{ width: "40%" }}>
+        <div className="flex flex-col" style={{ width: "45%" }}>
           {/* Tabs */}
           <div
             className="flex shrink-0"
@@ -424,7 +731,70 @@ export default function Home() {
                 </div>
               )
             )}
+            {activeTab === "patterns" && (
+              patternData.length > 0 ? (
+                <PatternList data={patternData} />
+              ) : (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-slate-600 text-sm animate-pulse">
+                    Loading patterns...
+                  </div>
+                </div>
+              )
+            )}
+            {activeTab === "cooccurrence" && (
+              cooccurrenceData ? (
+                <CooccurrenceHeatmap
+                  data={cooccurrenceData}
+                  onTypeChange={handleCooccurrenceTypeChange}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-slate-600 text-sm animate-pulse">
+                    Loading co-occurrence...
+                  </div>
+                </div>
+              )
+            )}
+            {activeTab === "trends" && (
+              trendData.length > 0 ? (
+                <TrendChart data={trendData} />
+              ) : (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-slate-600 text-sm animate-pulse">
+                    Loading trends...
+                  </div>
+                </div>
+              )
+            )}
+            {activeTab === "anomalies" && (
+              anomalyData.length > 0 ? (
+                <AnomalyChart data={anomalyData} />
+              ) : (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-slate-600 text-sm animate-pulse">
+                    Loading anomalies...
+                  </div>
+                </div>
+              )
+            )}
           </div>
+        </div>
+
+        {/* Insight sidebar */}
+        <div
+          className="flex flex-col"
+          style={{
+            width: "20%",
+            borderLeft: "1px solid rgba(0, 240, 255, 0.08)",
+          }}
+        >
+          <InsightSidebar
+            insights={insights}
+            systemStatus={systemStatus}
+            onInsightClick={handleInsightClick}
+            onDismissInsight={handleDismissInsight}
+          />
         </div>
       </div>
     </div>

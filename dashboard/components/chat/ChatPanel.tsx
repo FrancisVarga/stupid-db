@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import type { RenderBlock } from "@/lib/reports";
+import RenderBlockView from "./RenderBlockView";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "system";
   content: string;
   timestamp: Date;
+  renderBlocks?: RenderBlock[];
+  suggestions?: string[];
 }
 
 interface Props {
@@ -22,13 +26,23 @@ export default function ChatPanel({ messages, onSend }: Props) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = input.trim();
-    if (!trimmed) return;
-    onSend(trimmed);
-    setInput("");
-  };
+  const handleSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      const trimmed = input.trim();
+      if (!trimmed) return;
+      onSend(trimmed);
+      setInput("");
+    },
+    [input, onSend]
+  );
+
+  const handleSuggestionClick = useCallback(
+    (suggestion: string) => {
+      onSend(suggestion);
+    },
+    [onSend]
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -45,6 +59,47 @@ export default function ChatPanel({ messages, onSend }: Props) {
               }`}
             >
               <div className="whitespace-pre-wrap">{msg.content}</div>
+
+              {/* Inline render blocks */}
+              {msg.renderBlocks && msg.renderBlocks.length > 0 && (
+                <div className="mt-3 space-y-3">
+                  {msg.renderBlocks.map((block, i) => (
+                    <div
+                      key={i}
+                      className="rounded-lg overflow-hidden"
+                      style={{
+                        border: "1px solid rgba(0, 240, 255, 0.08)",
+                        background: "rgba(6, 8, 13, 0.5)",
+                        minHeight: 200,
+                        maxHeight: 400,
+                      }}
+                    >
+                      <RenderBlockView block={block} />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Follow-up suggestions */}
+              {msg.suggestions && msg.suggestions.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {msg.suggestions.map((suggestion, i) => (
+                    <button
+                      key={i}
+                      onClick={() => handleSuggestionClick(suggestion)}
+                      className="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all"
+                      style={{
+                        color: "#00f0ff",
+                        background: "rgba(0, 240, 255, 0.06)",
+                        border: "1px solid rgba(0, 240, 255, 0.12)",
+                      }}
+                    >
+                      &rarr; {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div className="text-[10px] mt-1.5 opacity-40 font-mono">
                 {msg.timestamp.toLocaleTimeString([], {
                   hour: "2-digit",

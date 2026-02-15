@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import * as d3 from "d3";
-import type { ForceGraphData, ForceNode, ForceLink } from "@/lib/api";
+import type { ForceGraphData, ForceNode } from "@/lib/api";
 
 // Neon-inspired entity colors
 const ENTITY_COLORS: Record<string, string> = {
@@ -69,7 +69,7 @@ export default function ForceGraph({ data, onNodeClick, communityMap }: Props) {
   );
 
   useEffect(() => {
-    if (!svgRef.current || !data.nodes.length) return;
+    if (!svgRef.current || !data.nodes?.length) return;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove();
@@ -221,7 +221,7 @@ export default function ForceGraph({ data, onNodeClick, communityMap }: Props) {
 
     const connectedIds = new Set<string>();
     connectedIds.add(selectedId);
-    data.links.forEach((l) => {
+    (data.links ?? []).forEach((l) => {
       const src = typeof l.source === "string" ? l.source : (l.source as ForceNode).id;
       const tgt = typeof l.target === "string" ? l.target : (l.target as ForceNode).id;
       if (src === selectedId) connectedIds.add(tgt);
