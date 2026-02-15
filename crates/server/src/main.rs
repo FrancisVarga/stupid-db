@@ -474,6 +474,12 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .expect("Failed to initialize session store");
     info!("Session store initialized");
 
+    // Initialize catalog store for persistent catalog.
+    let catalog_store = stupid_catalog::CatalogStore::new(config.storage.data_dir.join("catalog"))
+        .expect("Failed to initialize catalog store");
+    let catalog_store = Arc::new(catalog_store);
+    info!("Catalog store initialized at {}/catalog", config.storage.data_dir.display());
+
     // Initialize anomaly rule loader.
     let rules_dir = config.storage.data_dir.join("rules");
     let rule_loader = stupid_rules::loader::RuleLoader::new(rules_dir.clone());
@@ -493,6 +499,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         pipeline: pipeline.clone(),
         scheduler: RwLock::new(None),
         catalog: catalog.clone(),
+        catalog_store: catalog_store.clone(),
         query_generator,
         segment_ids: segment_ids_shared.clone(),
         doc_count: doc_count_shared.clone(),
@@ -511,6 +518,8 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         rule_loader,
         trigger_history: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         audit_log: stupid_rules::audit_log::AuditLog::new(),
+        #[cfg(feature = "aws")]
+        athena_query_log: crate::athena_query_log::AthenaQueryLog::new(&config.storage.data_dir),
     });
 
     let app = Router::new()
@@ -540,6 +549,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/sessions/{id}", get(api::sessions_get).put(api::sessions_update).delete(api::sessions_delete))
         .route("/sessions/{id}/execute-agent", post(api::sessions_execute_agent))
         .route("/sessions/{id}/execute-team", post(api::sessions_execute_team))
+        .route("/sessions/{id}/execute", post(api::sessions_execute))
         .route("/connections", get(api::connections_list).post(api::connections_add))
         .route("/connections/{id}", get(api::connections_get).put(api::connections_update).delete(api::connections_delete))
         .route("/connections/{id}/credentials", get(api::connections_credentials))
@@ -556,7 +566,8 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/athena-connections/{id}/credentials", get(api::athena_connections_credentials))
         .route("/athena-connections/{id}/query", post(api::athena_query_sse))
         .route("/athena-connections/{id}/schema", get(api::athena_connections_schema))
-        .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh));
+        .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh))
+        .route("/athena-connections/{id}/query-log", get(api::athena_connections_query_log));
 
     let app = app
         .merge(anomaly_rules::anomaly_rules_router())
@@ -622,6 +633,10 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
     tokio::spawn(rule_runner::run_rule_loop(state.clone()));
 
     // Spawn segment file watcher for live updates.
+    // Note: catalog was moved into the background_load spawn above, so we use
+    // the clone stored in state.
+    let watcher_catalog = state.catalog.clone();
+    let watcher_catalog_store = catalog_store.clone();
     tokio::spawn(async move {
         live::start_segment_watcher(
             watcher_data_dir,
@@ -631,6 +646,8 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
             watcher_segments,
             watcher_doc_count,
             watcher_broadcast_tx,
+            watcher_catalog,
+            watcher_catalog_store,
         )
         .await;
     });
@@ -865,6 +882,52 @@ async fn background_load(
     ).await
 }
 
+/// Build the catalog from the graph, persist per-segment partials and merged catalog.
+async fn build_and_persist_catalog(
+    shared_graph: &state::SharedGraph,
+    segments: &[String],
+    catalog_store: &stupid_catalog::CatalogStore,
+) -> stupid_catalog::Catalog {
+    let graph_read = shared_graph.read().await;
+
+    // Build per-segment partial catalogs and persist them.
+    let mut partials = Vec::with_capacity(segments.len());
+    for seg_id in segments {
+        let partial = stupid_catalog::PartialCatalog::from_graph_segment(&graph_read, seg_id);
+        if let Err(e) = catalog_store.save_partial(seg_id, &partial) {
+            tracing::warn!("Failed to persist partial catalog for '{}': {}", seg_id, e);
+        }
+        partials.push(partial);
+    }
+    drop(graph_read);
+
+    // Merge all partials into the full catalog.
+    let catalog = stupid_catalog::Catalog::from_partials(&partials);
+
+    // Persist merged catalog, manifest, and snapshot.
+    if let Err(e) = catalog_store.save_current(&catalog) {
+        tracing::warn!("Failed to persist current catalog: {}", e);
+    }
+    let segment_ids: Vec<String> = segments.to_vec();
+    let manifest = stupid_catalog::CatalogManifest::new(&segment_ids);
+    if let Err(e) = catalog_store.save_manifest(&manifest) {
+        tracing::warn!("Failed to persist catalog manifest: {}", e);
+    }
+    if let Err(e) = catalog_store.save_snapshot(&catalog) {
+        tracing::warn!("Failed to save catalog snapshot: {}", e);
+    }
+
+    info!(
+        "Catalog built and persisted: {} entity types, {} edge types ({} nodes, {} edges)",
+        catalog.entity_types.len(),
+        catalog.edge_types.len(),
+        catalog.total_nodes,
+        catalog.total_edges
+    );
+
+    catalog
+}
+
 /// Shared graph building + catalog + compute logic used by both AWS and local loaders.
 async fn load_segments_and_compute(
     _data_dir: &std::path::Path,
@@ -1011,10 +1074,47 @@ async fn load_segments_and_compute(
         loading.started_at.elapsed().as_secs_f64()
     );
 
-    info!("Building catalog in background...");
+    // ── Catalog persistence: check freshness, load or rebuild ──
+    info!("Building catalog...");
+    let catalog_store = &app_state.catalog_store;
     {
-        let graph_read = shared_graph.read().await;
-        let mut cat = stupid_catalog::Catalog::from_graph(&graph_read);
+        // Check if persisted catalog is fresh.
+        let manifest_fresh = match catalog_store.load_manifest() {
+            Ok(Some(manifest)) => {
+                let fresh = manifest.is_fresh(segments);
+                if fresh {
+                    info!("Persisted catalog manifest is fresh ({} segments)", segments.len());
+                } else {
+                    info!("Persisted catalog manifest is stale — rebuilding");
+                }
+                fresh
+            }
+            Ok(None) => {
+                info!("No persisted catalog manifest — building from scratch");
+                false
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load catalog manifest: {} — rebuilding", e);
+                false
+            }
+        };
+
+        let mut cat = if manifest_fresh {
+            // Fast path: load from disk.
+            match catalog_store.load_current() {
+                Ok(Some(c)) => {
+                    info!("Loaded catalog from disk: {} entity types, {} edge types", c.entity_types.len(), c.edge_types.len());
+                    c
+                }
+                _ => {
+                    info!("Failed to load current.json despite fresh manifest — rebuilding from graph");
+                    build_and_persist_catalog(&shared_graph, segments, catalog_store).await
+                }
+            }
+        } else {
+            // Slow path: build from graph and persist.
+            build_and_persist_catalog(&shared_graph, segments, catalog_store).await
+        };
 
         // Merge Athena schemas into the catalog as external SQL sources (AWS feature).
         #[cfg(feature = "aws")]

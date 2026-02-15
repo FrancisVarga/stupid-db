@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Serialize;
 
@@ -1405,6 +1405,134 @@ pub async fn sessions_execute_team(
     }))
 }
 
+#[derive(Deserialize)]
+pub struct SessionExecuteRequest {
+    pub task: String,
+    #[serde(default)]
+    pub context: serde_json::Value,
+    #[serde(default = "default_max_history")]
+    pub max_history: usize,
+}
+
+/// Execute directly against the LLM within a session (no agent selection needed).
+pub async fn sessions_execute(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SessionExecuteRequest>,
+) -> Result<Json<SessionExecuteResponse<stupid_agent::AgentResponse>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
+    let executor = state.agent_executor.as_ref().ok_or_else(|| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(QueryErrorResponse {
+                error: "Agent system not configured.".into(),
+            }),
+        )
+    })?;
+
+    // Append user message
+    let user_msg = stupid_agent::session::SessionMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: stupid_agent::session::SessionMessageRole::User,
+        content: req.task.clone(),
+        timestamp: chrono::Utc::now(),
+        agent_name: None,
+        status: None,
+        execution_time_ms: None,
+        team_outputs: None,
+        agents_used: None,
+        strategy: None,
+    };
+
+    {
+        let store = state.session_store.write().await;
+        store.append_message(&id, user_msg).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse {
+                    error: format!("Failed to append user message: {}", e),
+                }),
+            )
+        })?.ok_or_else(|| {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(QueryErrorResponse {
+                    error: format!("Session not found: {}", id),
+                }),
+            )
+        })?;
+    }
+
+    // Load session history for context
+    let history = {
+        let store = state.session_store.read().await;
+        store.get(&id).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse {
+                    error: format!("Failed to read session: {}", e),
+                }),
+            )
+        })?.map(|s| s.messages).unwrap_or_default()
+    };
+
+    let context = if req.context.is_null() {
+        None
+    } else {
+        Some(&req.context)
+    };
+
+    // Execute directly (no agent routing)
+    let result = executor
+        .execute_direct(&req.task, &history, context, req.max_history)
+        .await
+        .map_err(|e| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(QueryErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+        })?;
+
+    // Append assistant response
+    let agent_msg = stupid_agent::session::SessionMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: stupid_agent::session::SessionMessageRole::Agent,
+        content: result.output.clone(),
+        timestamp: chrono::Utc::now(),
+        agent_name: Some("assistant".to_string()),
+        status: Some(format!("{:?}", result.status).to_lowercase()),
+        execution_time_ms: Some(result.execution_time_ms),
+        team_outputs: None,
+        agents_used: None,
+        strategy: None,
+    };
+
+    let session = {
+        let store = state.session_store.write().await;
+        store.append_message(&id, agent_msg).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse {
+                    error: format!("Failed to append agent message: {}", e),
+                }),
+            )
+        })?.ok_or_else(|| {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(QueryErrorResponse {
+                    error: format!("Session not found: {}", id),
+                }),
+            )
+        })?
+    };
+
+    Ok(Json(SessionExecuteResponse {
+        session: stupid_agent::session::SessionSummary::from(&session),
+        response: result,
+    }))
+}
+
 // ── Connection CRUD endpoints ─────────────────────────────────
 
 /// List all connections (passwords masked).
@@ -1644,7 +1772,7 @@ pub async fn athena_connections_add(
             let _ = store.update_schema_status(&id, "fetching");
         }
 
-        match crate::athena_query::fetch_schema(&creds, &conn).await {
+        match crate::athena_query::fetch_schema(&creds, &conn, Some(&state_clone.athena_query_log)).await {
             Ok(schema) => {
                 let store = state_clone.athena_connections.read().await;
                 let _ = store.update_schema(&id, schema);
@@ -1695,7 +1823,11 @@ pub async fn athena_connections_delete(
 ) -> axum::http::StatusCode {
     let store = state.athena_connections.read().await;
     match store.delete(&id) {
-        Ok(true) => axum::http::StatusCode::NO_CONTENT,
+        Ok(true) => {
+            // Clean up query log entries for the deleted connection.
+            state.athena_query_log.clear(&id);
+            axum::http::StatusCode::NO_CONTENT
+        }
         Ok(false) => axum::http::StatusCode::NOT_FOUND,
         Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -1776,10 +1908,13 @@ pub async fn athena_query_sse(
     };
     drop(store);
 
+    let catalog = conn.catalog.clone();
     let database = req.database.unwrap_or_else(|| conn.database.clone());
     let workgroup = conn.workgroup.clone();
     let output_location = conn.output_location.clone();
     let sql = req.sql.clone();
+    let connection_id_for_log = id.clone();
+    let state_for_log = state.clone();
 
     // 2. Create a channel-based stream.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
@@ -1787,11 +1922,44 @@ pub async fn athena_query_sse(
     // 3. Spawn background task to execute query and stream events.
     tokio::spawn(async move {
         let client = crate::athena_query::build_athena_client(&creds).await;
+        let wall_start = std::time::Instant::now();
+        let log_sql = sql.clone();
+        let log_db = database.clone();
+        let log_wg = workgroup.clone();
+        let log_conn_id = connection_id_for_log;
+
+        // Helper: append a query log entry at each terminal state.
+        macro_rules! log_query {
+            ($outcome:expr, $qid:expr, $scanned:expr, $exec_ms:expr, $rows:expr, $err:expr) => {
+                let now = chrono::Utc::now();
+                state_for_log.athena_query_log.append(
+                    crate::athena_query_log::AthenaQueryLogEntry {
+                        entry_id: 0,
+                        connection_id: log_conn_id.clone(),
+                        query_execution_id: $qid,
+                        source: crate::athena_query_log::QuerySource::UserQuery,
+                        sql: log_sql.clone(),
+                        database: log_db.clone(),
+                        workgroup: log_wg.clone(),
+                        outcome: $outcome,
+                        error_message: $err,
+                        data_scanned_bytes: $scanned,
+                        engine_execution_time_ms: $exec_ms,
+                        total_rows: $rows,
+                        estimated_cost_usd: crate::athena_query_log::calculate_query_cost($scanned),
+                        started_at: now,
+                        completed_at: now,
+                        wall_clock_ms: wall_start.elapsed().as_millis() as i64,
+                    },
+                );
+            };
+        }
 
         // Start query.
         let query_id = match crate::athena_query::start_query(
             &client,
             &sql,
+            &catalog,
             &database,
             &workgroup,
             &output_location,
@@ -1807,6 +1975,11 @@ pub async fn athena_query_sse(
                 id
             }
             Err(e) => {
+                log_query!(
+                    crate::athena_query_log::QueryOutcome::Failed,
+                    None, 0, 0, None,
+                    Some(e.to_string())
+                );
                 let _ = tx
                     .send(Ok(Event::default().event("error").data(
                         serde_json::json!({"message": e.to_string()}).to_string(),
@@ -1823,6 +1996,11 @@ pub async fn athena_query_sse(
 
         loop {
             if start.elapsed() > timeout {
+                log_query!(
+                    crate::athena_query_log::QueryOutcome::TimedOut,
+                    Some(query_id.clone()), 0, 0, None,
+                    Some("Query timed out after 120s".into())
+                );
                 let _ = tx
                     .send(Ok(Event::default().event("error").data(
                         serde_json::json!({"message": "Query timed out after 120s"}).to_string(),
@@ -1984,6 +2162,11 @@ pub async fn athena_query_sse(
                             .to_string(),
                         )))
                         .await;
+                    log_query!(
+                        crate::athena_query_log::QueryOutcome::Succeeded,
+                        Some(query_id.clone()), data_scanned, exec_time_ms,
+                        Some(total_rows), None
+                    );
                     return;
                 }
                 "FAILED" => {
@@ -1991,6 +2174,11 @@ pub async fn athena_query_sse(
                         .status()
                         .and_then(|s| s.state_change_reason())
                         .unwrap_or("Unknown error");
+                    log_query!(
+                        crate::athena_query_log::QueryOutcome::Failed,
+                        Some(query_id.clone()), data_scanned, 0, None,
+                        Some(reason.to_string())
+                    );
                     let _ = tx
                         .send(Ok(Event::default().event("error").data(
                             serde_json::json!({"message": reason}).to_string(),
@@ -1999,6 +2187,10 @@ pub async fn athena_query_sse(
                     return;
                 }
                 "CANCELLED" => {
+                    log_query!(
+                        crate::athena_query_log::QueryOutcome::Cancelled,
+                        Some(query_id.clone()), data_scanned, 0, None, None
+                    );
                     let _ = tx
                         .send(Ok(Event::default().event("error").data(
                             serde_json::json!({"message": "Query was cancelled"}).to_string(),
@@ -2076,7 +2268,7 @@ pub async fn athena_connections_schema_refresh(
     let state_clone = state.clone();
     let id_clone = id.clone();
     tokio::spawn(async move {
-        match crate::athena_query::fetch_schema(&creds, &conn).await {
+        match crate::athena_query::fetch_schema(&creds, &conn, Some(&state_clone.athena_query_log)).await {
             Ok(schema) => {
                 let store = state_clone.athena_connections.read().await;
                 let _ = store.update_schema(&id_clone, schema);
@@ -2091,5 +2283,35 @@ pub async fn athena_connections_schema_refresh(
     });
 
     Ok(Json(serde_json::json!({ "status": "fetching", "message": "Schema refresh started" })))
+}
+
+/// Get query audit log for an Athena connection.
+///
+/// Returns matching log entries (newest first) with cumulative and daily cost
+/// summaries. Supports filtering by source, outcome, time range, SQL text,
+/// and result limit.
+pub async fn athena_connections_query_log(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(params): Query<crate::athena_query_log::QueryLogParams>,
+) -> Result<Json<crate::athena_query_log::QueryLogResponse>, axum::http::StatusCode> {
+    // Verify connection exists.
+    {
+        let store = state.athena_connections.read().await;
+        match store.get(&id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(axum::http::StatusCode::NOT_FOUND),
+            Err(_) => return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+        }
+    }
+
+    let entries = state.athena_query_log.query(&id, &params);
+    let summary = state.athena_query_log.summary(&id);
+
+    Ok(Json(crate::athena_query_log::QueryLogResponse {
+        connection_id: id,
+        entries,
+        summary,
+    }))
 }
 

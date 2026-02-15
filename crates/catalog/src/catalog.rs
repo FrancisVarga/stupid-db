@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use stupid_graph::GraphStore;
 use tracing::info;
 
 /// Describes a single entity type discovered in the graph.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogEntry {
     pub entity_type: String,
     pub node_count: usize,
@@ -13,7 +13,7 @@ pub struct CatalogEntry {
 }
 
 /// Describes an edge type discovered in the graph.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeSummary {
     pub edge_type: String,
     pub count: usize,
@@ -22,7 +22,7 @@ pub struct EdgeSummary {
 }
 
 /// An external SQL-queryable data source (e.g. Athena, Trino).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalSource {
     /// Human-readable name (e.g. "Production Data Lake").
     pub name: String,
@@ -34,34 +34,34 @@ pub struct ExternalSource {
 }
 
 /// A database within an external source.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalDatabase {
     pub name: String,
     pub tables: Vec<ExternalTable>,
 }
 
 /// A table within an external database.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalTable {
     pub name: String,
     pub columns: Vec<ExternalColumn>,
 }
 
 /// A column within an external table.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalColumn {
     pub name: String,
     pub data_type: String,
 }
 
 /// Schema catalog auto-discovered from the loaded graph and external sources.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Catalog {
     pub entity_types: Vec<CatalogEntry>,
     pub edge_types: Vec<EdgeSummary>,
     pub total_nodes: usize,
     pub total_edges: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_sources: Vec<ExternalSource>,
 }
 
@@ -146,6 +146,84 @@ impl Catalog {
         catalog
     }
 
+    /// Build a catalog by merging multiple per-segment partial catalogs.
+    ///
+    /// Entity type counts are summed across partials, sample keys are
+    /// merged (capped at 5 per entity type), and edge source/target type
+    /// sets are unioned. The result is sorted by count descending, matching
+    /// `from_graph()` ordering.
+    pub fn from_partials(partials: &[PartialCatalog]) -> Self {
+        let mut type_counts: HashMap<String, usize> = HashMap::new();
+        let mut type_samples: HashMap<String, Vec<String>> = HashMap::new();
+        let mut edge_info: HashMap<String, (usize, HashSet<String>, HashSet<String>)> =
+            HashMap::new();
+        let mut total_nodes: usize = 0;
+        let mut total_edges: usize = 0;
+
+        for partial in partials {
+            total_nodes += partial.node_count;
+            total_edges += partial.edge_count;
+
+            for entry in &partial.entity_types {
+                *type_counts.entry(entry.entity_type.clone()).or_default() += entry.node_count;
+                let samples = type_samples.entry(entry.entity_type.clone()).or_default();
+                for key in &entry.sample_keys {
+                    if samples.len() < 5 && !samples.contains(key) {
+                        samples.push(key.clone());
+                    }
+                }
+            }
+
+            for edge in &partial.edge_types {
+                let e = edge_info
+                    .entry(edge.edge_type.clone())
+                    .or_insert_with(|| (0, HashSet::new(), HashSet::new()));
+                e.0 += edge.count;
+                e.1.extend(edge.source_types.iter().cloned());
+                e.2.extend(edge.target_types.iter().cloned());
+            }
+        }
+
+        let mut entity_types: Vec<CatalogEntry> = type_counts
+            .into_iter()
+            .map(|(entity_type, node_count)| {
+                let mut sample_keys = type_samples.remove(&entity_type).unwrap_or_default();
+                sample_keys.sort();
+                CatalogEntry {
+                    entity_type,
+                    node_count,
+                    sample_keys,
+                }
+            })
+            .collect();
+        entity_types.sort_by(|a, b| b.node_count.cmp(&a.node_count));
+
+        let mut edge_types: Vec<EdgeSummary> = edge_info
+            .into_iter()
+            .map(|(edge_type, (count, sources, targets))| {
+                let mut source_types: Vec<String> = sources.into_iter().collect();
+                source_types.sort();
+                let mut target_types: Vec<String> = targets.into_iter().collect();
+                target_types.sort();
+                EdgeSummary {
+                    edge_type,
+                    count,
+                    source_types,
+                    target_types,
+                }
+            })
+            .collect();
+        edge_types.sort_by(|a, b| b.count.cmp(&a.count));
+
+        Catalog {
+            entity_types,
+            edge_types,
+            total_nodes,
+            total_edges,
+            external_sources: Vec::new(),
+        }
+    }
+
     /// Attach external SQL sources (e.g. Athena, Trino) to the catalog.
     pub fn with_external_sources(mut self, sources: Vec<ExternalSource>) -> Self {
         self.external_sources = sources;
@@ -206,6 +284,114 @@ impl Catalog {
         }
 
         lines.join("\n")
+    }
+}
+
+/// A single segment's contribution to the overall catalog.
+///
+/// Built by filtering the graph to only nodes/edges associated with a
+/// specific segment. Used as the building block for incremental catalog
+/// updates — new segments produce a `PartialCatalog` that gets merged
+/// into the persisted `Catalog`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartialCatalog {
+    pub segment_id: String,
+    pub entity_types: Vec<CatalogEntry>,
+    pub edge_types: Vec<EdgeSummary>,
+    pub node_count: usize,
+    pub edge_count: usize,
+}
+
+impl PartialCatalog {
+    /// Extract one segment's contribution from the graph.
+    ///
+    /// Nodes are included if their `segment_refs` contains `segment_id`.
+    /// Edges are included if their `segment_id` matches exactly.
+    pub fn from_graph_segment(graph: &GraphStore, segment_id: &str) -> Self {
+        // Collect nodes that belong to this segment.
+        let mut type_nodes: HashMap<String, Vec<String>> = HashMap::new();
+        let mut segment_node_count = 0usize;
+
+        for node in graph.nodes.values() {
+            if node.segment_refs.contains(segment_id) {
+                segment_node_count += 1;
+                type_nodes
+                    .entry(node.entity_type.to_string())
+                    .or_default()
+                    .push(node.key.clone());
+            }
+        }
+
+        let mut entity_types: Vec<CatalogEntry> = type_nodes
+            .into_iter()
+            .map(|(entity_type, keys)| {
+                let node_count = keys.len();
+                let mut sample_keys: Vec<String> = keys.into_iter().take(5).collect();
+                sample_keys.sort();
+                CatalogEntry {
+                    entity_type,
+                    node_count,
+                    sample_keys,
+                }
+            })
+            .collect();
+        entity_types.sort_by(|a, b| b.node_count.cmp(&a.node_count));
+
+        // Collect edges that belong to this segment.
+        let mut edge_info: HashMap<String, (usize, HashSet<String>, HashSet<String>)> =
+            HashMap::new();
+        let mut segment_edge_count = 0usize;
+
+        for edge in graph.edges.values() {
+            if edge.segment_id == segment_id {
+                segment_edge_count += 1;
+                let entry = edge_info
+                    .entry(edge.edge_type.to_string())
+                    .or_insert_with(|| (0, HashSet::new(), HashSet::new()));
+                entry.0 += 1;
+
+                if let Some(source_node) = graph.nodes.get(&edge.source) {
+                    entry.1.insert(source_node.entity_type.to_string());
+                }
+                if let Some(target_node) = graph.nodes.get(&edge.target) {
+                    entry.2.insert(target_node.entity_type.to_string());
+                }
+            }
+        }
+
+        let mut edge_types: Vec<EdgeSummary> = edge_info
+            .into_iter()
+            .map(|(edge_type, (count, sources, targets))| {
+                let mut source_types: Vec<String> = sources.into_iter().collect();
+                source_types.sort();
+                let mut target_types: Vec<String> = targets.into_iter().collect();
+                target_types.sort();
+                EdgeSummary {
+                    edge_type,
+                    count,
+                    source_types,
+                    target_types,
+                }
+            })
+            .collect();
+        edge_types.sort_by(|a, b| b.count.cmp(&a.count));
+
+        info!(
+            "Partial catalog for '{}': {} entity types, {} edge types ({} nodes, {} edges)",
+            segment_id,
+            entity_types.len(),
+            edge_types.len(),
+            segment_node_count,
+            segment_edge_count
+        );
+
+        PartialCatalog {
+            segment_id: segment_id.to_string(),
+            entity_types,
+            edge_types,
+            node_count: segment_node_count,
+            edge_count: segment_edge_count,
+        }
     }
 }
 
@@ -316,5 +502,145 @@ mod tests {
         let cat = Catalog::from_graph(&g);
         let prompt = cat.to_system_prompt();
         assert!(!prompt.contains("External SQL sources:"));
+    }
+
+    #[test]
+    fn catalog_json_round_trip() {
+        let g = build_test_graph();
+        let cat = Catalog::from_graph(&g).with_external_sources(vec![ExternalSource {
+            name: "Lake".to_string(),
+            kind: "athena".to_string(),
+            connection_id: "prod".to_string(),
+            databases: vec![ExternalDatabase {
+                name: "db1".to_string(),
+                tables: vec![ExternalTable {
+                    name: "t1".to_string(),
+                    columns: vec![ExternalColumn {
+                        name: "id".to_string(),
+                        data_type: "bigint".to_string(),
+                    }],
+                }],
+            }],
+        }]);
+
+        let json = serde_json::to_string(&cat).expect("serialize");
+        let restored: Catalog = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.total_nodes, cat.total_nodes);
+        assert_eq!(restored.total_edges, cat.total_edges);
+        assert_eq!(restored.entity_types.len(), cat.entity_types.len());
+        assert_eq!(restored.edge_types.len(), cat.edge_types.len());
+        assert_eq!(restored.entity_types[0].entity_type, "Member");
+        assert_eq!(restored.edge_types[0].edge_type, "LoggedInFrom");
+        assert_eq!(restored.external_sources.len(), 1);
+        assert_eq!(restored.external_sources[0].name, "Lake");
+        assert_eq!(restored.external_sources[0].databases[0].tables[0].columns[0].name, "id");
+    }
+
+    #[test]
+    fn catalog_json_round_trip_no_external() {
+        let g = build_test_graph();
+        let cat = Catalog::from_graph(&g);
+
+        let json = serde_json::to_string(&cat).expect("serialize");
+        // external_sources omitted due to skip_serializing_if
+        assert!(!json.contains("external_sources"));
+
+        let restored: Catalog = serde_json::from_str(&json).expect("deserialize");
+        assert!(restored.external_sources.is_empty());
+        assert_eq!(restored.total_nodes, 3);
+    }
+
+    // ── PartialCatalog tests ────────────────────────────────────
+
+    fn build_two_segment_graph() -> GraphStore {
+        let mut g = GraphStore::new();
+
+        let a = g.upsert_node(EntityType::Member, "alice", &"seg-a".to_string());
+        let d = g.upsert_node(EntityType::Device, "iphone-1", &"seg-a".to_string());
+        g.add_edge(a, d, EdgeType::LoggedInFrom, &"seg-a".to_string());
+
+        let b = g.upsert_node(EntityType::Member, "bob", &"seg-b".to_string());
+        let d2 = g.upsert_node(EntityType::Device, "android-1", &"seg-b".to_string());
+        g.add_edge(b, d2, EdgeType::LoggedInFrom, &"seg-b".to_string());
+
+        // Bob also appears in seg-a (shared node)
+        g.upsert_node(EntityType::Member, "bob", &"seg-a".to_string());
+
+        g
+    }
+
+    #[test]
+    fn partial_catalog_from_segment() {
+        let g = build_two_segment_graph();
+        let partial_a = PartialCatalog::from_graph_segment(&g, "seg-a");
+
+        assert_eq!(partial_a.segment_id, "seg-a");
+        // seg-a has: alice, bob (shared), iphone-1 = 3 nodes
+        assert_eq!(partial_a.node_count, 3);
+        // seg-a has 1 edge (alice -> iphone-1)
+        assert_eq!(partial_a.edge_count, 1);
+        assert_eq!(partial_a.entity_types.len(), 2); // Member, Device
+    }
+
+    #[test]
+    fn partial_catalog_serialization() {
+        let g = build_two_segment_graph();
+        let partial = PartialCatalog::from_graph_segment(&g, "seg-a");
+
+        let json = serde_json::to_string(&partial).expect("serialize");
+        let restored: PartialCatalog = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.segment_id, "seg-a");
+        assert_eq!(restored.node_count, partial.node_count);
+        assert_eq!(restored.edge_count, partial.edge_count);
+    }
+
+    #[test]
+    fn catalog_from_partials_merges_counts() {
+        let g = build_two_segment_graph();
+        let partial_a = PartialCatalog::from_graph_segment(&g, "seg-a");
+        let partial_b = PartialCatalog::from_graph_segment(&g, "seg-b");
+
+        let merged = Catalog::from_partials(&[partial_a.clone(), partial_b.clone()]);
+
+        // Total counts are summed from partials
+        assert_eq!(merged.total_nodes, partial_a.node_count + partial_b.node_count);
+        assert_eq!(merged.total_edges, partial_a.edge_count + partial_b.edge_count);
+
+        // Should have 2 entity types: Member and Device
+        assert_eq!(merged.entity_types.len(), 2);
+        // Should have 1 edge type: LoggedInFrom
+        assert_eq!(merged.edge_types.len(), 1);
+
+        // Member count = members in seg-a + members in seg-b
+        let member_entry = merged.entity_types.iter().find(|e| e.entity_type == "Member").unwrap();
+        let member_a = partial_a.entity_types.iter().find(|e| e.entity_type == "Member").unwrap();
+        let member_b = partial_b.entity_types.iter().find(|e| e.entity_type == "Member").unwrap();
+        assert_eq!(member_entry.node_count, member_a.node_count + member_b.node_count);
+    }
+
+    #[test]
+    fn catalog_from_partials_empty() {
+        let merged = Catalog::from_partials(&[]);
+        assert_eq!(merged.total_nodes, 0);
+        assert_eq!(merged.total_edges, 0);
+        assert!(merged.entity_types.is_empty());
+        assert!(merged.edge_types.is_empty());
+    }
+
+    #[test]
+    fn catalog_from_partials_samples_capped() {
+        // Build a graph with many nodes of same type to test sample cap
+        let mut g = GraphStore::new();
+        for i in 0..10 {
+            g.upsert_node(EntityType::Member, &format!("user-{}", i), &"seg-x".to_string());
+        }
+
+        let partial = PartialCatalog::from_graph_segment(&g, "seg-x");
+        assert_eq!(partial.entity_types[0].sample_keys.len(), 5); // capped at 5
+
+        let merged = Catalog::from_partials(&[partial]);
+        assert!(merged.entity_types[0].sample_keys.len() <= 5);
     }
 }

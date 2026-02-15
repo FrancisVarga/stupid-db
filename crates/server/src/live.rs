@@ -96,6 +96,8 @@ pub async fn start_segment_watcher(
     segment_ids: Arc<RwLock<Vec<String>>>,
     doc_count: Arc<std::sync::atomic::AtomicU64>,
     broadcast_tx: broadcast::Sender<String>,
+    catalog: Arc<RwLock<Option<stupid_catalog::Catalog>>>,
+    catalog_store: Arc<stupid_catalog::CatalogStore>,
 ) {
     let segments_dir = data_dir.join("segments");
     if !segments_dir.exists() {
@@ -224,6 +226,24 @@ pub async fn start_segment_watcher(
                     }
                 }
                 doc_count.fetch_add(total_new_docs, Ordering::Relaxed);
+
+                // Update persisted catalog with partial catalogs for new segments.
+                {
+                    let graph_read = graph.read().await;
+                    for seg_id in &new_segments {
+                        let partial = stupid_catalog::PartialCatalog::from_graph_segment(&graph_read, seg_id);
+                        match catalog_store.add_segment(seg_id, &partial) {
+                            Ok(updated_cat) => {
+                                let mut cat_lock = catalog.write().await;
+                                *cat_lock = Some(updated_cat);
+                            }
+                            Err(e) => {
+                                warn!("Failed to persist catalog for new segment '{}': {}", seg_id, e);
+                            }
+                        }
+                    }
+                }
+                info!("Catalog updated with {} new segment(s)", new_segments.len());
 
                 // Recompute algorithms on the updated graph into shared KnowledgeState.
                 info!("Recomputing graph algorithms after ingesting {} new docs...", total_new_docs);

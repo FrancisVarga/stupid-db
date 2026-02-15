@@ -114,11 +114,13 @@ impl AthenaClient {
             .athena_client
             .start_query_execution()
             .query_string(sql)
-            .query_execution_context(
-                aws_sdk_athena::types::QueryExecutionContext::builder()
-                    .database(&self.config.database)
-                    .build(),
-            )
+            .query_execution_context({
+                let mut ctx = aws_sdk_athena::types::QueryExecutionContext::builder();
+                if !self.config.database.is_empty() {
+                    ctx = ctx.database(&self.config.database);
+                }
+                ctx.build()
+            })
             .result_configuration(
                 aws_sdk_athena::types::ResultConfiguration::builder()
                     .output_location(&self.config.output_location)

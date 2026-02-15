@@ -33,6 +33,7 @@ pub struct AppState {
     pub pipeline: SharedPipeline,
     pub scheduler: RwLock<Option<SchedulerHandle>>,
     pub catalog: Arc<RwLock<Option<Catalog>>>,
+    pub catalog_store: Arc<stupid_catalog::CatalogStore>,
     pub query_generator: Option<QueryGenerator>,
     pub segment_ids: Arc<RwLock<Vec<String>>>,
     pub doc_count: Arc<AtomicU64>,
@@ -59,6 +60,9 @@ pub struct AppState {
     pub trigger_history: crate::anomaly_rules::SharedTriggerHistory,
     /// Audit log for anomaly rule evaluation.
     pub audit_log: stupid_rules::audit_log::AuditLog,
+    /// Per-connection Athena query audit log with cost tracking.
+    #[cfg(feature = "aws")]
+    pub athena_query_log: crate::athena_query_log::AthenaQueryLog,
 }
 
 /// Lock-free atomic counters for queue consumer observability.
