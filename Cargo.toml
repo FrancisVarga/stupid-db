@@ -59,6 +59,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Config
 dotenvy = "0.15"
 
+# Hashing
+sha2 = "0.10"
+
 # Compression
 zstd = "0.13"
 
@@ -103,7 +106,28 @@ aws-types = "1"
 opt-level = 0                    # fastest compilation for our code
 debug = 1                        # line tables only (smaller PDB, faster link)
 split-debuginfo = "unpacked"     # faster incremental linking on Windows
+codegen-units = 256              # max parallelism per crate (default, explicit for clarity)
+incremental = true               # ensure incremental compilation is on
 
 [profile.dev.package."*"]
 opt-level = 1                    # basic optimizations for deps (cached, rarely change)
 debug = false                    # no debug info for third-party deps
+
+# ── Test profile ─────────────────────────────────────────────────
+# Inherits from dev but optimizes test execution speed
+[profile.test]
+opt-level = 1                    # slight optimization makes tests run faster
+debug = 1                        # line tables for backtraces
+split-debuginfo = "unpacked"
+incremental = true
+
+[profile.test.package."*"]
+opt-level = 2                    # deps run faster in tests with higher opt
+debug = false
+
+# ── Release profile ──────────────────────────────────────────────
+[profile.release]
+opt-level = 3
+lto = "thin"                     # good balance of compile time vs runtime perf
+codegen-units = 1                # max optimization for release binary
+strip = true                     # strip symbols for smaller binary

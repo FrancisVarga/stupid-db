@@ -1,6 +1,7 @@
 # Rust
 /target/
 Cargo.lock
+.venv/
 
 # Data (parquet segments are large — only track rule YAML configs)
 /data/*
@@ -23,7 +24,13 @@ Thumbs.db
 .env
 .env.local
 
-# verrueckt-task
+# Claude Code (local/ephemeral state)
 .claude/*.local.md
+.claude/*.local.json
 .claude/verrueckt-metadata.json
 .claude/insights
+
+# Python
+__pycache__/
+*.pyc
+.venv/

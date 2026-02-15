@@ -37,8 +37,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Create non-root user for security
-RUN adduser --system --uid 1000 appuser
+# Create non-root user for security (no adduser/useradd in bun:slim)
+RUN echo "appuser:x:1000:1000::/home/appuser:/usr/sbin/nologin" >> /etc/passwd
 
 # Copy standalone server and static assets from builder
 COPY --from=builder /app/.next/standalone ./

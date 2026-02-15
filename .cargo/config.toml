@@ -1,4 +1,15 @@
-# Fast linker for dev builds on Windows
-# rust-lld ships with the Rust toolchain — 30-50% faster linking than default MSVC
+# ── Linker ────────────────────────────────────────────────────────
+# rust-lld ships with the Rust toolchain — 30-50% faster linking than MSVC default
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+
+# ── Build parallelism ────────────────────────────────────────────
+[build]
+jobs = 16 # match logical CPU count (16 cores)
+rustc-wrapper = "sccache"  # Use sccache for compilation caching
+
+# ── Compilation cache ────────────────────────────────────────────
+# sccache caches compiled crates across builds — massive speedup on clean builds
+# Cache location: C:\Users\franc\.cargo\sccache (NVMe drive for speed)
+[env]
+SCCACHE_DIR = "C:\\Users\\franc\\.cargo\\sccache"

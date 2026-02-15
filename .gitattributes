@@ -1,0 +1,5 @@
+# Force LF line endings for shell scripts (prevents CRLF issues in WSL2)
+*.sh text eol=lf
+
+# Dockerfiles also need LF
+Dockerfile text eol=lf

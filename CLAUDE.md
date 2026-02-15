@@ -13,6 +13,7 @@
 - When analyzing code or exploring the codebase, use LSP and project-specific tools first, not raw grep/bash. Check for existing project utilities before reaching for generic CLI tools.
 - When modifying file paths or moving files, always fix ALL cross-references and imports across the entire codebase. Never create copies of files as a workaround — fix the actual path references instead.
 - Always use the project's gh-toolkit GraphQL wrapper for GitHub operations — never use raw `gh` CLI directly. Similarly, use project-specific tooling over generic shell commands when available.
+- ALWAYS store project-related memories in `.claude/memory/` folder — not in project root or other locations
 
 ## Data Safety
 

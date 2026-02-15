@@ -1,0 +1,23 @@
+# cargo-nextest configuration
+# Run with: cargo nextest run
+
+[store]
+dir = "target/nextest"
+
+[profile.default]
+# Use all available cores for test parallelism
+test-threads = "num-cpus"
+# Fail fast — stop on first failure for dev workflow
+fail-fast = true
+# Status output level
+status-level = "pass"
+final-status-level = "fail"
+# Retry flaky tests once
+retries = 0
+
+[profile.ci]
+# CI: run all tests even if some fail
+fail-fast = false
+retries = 1
+status-level = "all"
+final-status-level = "all"
