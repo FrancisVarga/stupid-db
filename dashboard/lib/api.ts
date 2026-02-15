@@ -414,3 +414,133 @@ export async function fetchStrategies(): Promise<StrategyInfo[]> {
   const data = await res.json();
   return data.strategies ?? [];
 }
+
+// ── Session Management ──────────────────────────────────────────
+
+export interface SessionSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_agent: string | null;
+  last_mode: string | null;
+}
+
+export interface SessionMessage {
+  id: string;
+  role: "user" | "agent" | "team" | "error";
+  content: string;
+  timestamp: string;
+  agent_name?: string;
+  status?: string;
+  execution_time_ms?: number;
+  team_outputs?: Record<string, string>;
+  agents_used?: string[];
+  strategy?: string;
+}
+
+export interface Session {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  messages: SessionMessage[];
+  last_agent?: string;
+  last_mode?: string;
+}
+
+export interface SessionExecuteResponse<T> {
+  session: SessionSummary;
+  response: T;
+}
+
+export async function fetchSessions(): Promise<SessionSummary[]> {
+  const res = await checkedFetch(`${API_BASE}/sessions`, {
+    cache: "no-store",
+  });
+  return res.json();
+}
+
+export async function createSession(
+  name?: string
+): Promise<Session> {
+  const res = await checkedFetch(`${API_BASE}/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name ?? null }),
+  });
+  return res.json();
+}
+
+export async function fetchSession(id: string): Promise<Session> {
+  const res = await checkedFetch(
+    `${API_BASE}/sessions/${encodeURIComponent(id)}`,
+    { cache: "no-store" }
+  );
+  return res.json();
+}
+
+export async function renameSession(
+  id: string,
+  name: string
+): Promise<Session> {
+  const res = await checkedFetch(
+    `${API_BASE}/sessions/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    }
+  );
+  return res.json();
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  await checkedFetch(
+    `${API_BASE}/sessions/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function executeAgentInSession(
+  sessionId: string,
+  agentName: string,
+  task: string,
+  maxHistory = 10
+): Promise<SessionExecuteResponse<AgentResponse>> {
+  const res = await checkedFetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/execute-agent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agent_name: agentName,
+        task,
+        max_history: maxHistory,
+      }),
+    }
+  );
+  return res.json();
+}
+
+export async function executeTeamInSession(
+  sessionId: string,
+  task: string,
+  strategy: string,
+  maxHistory = 10
+): Promise<SessionExecuteResponse<TeamResponse>> {
+  const res = await checkedFetch(
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/execute-team`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        task,
+        strategy,
+        max_history: maxHistory,
+      }),
+    }
+  );
+  return res.json();
+}
