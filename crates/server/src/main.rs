@@ -1,6 +1,14 @@
 mod api;
+#[cfg(feature = "aws")]
+mod athena_connections;
+#[cfg(feature = "aws")]
+mod athena_query;
+mod connections;
 mod live;
+#[cfg(feature = "aws")]
 mod queue;
+#[cfg(feature = "aws")]
+mod queue_connections;
 mod state;
 
 use std::path::{Path, PathBuf};
@@ -13,6 +21,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
+#[cfg(feature = "aws")]
 use stupid_storage::{StorageEngine, S3Exporter, S3Importer};
 
 use crate::state::{LoadingPhase, LoadingState};
@@ -20,6 +29,52 @@ use crate::state::{LoadingPhase, LoadingState};
 fn load_config() -> stupid_core::Config {
     stupid_core::config::load_dotenv();
     stupid_core::Config::from_env()
+}
+
+/// Build the agent executor from config, loading agents from .claude/agents/.
+fn build_agent_executor(config: &stupid_core::Config) -> Option<stupid_agent::AgentExecutor> {
+    // Look for agents directory relative to the data dir or current directory
+    let agents_dir = std::env::var("AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from("packages/stupid-claude-agent/.claude/agents")
+        });
+
+    if !agents_dir.exists() {
+        info!("Agents directory not found at {} — agent system disabled", agents_dir.display());
+        return None;
+    }
+
+    let agents = match stupid_agent::config::load_agents(&agents_dir) {
+        Ok(agents) if agents.is_empty() => {
+            info!("No agent configs found in {} — agent system disabled", agents_dir.display());
+            return None;
+        }
+        Ok(agents) => {
+            info!("Loaded {} agent configs from {}", agents.len(), agents_dir.display());
+            agents
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load agents: {} — agent system disabled", e);
+            return None;
+        }
+    };
+
+    // Create LLM provider for agents (reuse existing LLM config)
+    let provider = match stupid_llm::providers::create_provider(&config.llm, &config.ollama) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to create LLM provider for agents: {} — agent system disabled", e);
+            return None;
+        }
+    };
+
+    Some(stupid_agent::AgentExecutor::new(
+        agents,
+        provider,
+        config.llm.temperature,
+        config.llm.max_tokens,
+    ))
 }
 
 fn import(config: &stupid_core::Config, parquet_path: &Path, segment_id: &str) -> anyhow::Result<()> {
@@ -306,6 +361,7 @@ fn build_graph_multi(data_dir: &Path, segment_ids: &[String]) -> anyhow::Result<
     Ok((graph, total_docs))
 }
 
+#[cfg(feature = "aws")]
 async fn import_s3(config: &stupid_core::Config, s3_prefix: &str) -> anyhow::Result<()> {
     let storage = StorageEngine::from_config(config)?;
     if !storage.backend.is_remote() {
@@ -325,6 +381,7 @@ async fn import_s3(config: &stupid_core::Config, s3_prefix: &str) -> anyhow::Res
     Ok(())
 }
 
+#[cfg(feature = "aws")]
 async fn export(config: &stupid_core::Config, export_segments: bool, export_graph: bool) -> anyhow::Result<()> {
     let storage = StorageEngine::from_config(config)?;
     if !storage.backend.is_remote() {
@@ -387,8 +444,26 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
     let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(64);
     let watcher_broadcast_tx = broadcast_tx.clone();
 
-    let queue_metrics = Arc::new(state::QueueMetrics::new());
-    queue_metrics.enabled.store(config.queue.enabled, std::sync::atomic::Ordering::Relaxed);
+    let queue_metrics = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+
+    // Initialize connection credential store.
+    let conn_store = connections::ConnectionStore::new(&config.storage.data_dir)
+        .expect("Failed to initialize connection store");
+    info!("Connection store initialized (data_dir: {})", config.storage.data_dir.display());
+
+    // Initialize queue connection store (AWS feature).
+    #[cfg(feature = "aws")]
+    let queue_conn_store = queue_connections::QueueConnectionStore::new(&config.storage.data_dir)
+        .expect("Failed to initialize queue connection store");
+    #[cfg(feature = "aws")]
+    info!("Queue connection store initialized (data_dir: {})", config.storage.data_dir.display());
+
+    // Initialize Athena connection store (AWS feature).
+    #[cfg(feature = "aws")]
+    let athena_conn_store = athena_connections::AthenaConnectionStore::new(&config.storage.data_dir)
+        .expect("Failed to initialize Athena connection store");
+    #[cfg(feature = "aws")]
+    info!("Athena connection store initialized");
 
     let state = Arc::new(state::AppState {
         graph: shared_graph.clone(),
@@ -402,6 +477,14 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         loading: loading.clone(),
         broadcast: broadcast_tx,
         queue_metrics,
+        queue_writer: Arc::new(std::sync::Mutex::new(None)),
+        data_dir: config.storage.data_dir.clone(),
+        agent_executor: build_agent_executor(config),
+        connections: Arc::new(RwLock::new(conn_store)),
+        #[cfg(feature = "aws")]
+        queue_connections: Arc::new(RwLock::new(queue_conn_store)),
+        #[cfg(feature = "aws")]
+        athena_connections: Arc::new(RwLock::new(athena_conn_store)),
     });
 
     let app = Router::new()
@@ -422,7 +505,30 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/scheduler/metrics", get(api::scheduler_metrics))
         .route("/queue/status", get(api::queue_status))
         .route("/query", post(api::query))
-        .route("/ws", get(live::ws_upgrade))
+        .route("/agents/list", get(api::agents_list))
+        .route("/agents/execute", post(api::agents_execute))
+        .route("/agents/chat", post(api::agents_chat))
+        .route("/teams/execute", post(api::teams_execute))
+        .route("/teams/strategies", get(api::teams_strategies))
+        .route("/connections", get(api::connections_list).post(api::connections_add))
+        .route("/connections/{id}", get(api::connections_get).put(api::connections_update).delete(api::connections_delete))
+        .route("/connections/{id}/credentials", get(api::connections_credentials))
+        .route("/ws", get(live::ws_upgrade));
+
+    // AWS-gated routes: queue connections, Athena connections + query
+    #[cfg(feature = "aws")]
+    let app = app
+        .route("/queue-connections", get(api::queue_connections_list).post(api::queue_connections_add))
+        .route("/queue-connections/{id}", get(api::queue_connections_get).put(api::queue_connections_update).delete(api::queue_connections_delete))
+        .route("/queue-connections/{id}/credentials", get(api::queue_connections_credentials))
+        .route("/athena-connections", get(api::athena_connections_list).post(api::athena_connections_add))
+        .route("/athena-connections/{id}", get(api::athena_connections_get).put(api::athena_connections_update).delete(api::athena_connections_delete))
+        .route("/athena-connections/{id}/credentials", get(api::athena_connections_credentials))
+        .route("/athena-connections/{id}/query", post(api::athena_query_sse))
+        .route("/athena-connections/{id}/schema", get(api::athena_connections_schema))
+        .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh));
+
+    let app = app
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -434,6 +540,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
     // Spawn background data loading task.
     let data_dir = config.storage.data_dir.clone();
     let watcher_data_dir = data_dir.clone();
+    #[cfg(feature = "aws")]
     let storage = StorageEngine::from_config(config)?;
     let single_segment = segment_id.map(|s| s.to_string());
 
@@ -446,7 +553,8 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
 
     let state_for_loader = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = background_load(
+        #[cfg(feature = "aws")]
+        let result = background_load(
             storage,
             data_dir,
             single_segment,
@@ -459,8 +567,22 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
             loading,
             state_for_loader,
         )
-        .await
-        {
+        .await;
+        #[cfg(not(feature = "aws"))]
+        let result = background_load_local(
+            data_dir,
+            single_segment,
+            shared_graph,
+            knowledge,
+            pipeline,
+            catalog,
+            segment_ids_shared,
+            doc_count_shared,
+            loading,
+            state_for_loader,
+        )
+        .await;
+        if let Err(e) = result {
             error!("Background data loading failed: {}", e);
         }
     });
@@ -479,12 +601,14 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .await;
     });
 
-    // Spawn queue consumer (if enabled via QUEUE_ENABLED=true).
-    let queue_config = config.clone();
-    let queue_state = state.clone();
-    tokio::spawn(async move {
-        queue::queue_ingest(&queue_config, queue_state).await;
-    });
+    // Spawn queue consumers from the encrypted connection store (AWS feature).
+    #[cfg(feature = "aws")]
+    {
+        let queue_state = state.clone();
+        tokio::spawn(async move {
+            queue::spawn_queue_consumers(queue_state).await;
+        });
+    }
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -610,7 +734,47 @@ pub(crate) fn apply_graph_op(op: &GraphOp, graph: &mut stupid_graph::GraphStore,
     }
 }
 
-/// Background task: discover segments, build graph, catalog, and compute.
+/// Background task (no AWS): discover local segments, build graph, catalog, and compute.
+#[cfg(not(feature = "aws"))]
+async fn background_load_local(
+    data_dir: PathBuf,
+    single_segment: Option<String>,
+    shared_graph: state::SharedGraph,
+    knowledge: stupid_compute::SharedKnowledgeState,
+    pipeline: state::SharedPipeline,
+    catalog: Arc<RwLock<Option<stupid_catalog::Catalog>>>,
+    segment_ids_shared: Arc<RwLock<Vec<String>>>,
+    doc_count_shared: Arc<std::sync::atomic::AtomicU64>,
+    loading: Arc<LoadingState>,
+    app_state: Arc<state::AppState>,
+) -> anyhow::Result<()> {
+    loading.set_phase(LoadingPhase::Discovering).await;
+    info!("Discovering local segments (AWS disabled)...");
+
+    let segments = if let Some(seg_id) = single_segment {
+        info!("Single segment mode: '{}'", seg_id);
+        vec![seg_id]
+    } else {
+        let local_segments = discover_segments(&data_dir);
+        if local_segments.is_empty() {
+            let msg = "No local segments found. Run 'import' or 'import-dir' first (S3 disabled without --features aws).";
+            loading.set_phase(LoadingPhase::Failed(msg.to_string())).await;
+            anyhow::bail!("{}", msg);
+        }
+        info!("Found {} local segments", local_segments.len());
+        local_segments
+    };
+
+    // Delegate to the shared graph+compute loading logic.
+    load_segments_and_compute(
+        &data_dir, &data_dir, &segments,
+        shared_graph, knowledge, pipeline, catalog,
+        segment_ids_shared, doc_count_shared, loading, app_state,
+    ).await
+}
+
+/// Background task (with AWS): discover segments (local or S3), build graph, catalog, and compute.
+#[cfg(feature = "aws")]
 async fn background_load(
     storage: StorageEngine,
     data_dir: PathBuf,
@@ -809,7 +973,53 @@ async fn background_load(
     info!("Building catalog in background...");
     {
         let graph_read = shared_graph.read().await;
-        let cat = stupid_catalog::Catalog::from_graph(&graph_read);
+        let mut cat = stupid_catalog::Catalog::from_graph(&graph_read);
+
+        // Merge Athena schemas into the catalog as external SQL sources.
+        let athena_store = app_state.athena_connections.read().await;
+        if let Ok(conns) = athena_store.list() {
+            let sources: Vec<stupid_catalog::ExternalSource> = conns
+                .iter()
+                .filter(|c| c.enabled && c.schema.is_some())
+                .map(|c| {
+                    let schema = c.schema.as_ref().unwrap();
+                    stupid_catalog::ExternalSource {
+                        name: c.name.clone(),
+                        kind: "athena".to_string(),
+                        connection_id: c.id.clone(),
+                        databases: schema
+                            .databases
+                            .iter()
+                            .map(|db| stupid_catalog::ExternalDatabase {
+                                name: db.name.clone(),
+                                tables: db
+                                    .tables
+                                    .iter()
+                                    .map(|t| stupid_catalog::ExternalTable {
+                                        name: t.name.clone(),
+                                        columns: t
+                                            .columns
+                                            .iter()
+                                            .map(|col| stupid_catalog::ExternalColumn {
+                                                name: col.name.clone(),
+                                                data_type: col.data_type.clone(),
+                                            })
+                                            .collect(),
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+
+            if !sources.is_empty() {
+                info!("Adding {} Athena source(s) to catalog", sources.len());
+                cat = cat.with_external_sources(sources);
+            }
+        }
+        drop(athena_store);
+
         let mut catalog_lock = catalog.write().await;
         *catalog_lock = Some(cat);
     }

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,6 +23,10 @@ pub struct SchedulerHandle {
     pub metrics: Arc<std::sync::RwLock<stupid_compute::SchedulerMetrics>>,
 }
 
+/// Active segment writer for queue-ingested documents.
+/// Tuple: (segment_id, writer) — rotated daily.
+pub type QueueWriter = Arc<std::sync::Mutex<Option<(String, stupid_segment::writer::SegmentWriter)>>>;
+
 pub struct AppState {
     pub graph: SharedGraph,
     pub knowledge: SharedKnowledgeState,
@@ -33,7 +38,19 @@ pub struct AppState {
     pub doc_count: Arc<AtomicU64>,
     pub loading: Arc<LoadingState>,
     pub broadcast: broadcast::Sender<String>,
-    pub queue_metrics: Arc<QueueMetrics>,
+    pub queue_metrics: Arc<std::sync::RwLock<std::collections::HashMap<String, Arc<QueueMetrics>>>>,
+    /// Segment writer for persisting queue-ingested documents to disk.
+    pub queue_writer: QueueWriter,
+    /// Root data directory for segment storage.
+    pub data_dir: PathBuf,
+    /// Agent executor for running AI agents.
+    pub agent_executor: Option<stupid_agent::AgentExecutor>,
+    /// Encrypted connection credential store.
+    pub connections: Arc<tokio::sync::RwLock<crate::connections::ConnectionStore>>,
+    /// Encrypted queue connection store.
+    pub queue_connections: Arc<tokio::sync::RwLock<crate::queue_connections::QueueConnectionStore>>,
+    /// Encrypted Athena connection store.
+    pub athena_connections: Arc<tokio::sync::RwLock<crate::athena_connections::AthenaConnectionStore>>,
 }
 
 /// Lock-free atomic counters for queue consumer observability.
