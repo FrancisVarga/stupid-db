@@ -12,7 +12,9 @@ Traditional analytics systems force you to choose your database paradigm upfront
 - **Continuous materialization** — Knowledge is computed in the background, not on-demand when you query
 - **Time-partitioned segments** — Built for high-volume streaming data with automatic 15-30 day rolling windows
 - **LLM-native querying** — Ask questions in natural language, get structured insights and visualizations
-- **AWS-integrated** — Query Athena, enrich from Aurora/RDS, read remote parquet from S3
+- **AWS-integrated** — Query Athena, consume SQS queues, enrich from Aurora/RDS, read remote parquet from S3
+- **Encrypted connection management** — AES-256-GCM encrypted credential stores for DB, queue, and Athena connections
+- **Agent system** — LLM-powered agent execution with team coordination strategies
 
 ## Key Features
 
@@ -48,12 +50,39 @@ stupid-db: [Generates D3.js visualization + structured insights]
 
 Built with Next.js + D3.js, no authentication required (designed for internal/trusted networks).
 
+**Dashboard pages:**
+- **Home** — System stats, graph metrics, queue status, compute health
+- **Queue** — Per-queue monitoring with connection management
+- **DB** — Database browser with schema tree, query panel, CRUD operations
+- **Athena** — AWS Athena connection management with SSE query streaming
+- **Agents** — LLM agent execution interface
+- **Anomalies / Patterns / Explore / Reports** — Analytics and visualization pages
+
+### Connection Management
+
+Manage external data sources through the dashboard with encrypted credential storage:
+- **Database connections** — PostgreSQL, MySQL, etc. with masked password display
+- **Queue connections** — SQS consumers with configurable polling and batch sizes
+- **Athena connections** — AWS Athena with schema discovery and SSE query execution
+
+All credentials are encrypted at rest using AES-256-GCM with auto-generated keys.
+
+### Agent System
+
+LLM-powered agent execution framework:
+- Load agent definitions from YAML/markdown configs
+- Execute single agents or coordinate multi-agent teams
+- Strategies: parallel, sequential, hierarchical
+- SSE streaming for real-time chat responses
+- Reuses the pluggable LLM provider (OpenAI/Claude/Ollama)
+
 ### Remote Data Access
 
 Read parquet files from anywhere:
 - **Local filesystem** — Direct mmap for zero-copy reads
 - **S3** — DuckDB-style HTTP range requests
-- **Athena** — Query AWS Athena as an enrichment source
+- **SQS** — Multi-queue consumer with flexible JSON parsing
+- **Athena** — Query AWS Athena with SSE streaming results
 - **Aurora/RDS** — Enrich graph with relational data
 
 ## Architecture
@@ -63,6 +92,7 @@ flowchart TB
     subgraph Sources
         P[Parquet Files]
         S[S3 Remote Data]
+        Q[SQS Queues]
         A[AWS Athena / Aurora]
     end
 
@@ -81,12 +111,15 @@ flowchart TB
 
     CO[Compute Engine<br/>Continuous Algorithms]
 
+    AG[Agent System<br/>LLM Teams]
+
     LLM[LLM + Query<br/>Natural Language Interface]
 
     DASH[Dashboard<br/>Next.js + D3.js]
 
     P --> I
     S --> I
+    Q --> I
     A --> I
 
     I --> C
@@ -101,6 +134,7 @@ flowchart TB
     G --> CO
 
     CO --> LLM
+    AG --> LLM
 
     LLM --> DASH
 
@@ -121,52 +155,79 @@ See [docs/architecture/overview.md](./docs/architecture/overview.md) for detaile
 - **Vector Index:** HNSW (usearch or hnsw_rs)
 - **Embeddings:** ONNX Runtime (local) + Ollama/OpenAI (remote)
 - **Server:** axum (REST + SSE + WebSocket)
-- **AWS:** aws-sdk-s3, aws-sdk-athena
+- **Encryption:** aes-gcm (AES-256-GCM for credential stores)
+- **AWS:** aws-sdk-s3, aws-sdk-sqs, aws-sdk-athena (feature-gated)
 
 ### Frontend (TypeScript)
 - **Framework:** Next.js 16 + React 19
 - **Visualization:** D3.js 7.x
 - **Styling:** Tailwind CSS 4.x
+- **Runtime:** Bun
+
+### AI Agent Package (Python)
+- **Framework:** FastAPI + Claude Code SDK
+- **MCP:** FastMCP with SSE transport
+- **Agents:** 7 hierarchical agents (architect, leads, specialists)
 
 See [docs/project/tech-stack.md](./docs/project/tech-stack.md) for complete dependency list.
 
 ## Getting Started
 
-### Prerequisites
+### Quick Start with Docker
+
+```bash
+git clone https://github.com/FrancisVarga/stupid-db.git
+cd stupid-db
+cp .env.example .env  # Configure your settings
+docker compose up
+```
+
+Services:
+- Dashboard: http://localhost:3000
+- Backend API: http://localhost:8080
+- Agent API: http://localhost:39048 (docs at /docs)
+- MCP SSE: http://localhost:39049
+
+### Manual Setup
+
+#### Prerequisites
 
 **Development:**
 - Rust 1.75+ and cargo
-- Node.js 20+ and npm
+- Bun 1.x (for dashboard)
+- Python 3.13+ (for agent package, optional)
 - 8GB RAM, 200GB SSD
 
 **Production:**
 - 16+ cores, 64GB+ RAM, 5TB+ NVMe
 
-### Installation
+#### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/stupid-db.git
+git clone https://github.com/FrancisVarga/stupid-db.git
 cd stupid-db
 
-# Build the backend
+# Build the backend (full build with AWS features)
 cargo build --release
+
+# Or build without AWS for faster local iteration
+cargo build --release --no-default-features
 
 # Install dashboard dependencies
 cd dashboard
-npm install
+bun install
 cd ..
 ```
 
-### Running
+#### Running
 
 ```bash
 # Start the backend server
-./target/release/stupid-db --config config/default.toml
+cargo run -p stupid-db-server --release
 
 # In another terminal, start the dashboard
 cd dashboard
-npm run dev
+bun run dev
 ```
 
 Visit `http://localhost:3000` to access the dashboard.
@@ -179,7 +240,7 @@ The project includes sample data analysis from a real-world dataset (104GB, ~960
 
 ```
 stupid-db/
-├── crates/              # Rust workspace (11 crates)
+├── crates/              # Rust workspace (13 crates)
 │   ├── core/           # Shared types and traits
 │   ├── segment/        # Time-partitioned storage
 │   ├── graph/          # In-memory property graph
@@ -188,16 +249,21 @@ stupid-db/
 │   ├── compute/        # Continuous algorithms
 │   ├── catalog/        # Schema and knowledge catalog
 │   ├── llm/            # LLM backend integration
-│   ├── storage/        # Storage abstractions
+│   ├── storage/        # Storage abstractions (S3, local)
+│   ├── queue/          # SQS consumer + message parsing
 │   ├── athena/         # AWS Athena connector
+│   ├── agent/          # LLM agent execution framework
 │   └── server/         # HTTP/WebSocket API (main binary)
 │
 ├── dashboard/          # Next.js frontend
-│   ├── app/           # App Router pages
-│   ├── components/    # React components
-│   └── lib/           # D3.js visualizations
+│   ├── app/           # App Router pages (home, db, athena, queue, agents, ...)
+│   ├── components/    # React + D3.js components
+│   └── lib/           # API clients, DB clients, utilities
 │
-├── docs/              # Comprehensive documentation
+├── packages/
+│   └── stupid-claude-agent/  # Python AI agent package (FastAPI + MCP)
+│
+├── docs/              # Comprehensive documentation (39 files)
 │   ├── architecture/  # Architecture decisions and design
 │   ├── ingestion/     # Data ingestion docs
 │   ├── compute/       # Compute algorithms docs
@@ -205,7 +271,7 @@ stupid-db/
 │   ├── dashboard/     # Dashboard component docs
 │   └── project/       # Project structure and tech stack
 │
-└── config/            # Configuration files
+└── compose.yml        # Docker Compose (server, dashboard, agent)
 ```
 
 See [docs/project/crate-map.md](./docs/project/crate-map.md) for detailed crate descriptions.
@@ -246,8 +312,11 @@ Key architectural decisions are documented in [docs/architecture/decisions/](./d
 ### Building
 
 ```bash
-# Build all crates
+# Build all crates (with AWS features)
 cargo build --release
+
+# Build without AWS for faster local iteration (~30-50% faster)
+cargo build --no-default-features
 
 # Build specific crate
 cargo build -p stupid-db-server --release
@@ -263,9 +332,9 @@ cargo watch -x run
 
 ```bash
 cd dashboard
-npm run dev        # Development server
-npm run build      # Production build
-npm run lint       # Run ESLint
+bun run dev        # Development server
+bun run build      # Production build
+bun run lint       # Run ESLint
 ```
 
 ## Contributing
@@ -288,4 +357,4 @@ Because it's stupid simple: insert data once, get three databases for free. No m
 
 ---
 
-**Status:** Active development. Core architecture complete, implementation in progress.
+**Status:** Active development. Core engine (13 crates), dashboard (10 pages), connection management, agent system, and Docker deployment operational. Currently building anomaly detection YAML DSL.
