@@ -10,6 +10,7 @@ mod live;
 mod queue;
 #[cfg(feature = "aws")]
 mod queue_connections;
+mod rule_runner;
 mod state;
 
 use std::path::{Path, PathBuf};
@@ -604,6 +605,9 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
             error!("Background data loading failed: {}", e);
         }
     });
+
+    // Spawn background rule evaluation loop (waits for loading internally).
+    tokio::spawn(rule_runner::run_rule_loop(state.clone()));
 
     // Spawn segment file watcher for live updates.
     tokio::spawn(async move {

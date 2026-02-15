@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -18,10 +18,6 @@ use stupid_rules::audit_log::{LogEntry, LogQueryParams};
 use stupid_rules::schema::AnomalyRule;
 
 use crate::state::AppState;
-
-/// Shared handle to the in-memory rule map, same type returned by
-/// [`stupid_rules::loader::RuleLoader::rules`].
-pub type SharedRules = Arc<RwLock<HashMap<String, AnomalyRule>>>;
 
 /// Lightweight summary returned by the list endpoint.
 #[derive(Debug, Serialize)]
@@ -32,16 +28,30 @@ pub struct RuleSummary {
     pub template: Option<String>,
     pub cron: String,
     pub channel_count: usize,
+    /// ISO-8601 timestamp of the most recent trigger, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_triggered: Option<String>,
+    /// How many times this rule has been triggered.
+    pub trigger_count: usize,
 }
 
-impl From<&AnomalyRule> for RuleSummary {
-    fn from(rule: &AnomalyRule) -> Self {
+impl RuleSummary {
+    /// Build a summary from a rule, enriched with trigger history.
+    fn from_rule_with_history(rule: &AnomalyRule, history: &HashMap<String, VecDeque<TriggerEntry>>) -> Self {
         let template = rule.detection.template.as_ref().map(|t| {
             serde_json::to_value(t)
                 .ok()
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| format!("{:?}", t).to_lowercase())
         });
+
+        let (last_triggered, trigger_count) = match history.get(&rule.metadata.id) {
+            Some(deque) => (
+                deque.back().map(|e| e.timestamp.clone()),
+                deque.len(),
+            ),
+            None => (None, 0),
+        };
 
         Self {
             id: rule.metadata.id.clone(),
@@ -50,6 +60,8 @@ impl From<&AnomalyRule> for RuleSummary {
             template,
             cron: rule.schedule.cron.clone(),
             channel_count: rule.notifications.len(),
+            last_triggered,
+            trigger_count,
         }
     }
 }
@@ -60,7 +72,11 @@ async fn list_anomaly_rules(
 ) -> Json<Vec<RuleSummary>> {
     let rules = state.rule_loader.rules();
     let guard = rules.read().expect("rules lock poisoned");
-    let mut summaries: Vec<RuleSummary> = guard.values().map(RuleSummary::from).collect();
+    let history = state.trigger_history.read().expect("trigger_history lock");
+    let mut summaries: Vec<RuleSummary> = guard
+        .values()
+        .map(|r| RuleSummary::from_rule_with_history(r, &history))
+        .collect();
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
     Json(summaries)
 }
@@ -257,11 +273,9 @@ fn toggle_rule_enabled(
 
 /// Run a rule immediately against current knowledge state.
 ///
-/// TODO: Full evaluation requires signal score computation (z-scores,
-/// DBSCAN noise flags, behavioral deviation scores) which are only
-/// available after a full compute pipeline pass. This stub returns an
-/// empty result. Wire up `RuleEvaluator::evaluate()` once per-entity
-/// signal scores are exposed through `KnowledgeState`.
+/// Builds entity data and signal scores from the compute pipeline,
+/// evaluates the rule via `RuleEvaluator`, and records the trigger
+/// in history.
 async fn run_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -275,16 +289,56 @@ async fn run_anomaly_rule(
 
     let start = std::time::Instant::now();
 
-    // TODO: Compute per-entity signal scores from KnowledgeState, then call
-    // RuleEvaluator::evaluate(rule, entities, cluster_stats, signal_scores).
-    // For now return an empty stub result.
+    let rules = state.rule_loader.rules();
+    let guard = rules.read().expect("rules lock poisoned");
+    let rule = guard.get(&id).cloned().unwrap();
+    drop(guard);
+
+    let (entities, cluster_stats, signal_scores) =
+        crate::rule_runner::build_evaluation_context(&state);
+
+    let matches_found = match stupid_rules::evaluator::RuleEvaluator::evaluate(
+        &rule,
+        &entities,
+        &cluster_stats,
+        &signal_scores,
+    ) {
+        Ok(matches) => matches.len(),
+        Err(e) => {
+            let evaluation_ms = start.elapsed().as_millis() as u64;
+            return Ok(Json(RunResult {
+                rule_id: id,
+                matches_found: 0,
+                evaluation_ms,
+                message: format!("Evaluation error: {}", e),
+            }));
+        }
+    };
+
     let evaluation_ms = start.elapsed().as_millis() as u64;
+
+    // Record in trigger history.
+    {
+        let mut history = state.trigger_history.write().expect("trigger_history lock");
+        let entry = TriggerEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            matches_found,
+            evaluation_ms,
+        };
+        let deque = history
+            .entry(id.clone())
+            .or_insert_with(|| std::collections::VecDeque::with_capacity(500));
+        deque.push_back(entry);
+        while deque.len() > 500 {
+            deque.pop_front();
+        }
+    }
 
     Ok(Json(RunResult {
         rule_id: id,
-        matches_found: 0,
+        matches_found,
         evaluation_ms,
-        message: "Stub: signal score computation not yet wired up".to_string(),
+        message: format!("{} entities matched", matches_found),
     }))
 }
 
