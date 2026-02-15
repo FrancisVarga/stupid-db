@@ -230,6 +230,7 @@ mod tests {
             edge_types: vec![],
             total_nodes: 100,
             total_edges: 200,
+            external_sources: vec![],
         };
         let prompt = build_system_prompt(&catalog);
         assert!(prompt.contains("100 nodes"));

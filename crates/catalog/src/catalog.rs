@@ -21,13 +21,48 @@ pub struct EdgeSummary {
     pub target_types: Vec<String>,
 }
 
-/// Schema catalog auto-discovered from the loaded graph.
+/// An external SQL-queryable data source (e.g. Athena, Trino).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalSource {
+    /// Human-readable name (e.g. "Production Data Lake").
+    pub name: String,
+    /// Source kind (e.g. "athena", "trino", "postgres").
+    pub kind: String,
+    /// Connection identifier for routing queries.
+    pub connection_id: String,
+    pub databases: Vec<ExternalDatabase>,
+}
+
+/// A database within an external source.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalDatabase {
+    pub name: String,
+    pub tables: Vec<ExternalTable>,
+}
+
+/// A table within an external database.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalTable {
+    pub name: String,
+    pub columns: Vec<ExternalColumn>,
+}
+
+/// A column within an external table.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalColumn {
+    pub name: String,
+    pub data_type: String,
+}
+
+/// Schema catalog auto-discovered from the loaded graph and external sources.
 #[derive(Debug, Clone, Serialize)]
 pub struct Catalog {
     pub entity_types: Vec<CatalogEntry>,
     pub edge_types: Vec<EdgeSummary>,
     pub total_nodes: usize,
     pub total_edges: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub external_sources: Vec<ExternalSource>,
 }
 
 impl Catalog {
@@ -97,6 +132,7 @@ impl Catalog {
             total_edges: graph.edges.len(),
             entity_types,
             edge_types,
+            external_sources: Vec::new(),
         };
 
         info!(
@@ -108,6 +144,12 @@ impl Catalog {
         );
 
         catalog
+    }
+
+    /// Attach external SQL sources (e.g. Athena, Trino) to the catalog.
+    pub fn with_external_sources(mut self, sources: Vec<ExternalSource>) -> Self {
+        self.external_sources = sources;
+        self
     }
 
     /// Generate a natural-language schema description for an LLM system prompt.
@@ -141,6 +183,26 @@ impl Catalog {
                 edge.source_types.join("|"),
                 edge.target_types.join("|"),
             ));
+        }
+
+        // External SQL sources (Athena, Trino, etc.)
+        if !self.external_sources.is_empty() {
+            lines.push(String::new());
+            lines.push("External SQL sources:".to_string());
+            for src in &self.external_sources {
+                lines.push(format!("  {} (kind: {}, id: {}):", src.name, src.kind, src.connection_id));
+                for db in &src.databases {
+                    lines.push(format!("    database {}:", db.name));
+                    for table in &db.tables {
+                        let cols: Vec<String> = table
+                            .columns
+                            .iter()
+                            .map(|c| format!("{} {}", c.name, c.data_type))
+                            .collect();
+                        lines.push(format!("      table {} ({})", table.name, cols.join(", ")));
+                    }
+                }
+            }
         }
 
         lines.join("\n")
@@ -206,5 +268,53 @@ mod tests {
         assert_eq!(cat.total_edges, 0);
         assert!(cat.entity_types.is_empty());
         assert!(cat.edge_types.is_empty());
+        assert!(cat.external_sources.is_empty());
+    }
+
+    #[test]
+    fn catalog_with_external_sources() {
+        let g = GraphStore::new();
+        let cat = Catalog::from_graph(&g).with_external_sources(vec![ExternalSource {
+            name: "Data Lake".to_string(),
+            kind: "athena".to_string(),
+            connection_id: "prod-lake".to_string(),
+            databases: vec![ExternalDatabase {
+                name: "analytics".to_string(),
+                tables: vec![ExternalTable {
+                    name: "events".to_string(),
+                    columns: vec![
+                        ExternalColumn {
+                            name: "id".to_string(),
+                            data_type: "bigint".to_string(),
+                        },
+                        ExternalColumn {
+                            name: "ts".to_string(),
+                            data_type: "timestamp".to_string(),
+                        },
+                    ],
+                }],
+            }],
+        }]);
+
+        assert_eq!(cat.external_sources.len(), 1);
+        assert_eq!(cat.external_sources[0].name, "Data Lake");
+        assert_eq!(cat.external_sources[0].databases[0].tables[0].columns.len(), 2);
+
+        let prompt = cat.to_system_prompt();
+        assert!(prompt.contains("External SQL sources:"));
+        assert!(prompt.contains("Data Lake"));
+        assert!(prompt.contains("athena"));
+        assert!(prompt.contains("database analytics:"));
+        assert!(prompt.contains("table events"));
+        assert!(prompt.contains("id bigint"));
+        assert!(prompt.contains("ts timestamp"));
+    }
+
+    #[test]
+    fn catalog_prompt_omits_empty_external() {
+        let g = build_test_graph();
+        let cat = Catalog::from_graph(&g);
+        let prompt = cat.to_system_prompt();
+        assert!(!prompt.contains("External SQL sources:"));
     }
 }

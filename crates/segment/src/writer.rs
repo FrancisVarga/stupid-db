@@ -24,8 +24,21 @@ pub struct SegmentWriter {
 }
 
 impl SegmentWriter {
+    /// Create a writer under `data_dir/segments/{segment_id}/`.
     pub fn new(data_dir: &Path, segment_id: &str) -> Result<Self, StupidError> {
         let segment_dir = data_dir.join("segments").join(segment_id);
+        Self::open(segment_dir, segment_id)
+    }
+
+    /// Create a writer at an explicit directory path.
+    ///
+    /// Use this when the default `data_dir/segments/` layout doesn't apply
+    /// (e.g., queue data stored at `data/{provider}/{queue_name}/{date}/`).
+    pub fn new_at(dir: PathBuf, segment_id: &str) -> Result<Self, StupidError> {
+        Self::open(dir, segment_id)
+    }
+
+    fn open(segment_dir: PathBuf, segment_id: &str) -> Result<Self, StupidError> {
         fs::create_dir_all(&segment_dir)?;
 
         let doc_path = segment_dir.join("documents.dat");
