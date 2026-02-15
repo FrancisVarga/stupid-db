@@ -1,16 +1,21 @@
 mod api;
+mod live;
+mod queue;
 mod state;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{error, info};
 
 use stupid_storage::{StorageEngine, S3Exporter, S3Importer};
+
+use crate::state::{LoadingPhase, LoadingState};
 
 fn load_config() -> stupid_core::Config {
     stupid_core::config::load_dotenv();
@@ -253,23 +258,8 @@ fn discover_segments(data_dir: &Path) -> Vec<String> {
     segments
 }
 
-fn build_graph(data_dir: &Path, segment_id: &str) -> anyhow::Result<(stupid_graph::GraphStore, u64)> {
-    let reader = stupid_segment::reader::SegmentReader::open(data_dir, segment_id)?;
-    let mut graph = stupid_graph::GraphStore::new();
-    let seg_id = segment_id.to_string();
-
-    let mut doc_count = 0u64;
-    for doc_result in reader.iter() {
-        let doc = doc_result?;
-        stupid_connector::entity_extract::EntityExtractor::extract(&doc, &mut graph, &seg_id);
-        doc_count += 1;
-    }
-
-    Ok((graph, doc_count))
-}
-
 fn build_graph_multi(data_dir: &Path, segment_ids: &[String]) -> anyhow::Result<(stupid_graph::GraphStore, u64)> {
-    info!("Reading {} segments sequentially (one at a time to limit memory)...", segment_ids.len());
+    info!("Reading {} segments (streaming)...", segment_ids.len());
     let start = std::time::Instant::now();
 
     let mut graph = stupid_graph::GraphStore::new();
@@ -298,26 +288,19 @@ fn build_graph_multi(data_dir: &Path, segment_ids: &[String]) -> anyhow::Result<
                 }
             }
         }
-        // reader is dropped here — frees decompressed segment data
 
         total_docs += seg_docs;
         if (i + 1) % 5 == 0 || i + 1 == segment_ids.len() {
             info!(
                 "  Progress: {}/{} segments, {} docs total ({:.1}s)",
-                i + 1,
-                segment_ids.len(),
-                total_docs,
-                start.elapsed().as_secs_f64()
+                i + 1, segment_ids.len(), total_docs, start.elapsed().as_secs_f64()
             );
         }
     }
 
     info!(
         "Graph built: {} docs from {} segments in {:.1}s ({} skipped)",
-        total_docs,
-        segment_ids.len() - skipped as usize,
-        start.elapsed().as_secs_f64(),
-        skipped
+        total_docs, segment_ids.len() - skipped as usize, start.elapsed().as_secs_f64(), skipped
     );
 
     Ok((graph, total_docs))
@@ -379,58 +362,8 @@ async fn export(config: &stupid_core::Config, export_segments: bool, export_grap
 
 async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow::Result<()> {
     config.log_summary();
-    let storage = StorageEngine::from_config(config)?;
-    let data_dir = &config.storage.data_dir;
 
-    let (graph, doc_count, segment_ids) = if let Some(seg_id) = segment_id {
-        // Single segment mode (backwards compatible)
-        info!("Loading segment '{}' and building graph...", seg_id);
-        let (graph, doc_count) = build_graph(data_dir, seg_id)?;
-        (graph, doc_count, vec![seg_id.to_string()])
-    } else {
-        // Try local segments first, fall back to S3 discovery
-        let local_segments = discover_segments(data_dir);
-        let (segments, from_local) = if !local_segments.is_empty() {
-            info!("Found {} local segments", local_segments.len());
-            (local_segments, true)
-        } else {
-            // No local segments — try S3 if configured
-            let remote = storage.discover_segments().await?;
-            if remote.is_empty() {
-                anyhow::bail!(
-                    "No segments found (local or remote). Run 'import', 'import-dir', or 'import-s3' first."
-                );
-            }
-            (remote, false)
-        };
-        info!("Discovered {} segments, building graph...", segments.len());
-
-        // Only resolve through S3 cache when segments actually came from S3
-        let effective_data_dir = if !from_local && storage.backend.is_remote() {
-            // Pre-fetch all segments to cache, use cache root as data_dir
-            let mut cache_dir = None;
-            for seg_id in &segments {
-                let dir = storage.segment_data_dir(seg_id).await?;
-                cache_dir = Some(dir);
-            }
-            cache_dir.unwrap_or_else(|| data_dir.clone())
-        } else {
-            data_dir.clone()
-        };
-
-        let (graph, doc_count) = build_graph_multi(&effective_data_dir, &segments)?;
-        (graph, doc_count, segments)
-    };
-
-    let stats = graph.stats();
-    info!(
-        "Graph ready: {} nodes, {} edges from {} documents across {} segments",
-        stats.node_count, stats.edge_count, doc_count, segment_ids.len()
-    );
-
-    info!("Building catalog...");
-    let catalog = stupid_catalog::Catalog::from_graph(&graph);
-
+    // LLM init is config-based and fast — keep it synchronous.
     let query_generator = match stupid_llm::QueryGenerator::from_config(&config.llm, &config.ollama) {
         Ok(qg) => {
             info!("LLM query generator ready (provider: {})", config.llm.provider);
@@ -442,22 +375,38 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         }
     };
 
-    let compute: Arc<RwLock<Option<stupid_compute::ComputeEngine>>> =
-        Arc::new(RwLock::new(None));
+    // Create shared state with empty data — will be populated by background loader.
+    let shared_graph: state::SharedGraph = Arc::new(RwLock::new(stupid_graph::GraphStore::new()));
+    let knowledge = stupid_compute::scheduler::state::new_shared_state();
+    let pipeline: state::SharedPipeline = Arc::new(std::sync::Mutex::new(stupid_compute::Pipeline::new()));
+    let catalog: Arc<RwLock<Option<stupid_catalog::Catalog>>> = Arc::new(RwLock::new(None));
+    let segment_ids_shared: Arc<RwLock<Vec<String>>> = Arc::new(RwLock::new(Vec::new()));
+    let doc_count_shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let loading = Arc::new(LoadingState::new());
 
-    let shared_graph = Arc::new(RwLock::new(graph));
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel::<String>(64);
+    let watcher_broadcast_tx = broadcast_tx.clone();
+
+    let queue_metrics = Arc::new(state::QueueMetrics::new());
+    queue_metrics.enabled.store(config.queue.enabled, std::sync::atomic::Ordering::Relaxed);
 
     let state = Arc::new(state::AppState {
         graph: shared_graph.clone(),
-        compute: compute.clone(),
-        catalog,
+        knowledge: knowledge.clone(),
+        pipeline: pipeline.clone(),
+        scheduler: RwLock::new(None),
+        catalog: catalog.clone(),
         query_generator,
-        segment_ids,
-        doc_count,
+        segment_ids: segment_ids_shared.clone(),
+        doc_count: doc_count_shared.clone(),
+        loading: loading.clone(),
+        broadcast: broadcast_tx,
+        queue_metrics,
     });
 
     let app = Router::new()
         .route("/health", get(api::health))
+        .route("/loading", get(api::loading))
         .route("/stats", get(api::stats))
         .route("/graph/nodes", get(api::graph_nodes))
         .route("/graph/nodes/{id}", get(api::graph_node_by_id))
@@ -466,25 +415,540 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/compute/pagerank", get(api::compute_pagerank))
         .route("/compute/communities", get(api::compute_communities))
         .route("/compute/degrees", get(api::compute_degrees))
+        .route("/compute/patterns", get(api::compute_patterns))
+        .route("/compute/cooccurrence", get(api::compute_cooccurrence))
+        .route("/compute/trends", get(api::compute_trends))
+        .route("/compute/anomalies", get(api::compute_anomalies))
+        .route("/scheduler/metrics", get(api::scheduler_metrics))
+        .route("/queue/status", get(api::queue_status))
         .route("/query", post(api::query))
+        .route("/ws", get(live::ws_upgrade))
         .layer(CorsLayer::permissive())
-        .with_state(state);
+        .with_state(state.clone());
 
-    // Spawn background compute task — server starts immediately
-    tokio::spawn(async move {
-        info!("Running compute algorithms in background...");
-        let graph_read = shared_graph.read().await;
-        let engine = stupid_compute::ComputeEngine::run_all(&graph_read);
-        drop(graph_read);
-        let mut compute_lock = compute.write().await;
-        *compute_lock = Some(engine);
-        info!("Compute algorithms complete — PageRank, communities, degrees now available");
-    });
-
+    // Bind and start serving IMMEDIATELY.
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!("Server listening on http://localhost:{}", config.server.port);
+    info!("Server listening on http://localhost:{} (data loading in background)", config.server.port);
+
+    // Spawn background data loading task.
+    let data_dir = config.storage.data_dir.clone();
+    let watcher_data_dir = data_dir.clone();
+    let storage = StorageEngine::from_config(config)?;
+    let single_segment = segment_id.map(|s| s.to_string());
+
+    // Clones for the segment watcher (needs its own references).
+    let watcher_graph = shared_graph.clone();
+    let watcher_knowledge = knowledge.clone();
+    let watcher_pipeline = state.pipeline.clone();
+    let watcher_segments = segment_ids_shared.clone();
+    let watcher_doc_count = doc_count_shared.clone();
+
+    let state_for_loader = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = background_load(
+            storage,
+            data_dir,
+            single_segment,
+            shared_graph,
+            knowledge,
+            pipeline,
+            catalog,
+            segment_ids_shared,
+            doc_count_shared,
+            loading,
+            state_for_loader,
+        )
+        .await
+        {
+            error!("Background data loading failed: {}", e);
+        }
+    });
+
+    // Spawn segment file watcher for live updates.
+    tokio::spawn(async move {
+        live::start_segment_watcher(
+            watcher_data_dir,
+            watcher_graph,
+            watcher_knowledge,
+            watcher_pipeline,
+            watcher_segments,
+            watcher_doc_count,
+            watcher_broadcast_tx,
+        )
+        .await;
+    });
+
+    // Spawn queue consumer (if enabled via QUEUE_ENABLED=true).
+    let queue_config = config.clone();
+    let queue_state = state.clone();
+    tokio::spawn(async move {
+        queue::queue_ingest(&queue_config, queue_state).await;
+    });
+
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+// ── Lightweight graph operations for parallel extraction ──────────────
+//
+// Instead of sending full Documents through a channel, rayon workers
+// extract these tiny ops (~50-100 bytes each). The consumer replays
+// them into the single-threaded GraphStore.
+
+pub(crate) enum GraphOp {
+    /// Upsert a node and add edges from it.
+    Node {
+        entity_type: stupid_core::EntityType,
+        key: String,
+        edges: Vec<(stupid_core::EntityType, String, stupid_core::EdgeType)>,
+    },
+}
+
+/// Extract graph ops from a document (runs in rayon worker, no GraphStore needed).
+pub(crate) fn extract_graph_ops(doc: &stupid_core::Document, _seg_id: &str, ops: &mut Vec<GraphOp>) {
+    use stupid_core::{EdgeType, EntityType};
+
+    let member_code = match doc.fields.get("memberCode").and_then(|v| v.as_str()) {
+        Some(s) if !s.trim().is_empty() && s.trim() != "None" && s.trim() != "null" => s.trim().to_string(),
+        _ => return,
+    };
+
+    let member_key = format!("member:{}", member_code);
+    let mut edges = Vec::new();
+
+    let get = |name: &str| -> Option<String> {
+        doc.fields.get(name).and_then(|v| v.as_str()).and_then(|s| {
+            let t = s.trim();
+            if t.is_empty() || t == "None" || t == "null" || t == "undefined" { None }
+            else { Some(t.to_string()) }
+        })
+    };
+
+    match doc.event_type.as_str() {
+        "Login" => {
+            if let Some(fp) = get("fingerprint") {
+                edges.push((EntityType::Device, format!("device:{}", fp), EdgeType::LoggedInFrom));
+            }
+            if let Some(p) = get("platform") {
+                edges.push((EntityType::Platform, format!("platform:{}", p), EdgeType::PlaysOnPlatform));
+            }
+            if let Some(c) = get("currency") {
+                edges.push((EntityType::Currency, format!("currency:{}", c), EdgeType::UsesCurrency));
+            }
+            if let Some(g) = get("rGroup") {
+                edges.push((EntityType::VipGroup, format!("vipgroup:{}", g), EdgeType::BelongsToGroup));
+            }
+            let aff = get("affiliateId").or_else(|| get("affiliateid")).or_else(|| get("affiliateID"));
+            if let Some(a) = aff {
+                edges.push((EntityType::Affiliate, format!("affiliate:{}", a), EdgeType::ReferredBy));
+            }
+        }
+        "GameOpened" | "GridClick" => {
+            if let Some(g) = get("game") {
+                edges.push((EntityType::Game, format!("game:{}", g), EdgeType::OpenedGame));
+                if let Some(p) = get("gameTrackingProvider") {
+                    // Provider linked to game, not member — handled separately below.
+                    ops.push(GraphOp::Node {
+                        entity_type: EntityType::Game,
+                        key: format!("game:{}", g),
+                        edges: vec![(EntityType::Provider, format!("provider:{}", p), EdgeType::ProvidedBy)],
+                    });
+                }
+            }
+            if let Some(p) = get("platform") {
+                edges.push((EntityType::Platform, format!("platform:{}", p), EdgeType::PlaysOnPlatform));
+            }
+            if let Some(c) = get("currency") {
+                edges.push((EntityType::Currency, format!("currency:{}", c), EdgeType::UsesCurrency));
+            }
+        }
+        "PopupModule" | "PopUpModule" => {
+            let popup_key = get("trackingId").or_else(|| get("popupType"));
+            if let Some(pk) = popup_key {
+                edges.push((EntityType::Popup, format!("popup:{}", pk), EdgeType::SawPopup));
+            }
+            if let Some(p) = get("platform") {
+                edges.push((EntityType::Platform, format!("platform:{}", p), EdgeType::PlaysOnPlatform));
+            }
+        }
+        "API Error" => {
+            let error_key = match (get("url"), get("statusCode")) {
+                (Some(url), Some(code)) => Some(format!("error:{}:{}", code, url)),
+                (Some(url), None) => Some(format!("error:{}", url)),
+                _ => get("error").map(|e| format!("error:{}", e)),
+            };
+            if let Some(ek) = error_key {
+                edges.push((EntityType::Error, ek, EdgeType::HitError));
+            }
+            if let Some(p) = get("platform") {
+                edges.push((EntityType::Platform, format!("platform:{}", p), EdgeType::PlaysOnPlatform));
+            }
+        }
+        _ => return,
+    }
+
+    if !edges.is_empty() {
+        ops.push(GraphOp::Node {
+            entity_type: EntityType::Member,
+            key: member_key,
+            edges,
+        });
+    }
+}
+
+/// Replay a graph op into the GraphStore (runs on consumer thread).
+pub(crate) fn apply_graph_op(op: &GraphOp, graph: &mut stupid_graph::GraphStore, seg_id: &str) {
+    match op {
+        GraphOp::Node { entity_type, key, edges } => {
+            let source_id = graph.upsert_node(*entity_type, key, &seg_id.to_string());
+            for (target_type, target_key, edge_type) in edges {
+                let target_id = graph.upsert_node(*target_type, target_key, &seg_id.to_string());
+                graph.add_edge(source_id, target_id, *edge_type, &seg_id.to_string());
+            }
+        }
+    }
+}
+
+/// Background task: discover segments, build graph, catalog, and compute.
+async fn background_load(
+    storage: StorageEngine,
+    data_dir: PathBuf,
+    single_segment: Option<String>,
+    shared_graph: state::SharedGraph,
+    knowledge: stupid_compute::SharedKnowledgeState,
+    pipeline: state::SharedPipeline,
+    catalog: Arc<RwLock<Option<stupid_catalog::Catalog>>>,
+    segment_ids_shared: Arc<RwLock<Vec<String>>>,
+    doc_count_shared: Arc<std::sync::atomic::AtomicU64>,
+    loading: Arc<LoadingState>,
+    app_state: Arc<state::AppState>,
+) -> anyhow::Result<()> {
+    // Phase 1: Discover segments.
+    loading.set_phase(LoadingPhase::Discovering).await;
+    info!("Discovering segments...");
+
+    let (segments, effective_data_dir) = if let Some(seg_id) = single_segment {
+        info!("Single segment mode: '{}'", seg_id);
+        (vec![seg_id], data_dir.clone())
+    } else {
+        let local_segments = discover_segments(&data_dir);
+        if !local_segments.is_empty() {
+            info!("Found {} local segments", local_segments.len());
+            (local_segments, data_dir.clone())
+        } else {
+            let remote = storage.discover_segments().await?;
+            if remote.is_empty() {
+                let msg = "No segments found (local or remote). Run 'import', 'import-dir', or 'import-s3' first.";
+                loading.set_phase(LoadingPhase::Failed(msg.to_string())).await;
+                anyhow::bail!("{}", msg);
+            }
+
+            // Pre-fetch S3 segments to local cache.
+            // SegmentReader requires local files, so we download before graph building.
+            info!("Downloading {} remote segments to local cache...", remote.len());
+            let mut cache_dir = None;
+            for (i, seg_id) in remote.iter().enumerate() {
+                let dir = storage.segment_data_dir(seg_id).await?;
+                cache_dir = Some(dir);
+                if (i + 1) % 10 == 0 || i + 1 == remote.len() {
+                    info!("  Downloaded {}/{} segments", i + 1, remote.len());
+                }
+            }
+            let effective = cache_dir.unwrap_or_else(|| data_dir.clone());
+            (remote, effective)
+        }
+    };
+
+    let total = segments.len() as u64;
+    loading.set_progress(0, total);
+
+    // Store segment IDs immediately so /stats can show them.
+    {
+        let mut ids = segment_ids_shared.write().await;
+        *ids = segments.clone();
+    }
+
+    // Phase 2: Build graph from segments.
+    // Strategy: rayon workers read + parse + extract graph ops in parallel,
+    // then send lightweight GraphOp batches through a bounded channel.
+    // The consumer replays ops into the single-threaded GraphStore.
+    // Memory: only graph ops (~50-100 bytes each) are buffered, not full Documents.
+    loading.set_phase(LoadingPhase::LoadingSegments).await;
+    let reader_threads = 4usize;
+    info!(
+        "Loading {} segments and building graph ({} reader threads, streaming ops)...",
+        segments.len(), reader_threads
+    );
+
+    let (graph, doc_count) = {
+        use rayon::prelude::*;
+        use std::sync::atomic::AtomicU64;
+
+        let start = std::time::Instant::now();
+        let mut graph = stupid_graph::GraphStore::new();
+        let mut total_docs: u64 = 0;
+
+        // Each SegmentResult is lightweight: just the extracted graph ops, not raw docs.
+        struct SegmentResult {
+            seg_id: String,
+            ops: Vec<GraphOp>,
+            doc_count: u64,
+            elapsed: std::time::Duration,
+        }
+
+        let (tx, rx) = std::sync::mpsc::sync_channel::<SegmentResult>(1);
+
+        let segments_for_pool = segments.clone();
+        let data_dir_for_pool = effective_data_dir.clone();
+        let skipped = Arc::new(AtomicU64::new(0));
+        let skipped_clone = skipped.clone();
+
+        let producer = std::thread::spawn(move || {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(reader_threads)
+                .build()
+                .expect("Failed to create segment reader thread pool");
+
+            pool.install(|| {
+                segments_for_pool.par_iter().for_each(|seg_id| {
+                    let seg_start = std::time::Instant::now();
+                    let reader = match stupid_segment::reader::SegmentReader::open(&data_dir_for_pool, seg_id) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!("Skipping segment '{}': {}", seg_id, e);
+                            skipped_clone.fetch_add(1, Ordering::Relaxed);
+                            let _ = tx.send(SegmentResult {
+                                seg_id: seg_id.clone(), ops: Vec::new(),
+                                doc_count: 0, elapsed: seg_start.elapsed(),
+                            });
+                            return;
+                        }
+                    };
+
+                    // Stream docs from mmap, extract ops, drop doc immediately.
+                    let mut ops = Vec::new();
+                    let mut doc_count = 0u64;
+                    for doc_result in reader.iter() {
+                        match doc_result {
+                            Ok(doc) => {
+                                extract_graph_ops(&doc, seg_id, &mut ops);
+                                doc_count += 1;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Bad document in '{}': {}", seg_id, e);
+                            }
+                        }
+                    }
+                    // reader + mmap dropped here.
+
+                    let _ = tx.send(SegmentResult {
+                        seg_id: seg_id.clone(), ops, doc_count,
+                        elapsed: seg_start.elapsed(),
+                    });
+                });
+            });
+        });
+
+        // Consumer: replay ops into graph.
+        let mut seg_num = 0u64;
+        while let Ok(result) = rx.recv() {
+            for op in &result.ops {
+                apply_graph_op(op, &mut graph, &result.seg_id);
+            }
+
+            total_docs += result.doc_count;
+            seg_num += 1;
+            loading.set_progress(seg_num, total);
+
+            info!(
+                "  [{}/{}] Loaded segment '{}': {} docs, {} ops in {:.1}s (total: {} docs, {:.1}s)",
+                seg_num, segments.len(), result.seg_id,
+                result.doc_count, result.ops.len(),
+                result.elapsed.as_secs_f64(),
+                total_docs, start.elapsed().as_secs_f64()
+            );
+        }
+
+        let _ = producer.join();
+        let final_skipped = skipped.load(Ordering::Relaxed);
+        info!(
+            "Graph built: {} docs from {} segments in {:.1}s ({} skipped)",
+            total_docs, segments.len() - final_skipped as usize,
+            start.elapsed().as_secs_f64(), final_skipped
+        );
+
+        (graph, total_docs)
+    };
+
+    doc_count_shared.store(doc_count, Ordering::Relaxed);
+
+    let stats = graph.stats();
+    info!(
+        "Graph ready: {} nodes, {} edges from {} documents across {} segments",
+        stats.node_count, stats.edge_count, doc_count, segments.len()
+    );
+
+    // Swap the populated graph into shared state.
+    {
+        let mut graph_lock = shared_graph.write().await;
+        *graph_lock = graph;
+    }
+
+    // Graph is loaded — mark server as ready immediately.
+    // API endpoints for graph/nodes, stats, etc. work now.
+    loading.set_phase(LoadingPhase::Ready).await;
+    info!(
+        "Graph loaded and server ready in {:.1}s — catalog and compute will build in background",
+        loading.started_at.elapsed().as_secs_f64()
+    );
+
+    // Phase 3+4: Build catalog and compute AFTER server is ready.
+    // These are non-blocking — /catalog and /compute endpoints return
+    // empty/503 until they finish, but graph endpoints work immediately.
+    info!("Building catalog in background...");
+    {
+        let graph_read = shared_graph.read().await;
+        let cat = stupid_catalog::Catalog::from_graph(&graph_read);
+        let mut catalog_lock = catalog.write().await;
+        *catalog_lock = Some(cat);
+    }
+    info!("Catalog ready");
+
+    // Start the continuous compute scheduler.
+    // Tasks take an Arc<GraphStore> snapshot — they see the graph as loaded at startup.
+    // Live segment watcher will trigger re-runs via ingest queue depth signal.
+    info!("Starting compute scheduler in background...");
+    {
+        let sched_config = stupid_compute::SchedulerConfig::default();
+        let mut scheduler = stupid_compute::Scheduler::new(sched_config, knowledge.clone());
+
+        // Register tasks per docs/compute/scheduler.md.
+        // Tasks take SharedGraph and use blocking_read() — they always see the latest graph.
+        let p2_interval = std::time::Duration::from_secs(3600);
+        scheduler.register_task(Arc::new(
+            stupid_compute::scheduler::tasks::PageRankTask::new(shared_graph.clone(), p2_interval),
+        ));
+        scheduler.register_task(Arc::new(
+            stupid_compute::scheduler::tasks::DegreeCentralityTask::new(shared_graph.clone(), p2_interval),
+        ));
+        scheduler.register_task(Arc::new(
+            stupid_compute::scheduler::tasks::CommunityDetectionTask::new(shared_graph.clone(), p2_interval),
+        ));
+        scheduler.register_task(Arc::new(
+            stupid_compute::AnomalyDetectionTask::new(p2_interval),
+        ));
+
+        // Dependencies per docs: entity_extraction -> pagerank/community_detection
+        scheduler.add_dependency("entity_extraction", "pagerank");
+        scheduler.add_dependency("entity_extraction", "community_detection");
+
+        // Run initial compute immediately so data is available ASAP.
+        // We call algorithms directly here instead of using task.execute(),
+        // because tasks use blocking_read() which panics inside tokio runtime.
+        // The scheduler's own .run() loop runs on a dedicated std::thread where
+        // blocking_read() is safe.
+        info!("Running initial PageRank, degree, community computations...");
+        {
+            let graph_read = shared_graph.read().await;
+            let t = std::time::Instant::now();
+            let pagerank = stupid_compute::algorithms::pagerank::pagerank_default(&graph_read);
+            info!("  pagerank done in {:.1}s ({} nodes)", t.elapsed().as_secs_f64(), pagerank.len());
+
+            let t = std::time::Instant::now();
+            let degrees = stupid_compute::algorithms::degree::degree_centrality(&graph_read);
+            info!("  degree_centrality done in {:.1}s ({} nodes)", t.elapsed().as_secs_f64(), degrees.len());
+
+            let t = std::time::Instant::now();
+            let communities = stupid_compute::algorithms::communities::label_propagation_default(&graph_read);
+            info!("  community_detection done in {:.1}s ({} communities)", t.elapsed().as_secs_f64(), communities.len());
+
+            drop(graph_read);
+
+            let mut state = knowledge.write().unwrap();
+            state.pagerank = pagerank;
+            state.degrees = degrees;
+            state.communities = communities;
+        }
+        // Verify knowledge state is populated.
+        {
+            let k = knowledge.read().unwrap();
+            info!(
+                "Initial compute complete — knowledge state: {} pagerank scores, {} degree entries, {} communities",
+                k.pagerank.len(), k.degrees.len(), k.communities.len()
+            );
+        }
+
+        // Run pipeline (hot_connect + warm_compute) over all segments.
+        // This populates anomalies, trends, co-occurrence, and cluster assignments.
+        // Re-reads segments from mmap (fast — no decompression, just iteration).
+        info!("Running compute pipeline (hot_connect + warm_compute)...");
+        {
+            let pipeline_start = std::time::Instant::now();
+            let mut all_docs: Vec<stupid_core::Document> = Vec::new();
+
+            for seg_id in &segments {
+                let reader = match stupid_segment::reader::SegmentReader::open(&effective_data_dir, seg_id) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+
+                let mut seg_docs: Vec<stupid_core::Document> = Vec::new();
+                for doc_result in reader.iter() {
+                    if let Ok(doc) = doc_result {
+                        seg_docs.push(doc);
+                    }
+                }
+
+                // Feed through hot path (feature extraction + streaming k-means).
+                {
+                    let mut pipe = pipeline.lock().unwrap();
+                    let mut state = knowledge.write().unwrap();
+                    pipe.hot_connect(&seg_docs, &mut state);
+                }
+
+                all_docs.extend(seg_docs);
+
+                // Periodically run warm_compute to avoid unbounded doc accumulation.
+                if all_docs.len() > 100_000 {
+                    let mut pipe = pipeline.lock().unwrap();
+                    let mut state = knowledge.write().unwrap();
+                    pipe.warm_compute(&mut state, &all_docs);
+                    all_docs.clear();
+                }
+            }
+
+            // Final warm_compute for remaining docs.
+            if !all_docs.is_empty() {
+                let mut pipe = pipeline.lock().unwrap();
+                let mut state = knowledge.write().unwrap();
+                pipe.warm_compute(&mut state, &all_docs);
+            }
+
+            let k = knowledge.read().unwrap();
+            info!(
+                "Pipeline complete in {:.1}s — {} anomalies, {} trends, {} co-occurrence matrices, {} clusters",
+                pipeline_start.elapsed().as_secs_f64(),
+                k.anomalies.len(),
+                k.trends.len(),
+                k.cooccurrence.len(),
+                k.clusters.len()
+            );
+        }
+
+        // Store scheduler handle for shutdown + metrics access.
+        let shutdown = scheduler.shutdown_signal();
+        let metrics = scheduler.metrics_handle();
+        {
+            let mut sched_lock = app_state.scheduler.write().await;
+            *sched_lock = Some(state::SchedulerHandle { shutdown, metrics });
+        }
+
+        // Spawn scheduler loop on a dedicated OS thread (it's blocking).
+        std::thread::spawn(move || {
+            scheduler.run();
+        });
+    }
 
     Ok(())
 }
