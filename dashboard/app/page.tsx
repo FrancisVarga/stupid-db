@@ -173,6 +173,17 @@ export default function DashboardPage() {
             Rules
           </Link>
           <Link
+            href="/catalog"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(56, 189, 248, 0.08)",
+              border: "1px solid rgba(56, 189, 248, 0.2)",
+              color: "#38bdf8",
+            }}
+          >
+            Catalog
+          </Link>
+          <Link
             href="/explore"
             className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
             style={{
