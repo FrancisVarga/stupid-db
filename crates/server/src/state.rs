@@ -51,6 +51,8 @@ pub struct AppState {
     pub queue_connections: Arc<tokio::sync::RwLock<crate::queue_connections::QueueConnectionStore>>,
     /// Encrypted Athena connection store.
     pub athena_connections: Arc<tokio::sync::RwLock<crate::athena_connections::AthenaConnectionStore>>,
+    /// Session store for agent chat history persistence.
+    pub session_store: Arc<tokio::sync::RwLock<stupid_agent::session::SessionStore>>,
     /// Anomaly rule loader (filesystem-backed with hot-reload).
     pub rule_loader: stupid_rules::loader::RuleLoader,
     /// Per-rule trigger history for the `/anomaly-rules/{id}/history` endpoint.

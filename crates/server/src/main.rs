@@ -4,6 +4,8 @@ mod api;
 mod athena_connections;
 #[cfg(feature = "aws")]
 mod athena_query;
+#[cfg(feature = "aws")]
+mod athena_query_log;
 mod connections;
 mod live;
 #[cfg(feature = "aws")]
@@ -467,6 +469,11 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
     #[cfg(feature = "aws")]
     info!("Athena connection store initialized");
 
+    // Initialize session store for agent chat history.
+    let session_store = stupid_agent::session::SessionStore::new(&config.storage.data_dir)
+        .expect("Failed to initialize session store");
+    info!("Session store initialized");
+
     // Initialize anomaly rule loader.
     let rules_dir = config.storage.data_dir.join("rules");
     let rule_loader = stupid_rules::loader::RuleLoader::new(rules_dir.clone());
@@ -500,6 +507,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         queue_connections: Arc::new(RwLock::new(queue_conn_store)),
         #[cfg(feature = "aws")]
         athena_connections: Arc::new(RwLock::new(athena_conn_store)),
+        session_store: Arc::new(RwLock::new(session_store)),
         rule_loader,
         trigger_history: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         audit_log: stupid_rules::audit_log::AuditLog::new(),
@@ -528,6 +536,10 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/agents/chat", post(api::agents_chat))
         .route("/teams/execute", post(api::teams_execute))
         .route("/teams/strategies", get(api::teams_strategies))
+        .route("/sessions", get(api::sessions_list).post(api::sessions_create))
+        .route("/sessions/{id}", get(api::sessions_get).put(api::sessions_update).delete(api::sessions_delete))
+        .route("/sessions/{id}/execute-agent", post(api::sessions_execute_agent))
+        .route("/sessions/{id}/execute-team", post(api::sessions_execute_team))
         .route("/connections", get(api::connections_list).post(api::connections_add))
         .route("/connections/{id}", get(api::connections_get).put(api::connections_update).delete(api::connections_delete))
         .route("/connections/{id}/credentials", get(api::connections_credentials))
