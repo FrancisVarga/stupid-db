@@ -106,7 +106,7 @@ export default function ReportPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => router.push("/")}
+            onClick={() => router.push("/explore")}
             className="text-[10px] font-bold tracking-wider uppercase px-3 py-1.5 rounded-lg"
             style={{
               color: "#00f0ff",

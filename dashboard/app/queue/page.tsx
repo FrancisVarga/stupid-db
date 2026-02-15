@@ -1,9 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import * as d3 from "d3";
 import Link from "next/link";
-import { fetchQueueStatus, WS_URL, type QueueStatus } from "@/lib/api";
+import {
+  fetchQueueStatus,
+  fetchQueueConnections,
+  deleteQueueConnectionApi,
+  WS_URL,
+  type QueueStatus,
+  type QueueMetricsEntry,
+  type QueueConnectionSafe,
+} from "@/lib/api";
+import QueueSidebar from "@/components/db/QueueSidebar";
+import QueueConnectionForm from "@/components/db/QueueConnectionForm";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -13,10 +23,18 @@ interface FlowPoint {
   failed: number;
 }
 
+interface MessageDetail {
+  event_type: string;
+  id: string;
+  timestamp: string;
+  fields: Record<string, unknown>;
+}
+
 interface BatchEvent {
   timestamp: Date;
   docs: number;
   graphOps: number;
+  messages: MessageDetail[];
 }
 
 // ── StatCard (matches main page pattern) ─────────────────────────────────
@@ -60,6 +78,19 @@ function relativeTime(epochMs: number | undefined | null): string {
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   return `${Math.floor(diff / 3_600_000)}h ago`;
+}
+
+// ── Event type color helper ──────────────────────────────────────────────
+
+const EVENT_COLORS: Record<string, string> = {
+  Login: "#00ff88",
+  GameOpened: "#a855f7",
+  PopupModule: "#f472b6",
+  Unknown: "#64748b",
+};
+
+function eventColor(eventType: string): string {
+  return EVENT_COLORS[eventType] || "#00f0ff";
 }
 
 // ── Message Flow Chart (D3 area chart) ───────────────────────────────────
@@ -237,6 +268,132 @@ function MessageFlowChart({ data }: { data: FlowPoint[] }) {
   );
 }
 
+// ── Batch Detail Drawer ──────────────────────────────────────────────────
+
+function BatchDrawer({
+  batch,
+  onClose,
+}: {
+  batch: BatchEvent;
+  onClose: () => void;
+}) {
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-40"
+        style={{ background: "rgba(0, 0, 0, 0.5)" }}
+        onClick={onClose}
+      />
+
+      {/* Drawer panel */}
+      <div
+        className="fixed top-0 right-0 h-full z-50 overflow-y-auto"
+        style={{
+          width: "min(480px, 90vw)",
+          background: "linear-gradient(180deg, #0c1018 0%, #111827 100%)",
+          borderLeft: "1px solid rgba(0, 240, 255, 0.15)",
+          boxShadow: "-8px 0 40px rgba(0, 0, 0, 0.5)",
+        }}
+      >
+        {/* Header */}
+        <div
+          className="sticky top-0 z-10 px-5 py-4 flex items-center justify-between"
+          style={{
+            background: "rgba(12, 16, 24, 0.95)",
+            backdropFilter: "blur(12px)",
+            borderBottom: "1px solid rgba(0, 240, 255, 0.08)",
+          }}
+        >
+          <div>
+            <div className="text-sm font-bold tracking-wider" style={{ color: "#00f0ff" }}>
+              Batch Details
+            </div>
+            <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+              {batch.timestamp.toLocaleTimeString()} &middot; {batch.docs} docs &middot; {batch.graphOps} graph ops
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-slate-500 hover:text-slate-300 transition-colors p-1"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div className="px-5 py-4 space-y-3">
+          {batch.messages.length === 0 ? (
+            <div className="text-slate-600 text-sm font-mono text-center py-8">
+              No message details available
+            </div>
+          ) : (
+            batch.messages.map((msg, i) => (
+              <div
+                key={msg.id || i}
+                className="rounded-lg p-3"
+                style={{
+                  background: "rgba(30, 41, 59, 0.3)",
+                  border: "1px solid rgba(100, 116, 139, 0.12)",
+                }}
+              >
+                {/* Event type badge + timestamp */}
+                <div className="flex items-center justify-between mb-2">
+                  <span
+                    className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded"
+                    style={{
+                      color: eventColor(msg.event_type),
+                      background: `${eventColor(msg.event_type)}15`,
+                      border: `1px solid ${eventColor(msg.event_type)}30`,
+                    }}
+                  >
+                    {msg.event_type}
+                  </span>
+                  <span className="text-[10px] text-slate-600 font-mono">
+                    {new Date(msg.timestamp).toLocaleTimeString()}
+                  </span>
+                </div>
+
+                {/* ID */}
+                <div className="text-[9px] text-slate-600 font-mono mb-2 truncate">
+                  {msg.id}
+                </div>
+
+                {/* Fields grid */}
+                {Object.keys(msg.fields).length > 0 && (
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                    {Object.entries(msg.fields).map(([key, value]) => (
+                      <div key={key} className="flex flex-col min-w-0">
+                        <span className="text-[9px] text-slate-600 uppercase tracking-wider truncate">
+                          {key}
+                        </span>
+                        <span className="text-xs text-slate-300 font-mono truncate">
+                          {value === null ? "null" : String(value)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ── Main Page ────────────────────────────────────────────────────────────
 
 export default function QueueMonitorPage() {
@@ -245,7 +402,45 @@ export default function QueueMonitorPage() {
   const [error, setError] = useState<string | null>(null);
   const [flowData, setFlowData] = useState<FlowPoint[]>([]);
   const [batchEvents, setBatchEvents] = useState<BatchEvent[]>([]);
-  const prevStatusRef = useRef<QueueStatus | null>(null);
+  const [selectedBatch, setSelectedBatch] = useState<BatchEvent | null>(null);
+  const prevProcessedRef = useRef<number>(0);
+
+  // Connection management state
+  const [queues, setQueues] = useState<QueueConnectionSafe[]>([]);
+  const [queuesLoading, setQueuesLoading] = useState(true);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingConnection, setEditingConnection] = useState<QueueConnectionSafe | null>(null);
+  const [sidebarKey, setSidebarKey] = useState(0);
+  const [selectedQueue, setSelectedQueue] = useState<string | null>(null);
+
+  const closeDrawer = useCallback(() => setSelectedBatch(null), []);
+
+  const loadQueues = useCallback(() => {
+    setQueuesLoading(true);
+    fetchQueueConnections()
+      .then((qs) => {
+        setQueues(qs);
+        setQueuesLoading(false);
+        setSidebarKey((k) => k + 1);
+      })
+      .catch(() => {
+        setQueuesLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    loadQueues();
+  }, [loadQueues]);
+
+  const handleDeleteQueue = async (id: string, name: string) => {
+    if (!confirm(`Remove queue connection "${name}"?`)) return;
+    try {
+      await deleteQueueConnectionApi(id);
+      loadQueues();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
 
   // Poll queue status every 5 seconds
   useEffect(() => {
@@ -277,32 +472,68 @@ export default function QueueMonitorPage() {
     };
   }, []);
 
+  // Aggregate metrics across all queues (or selected queue).
+  const activeMetrics: QueueMetricsEntry | null = (() => {
+    if (!status?.queues) return null;
+    const entries = Object.entries(status.queues);
+    if (entries.length === 0) return null;
+
+    if (selectedQueue && status.queues[selectedQueue]) {
+      return status.queues[selectedQueue];
+    }
+
+    // Aggregate across all queues.
+    const agg: QueueMetricsEntry = {
+      enabled: true,
+      connected: false,
+      messages_received: 0,
+      messages_processed: 0,
+      messages_failed: 0,
+      batches_processed: 0,
+      avg_batch_latency_ms: 0,
+      last_poll_epoch_ms: 0,
+    };
+    let totalLatency = 0;
+    for (const [, m] of entries) {
+      agg.connected = agg.connected || m.connected;
+      agg.messages_received += m.messages_received;
+      agg.messages_processed += m.messages_processed;
+      agg.messages_failed += m.messages_failed;
+      agg.batches_processed += m.batches_processed;
+      totalLatency += m.avg_batch_latency_ms * m.batches_processed;
+      agg.last_poll_epoch_ms = Math.max(agg.last_poll_epoch_ms, m.last_poll_epoch_ms);
+    }
+    agg.avg_batch_latency_ms = agg.batches_processed > 0 ? totalLatency / agg.batches_processed : 0;
+    return agg;
+  })();
+
   // Accumulate flow data points from status polls (keep last 60 = 5 min)
   useEffect(() => {
-    if (!status) return;
+    if (!activeMetrics) return;
 
-    const prev = prevStatusRef.current;
-    const processed = status.messages_processed ?? 0;
-    const failed = status.messages_failed ?? 0;
+    const processed = activeMetrics.messages_processed;
+    const failed = activeMetrics.messages_failed;
 
-    // Only add a point if values changed or it's the first one
-    if (!prev || prev.messages_processed !== processed || prev.messages_failed !== failed) {
-      setFlowData((fd) => {
-        const next = [
-          ...fd,
-          { time: new Date(), processed, failed },
-        ];
-        return next.length > 60 ? next.slice(-60) : next;
-      });
-    }
-  }, [status]);
+    setFlowData((fd) => {
+      const last = fd[fd.length - 1];
+      if (last && last.processed === processed && last.failed === failed) return fd;
+      const next = [
+        ...fd,
+        { time: new Date(), processed, failed },
+      ];
+      return next.length > 60 ? next.slice(-60) : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMetrics?.messages_processed, activeMetrics?.messages_failed]);
 
-  // Track previous status for diff detection — must be in useEffect, not render
+  // Track previous processed count for diff detection.
   useEffect(() => {
-    prevStatusRef.current = status;
-  }, [status]);
+    if (activeMetrics) {
+      prevProcessedRef.current = activeMetrics.messages_processed;
+    }
+  });
 
-  // WebSocket for batch events
+  // WebSocket for batch events (now with message details)
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -319,6 +550,7 @@ export default function QueueMonitorPage() {
                 timestamp: new Date(),
                 docs: msg.docs ?? 0,
                 graphOps: msg.graph_ops ?? 0,
+                messages: Array.isArray(msg.messages) ? msg.messages : [],
               };
               setBatchEvents((prev) => {
                 const next = [event, ...prev];
@@ -351,22 +583,17 @@ export default function QueueMonitorPage() {
   }, []);
 
   // Derive connection status for the dot indicator
-  const isConnected = status?.enabled && status?.connected;
+  const isConnected = status?.enabled && activeMetrics?.connected;
 
   return (
-    <div
-      className="min-h-screen"
-      style={{
-        background: "linear-gradient(135deg, #0c1018 0%, #111827 100%)",
-      }}
-    >
+    <div className="h-screen flex flex-col">
       {/* Header */}
       <header
-        className="px-6 py-3 flex items-center justify-between"
+        className="px-6 py-3 flex items-center justify-between shrink-0"
         style={{
-          borderBottom: "1px solid rgba(0, 240, 255, 0.08)",
+          borderBottom: "1px solid rgba(255, 138, 0, 0.08)",
           background:
-            "linear-gradient(180deg, rgba(0, 240, 255, 0.02) 0%, transparent 100%)",
+            "linear-gradient(180deg, rgba(255, 138, 0, 0.02) 0%, transparent 100%)",
         }}
       >
         <div className="flex items-center gap-4">
@@ -378,36 +605,173 @@ export default function QueueMonitorPage() {
           </Link>
           <div
             className="w-[1px] h-4"
-            style={{ background: "rgba(0, 240, 255, 0.12)" }}
+            style={{ background: "rgba(255, 138, 0, 0.12)" }}
           />
           <h1
             className="text-lg font-bold tracking-wider"
-            style={{ color: "#00f0ff" }}
+            style={{ color: "#ff8a00" }}
           >
-            Queue Monitor
+            Queue Manager
           </h1>
         </div>
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-2 h-2 rounded-full ${
-              isConnected
-                ? "bg-green-400 animate-pulse"
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-2 h-2 rounded-full ${
+                isConnected
+                  ? "bg-green-400 animate-pulse"
+                  : status?.enabled
+                    ? "bg-red-400"
+                    : "bg-slate-600"
+              }`}
+            />
+            <span className="text-slate-500 text-xs font-mono">
+              {isConnected
+                ? "connected"
                 : status?.enabled
-                  ? "bg-red-400"
-                  : "bg-slate-600"
-            }`}
-          />
-          <span className="text-slate-500 text-xs font-mono">
-            {isConnected
-              ? "connected"
-              : status?.enabled
-                ? "disconnected"
-                : "disabled"}
-          </span>
+                  ? "disconnected"
+                  : "disabled"}
+            </span>
+          </div>
+          <button
+            onClick={() => setShowAddForm(true)}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+            style={{
+              background: "rgba(255, 138, 0, 0.1)",
+              border: "1px solid rgba(255, 138, 0, 0.3)",
+              color: "#ff8a00",
+            }}
+          >
+            + Add Queue
+          </button>
         </div>
       </header>
 
-      <div className="px-6 py-6 max-w-[1400px] mx-auto space-y-6">
+      {/* Body: sidebar + main */}
+      <div className="flex-1 flex min-h-0">
+        <div style={{ width: 260 }} className="shrink-0">
+          <QueueSidebar refreshKey={sidebarKey} selectedId={selectedQueue} onSelect={setSelectedQueue} />
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+        {/* Add / Edit Queue Form */}
+        {(showAddForm || editingConnection) && (
+          <div className="mb-6 max-w-[1400px] mx-auto">
+            <QueueConnectionForm
+              editing={editingConnection ?? undefined}
+              onSaved={() => {
+                setShowAddForm(false);
+                setEditingConnection(null);
+                loadQueues();
+              }}
+              onCancel={() => {
+                setShowAddForm(false);
+                setEditingConnection(null);
+              }}
+            />
+          </div>
+        )}
+
+        {/* Queue connection cards */}
+        {!queuesLoading && queues.length > 0 && !showAddForm && !editingConnection && (
+          <div className="mb-6 max-w-[1400px] mx-auto">
+            <h2 className="text-[10px] font-bold tracking-[0.15em] uppercase text-slate-500 mb-3">
+              Queue Connections
+            </h2>
+            <div className="grid grid-cols-2 gap-3">
+              {queues.map((q) => (
+                <div
+                  key={q.id}
+                  className="rounded-xl p-4 relative overflow-hidden group"
+                  style={{
+                    background: "linear-gradient(135deg, #0c1018 0%, #111827 100%)",
+                    border: `1px solid ${q.enabled ? `${q.color}20` : "rgba(100, 116, 139, 0.15)"}`,
+                  }}
+                >
+                  <div
+                    className="absolute top-0 left-0 w-full h-[1px]"
+                    style={{
+                      background: `linear-gradient(90deg, transparent, ${q.color}60, transparent)`,
+                    }}
+                  />
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{
+                          background: q.enabled ? "#06d6a0" : "#64748b",
+                          boxShadow: q.enabled ? "0 0 6px rgba(6, 214, 160, 0.5)" : "none",
+                        }}
+                      />
+                      <span className="text-sm font-bold font-mono tracking-wide" style={{ color: q.color }}>
+                        {q.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                      <button
+                        onClick={() => {
+                          setShowAddForm(false);
+                          setEditingConnection(q);
+                        }}
+                        className="text-slate-700 hover:text-purple-400 text-[10px]"
+                        title="Edit queue"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteQueue(q.id, q.name)}
+                        className="text-slate-700 hover:text-red-400 text-[10px]"
+                        title="Remove queue"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[9px] text-slate-600 font-mono mb-1 truncate">
+                    {q.queue_url}
+                  </div>
+                  <div className="flex items-center gap-3 mt-2">
+                    <span className="text-[10px] text-slate-500 font-mono">{q.provider}</span>
+                    <span className="text-[10px] text-slate-500 font-mono">{q.region}</span>
+                    <span
+                      className="text-[10px] font-mono"
+                      style={{ color: q.enabled ? "#06d6a0" : "#64748b" }}
+                    >
+                      {q.enabled ? "ENABLED" : "DISABLED"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!queuesLoading && queues.length === 0 && !showAddForm && (
+          <div className="flex flex-col items-center justify-center py-20 max-w-[1400px] mx-auto">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#1e293b" strokeWidth="1.5" className="mb-4">
+              <rect x="2" y="6" width="20" height="12" rx="2" />
+              <path d="M12 6V4" />
+              <path d="M12 20v-2" />
+              <path d="M6 12h12" />
+            </svg>
+            <p className="text-slate-500 text-sm font-mono mb-2">No queue connections configured</p>
+            <p className="text-slate-600 text-xs font-mono mb-4">Add an SQS queue connection to get started</p>
+            <button
+              onClick={() => setShowAddForm(true)}
+              className="px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all hover:opacity-80"
+              style={{
+                background: "rgba(255, 138, 0, 0.1)",
+                border: "1px solid rgba(255, 138, 0, 0.3)",
+                color: "#ff8a00",
+              }}
+            >
+              + Add Your First Queue
+            </button>
+          </div>
+        )}
+
+        <div className="max-w-[1400px] mx-auto space-y-6">
         {/* Error state */}
         {error && (
           <div
@@ -431,53 +795,53 @@ export default function QueueMonitorPage() {
         )}
 
         {/* Status Cards */}
-        {status && (
+        {activeMetrics && (
           <>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
               <StatCard
                 label="Status"
-                value={status.enabled ? "ENABLED" : "DISABLED"}
-                accent={status.enabled ? "#00ff88" : "#ff4757"}
+                value={activeMetrics.enabled ? "ENABLED" : "DISABLED"}
+                accent={activeMetrics.enabled ? "#00ff88" : "#ff4757"}
               />
               <StatCard
                 label="Connection"
-                value={status.connected ? "UP" : "DOWN"}
-                accent={status.connected ? "#00ff88" : "#ff4757"}
+                value={activeMetrics.connected ? "UP" : "DOWN"}
+                accent={activeMetrics.connected ? "#00ff88" : "#ff4757"}
               />
               <StatCard
                 label="Received"
-                value={status.messages_received ?? 0}
+                value={activeMetrics.messages_received}
                 accent="#00f0ff"
               />
               <StatCard
                 label="Processed"
-                value={status.messages_processed ?? 0}
+                value={activeMetrics.messages_processed}
                 accent="#a855f7"
               />
               <StatCard
                 label="Failed"
-                value={status.messages_failed ?? 0}
+                value={activeMetrics.messages_failed}
                 accent={
-                  (status.messages_failed ?? 0) > 0 ? "#ff4757" : "#64748b"
+                  activeMetrics.messages_failed > 0 ? "#ff4757" : "#64748b"
                 }
               />
               <StatCard
                 label="Batches"
-                value={status.batches_processed ?? 0}
+                value={activeMetrics.batches_processed}
                 accent="#f472b6"
               />
               <StatCard
                 label="Avg Latency"
                 value={
-                  status.avg_batch_latency_ms != null
-                    ? `${status.avg_batch_latency_ms.toFixed(1)}ms`
-                    : "—"
+                  activeMetrics.avg_batch_latency_ms > 0
+                    ? `${activeMetrics.avg_batch_latency_ms.toFixed(1)}ms`
+                    : "\u2014"
                 }
                 accent="#ffe600"
               />
               <StatCard
                 label="Last Poll"
-                value={relativeTime(status.last_poll_epoch_ms)}
+                value={relativeTime(activeMetrics.last_poll_epoch_ms)}
                 accent="#06d6a0"
               />
             </div>
@@ -502,7 +866,7 @@ export default function QueueMonitorPage() {
             <section>
               <SectionHeader
                 title="Recent Batches"
-                subtitle={`${batchEvents.length} events`}
+                subtitle={`${batchEvents.length} events \u2014 click a row for details`}
               />
               <div
                 className="rounded-xl overflow-hidden"
@@ -532,6 +896,9 @@ export default function QueueMonitorPage() {
                           <th className="text-left text-[10px] text-slate-500 uppercase tracking-widest font-medium px-4 py-3">
                             Timestamp
                           </th>
+                          <th className="text-left text-[10px] text-slate-500 uppercase tracking-widest font-medium px-4 py-3">
+                            Events
+                          </th>
                           <th className="text-right text-[10px] text-slate-500 uppercase tracking-widest font-medium px-4 py-3">
                             Docs
                           </th>
@@ -541,43 +908,72 @@ export default function QueueMonitorPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {batchEvents.map((evt, i) => (
-                          <tr
-                            key={i}
-                            className="transition-colors"
-                            style={{
-                              borderBottom:
-                                "1px solid rgba(30, 41, 59, 0.4)",
-                            }}
-                            onMouseEnter={(e) => {
-                              (
-                                e.currentTarget as HTMLElement
-                              ).style.background =
-                                "rgba(0, 240, 255, 0.03)";
-                            }}
-                            onMouseLeave={(e) => {
-                              (
-                                e.currentTarget as HTMLElement
-                              ).style.background = "transparent";
-                            }}
-                          >
-                            <td className="px-4 py-2.5 text-slate-400 text-xs font-mono">
-                              {evt.timestamp.toLocaleTimeString()}
-                            </td>
-                            <td
-                              className="px-4 py-2.5 text-right text-xs font-mono font-bold"
-                              style={{ color: "#00f0ff" }}
+                        {batchEvents.map((evt, i) => {
+                          // Collect unique event types for badge display
+                          const eventTypes = [
+                            ...new Set(evt.messages.map((m) => m.event_type)),
+                          ];
+                          return (
+                            <tr
+                              key={i}
+                              className="transition-colors cursor-pointer"
+                              style={{
+                                borderBottom:
+                                  "1px solid rgba(30, 41, 59, 0.4)",
+                              }}
+                              onClick={() => setSelectedBatch(evt)}
+                              onMouseEnter={(e) => {
+                                (
+                                  e.currentTarget as HTMLElement
+                                ).style.background =
+                                  "rgba(0, 240, 255, 0.03)";
+                              }}
+                              onMouseLeave={(e) => {
+                                (
+                                  e.currentTarget as HTMLElement
+                                ).style.background = "transparent";
+                              }}
                             >
-                              {evt.docs.toLocaleString()}
-                            </td>
-                            <td
-                              className="px-4 py-2.5 text-right text-xs font-mono font-bold"
-                              style={{ color: "#a855f7" }}
-                            >
-                              {evt.graphOps.toLocaleString()}
-                            </td>
-                          </tr>
-                        ))}
+                              <td className="px-4 py-2.5 text-slate-400 text-xs font-mono">
+                                {evt.timestamp.toLocaleTimeString()}
+                              </td>
+                              <td className="px-4 py-2.5">
+                                <div className="flex gap-1 flex-wrap">
+                                  {eventTypes.slice(0, 3).map((et) => (
+                                    <span
+                                      key={et}
+                                      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                      style={{
+                                        color: eventColor(et),
+                                        background: `${eventColor(et)}10`,
+                                        border: `1px solid ${eventColor(et)}25`,
+                                      }}
+                                    >
+                                      {et}
+                                    </span>
+                                  ))}
+                                  {eventTypes.length > 3 && (
+                                    <span className="text-[9px] text-slate-600 font-mono">
+                                      +{eventTypes.length - 3}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td
+                                className="px-4 py-2.5 text-right text-xs font-mono font-bold"
+                                style={{ color: "#00f0ff" }}
+                              >
+                                {evt.docs.toLocaleString()}
+                              </td>
+                              <td
+                                className="px-4 py-2.5 text-right text-xs font-mono font-bold"
+                                style={{ color: "#a855f7" }}
+                              >
+                                {evt.graphOps.toLocaleString()}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -586,7 +982,14 @@ export default function QueueMonitorPage() {
             </section>
           </>
         )}
-      </div>
+        </div>{/* end max-w container */}
+        </div>{/* end overflow-y-auto */}
+      </div>{/* end flex-1 flex */}
+
+      {/* Side drawer for batch details */}
+      {selectedBatch && (
+        <BatchDrawer batch={selectedBatch} onClose={closeDrawer} />
+      )}
     </div>
   );
 }

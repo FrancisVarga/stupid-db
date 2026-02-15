@@ -214,15 +214,20 @@ export async function fetchAnomalies(limit = 50): Promise<AnomalyEntry[]> {
 
 // Queue status endpoint
 
+export interface QueueMetricsEntry {
+  enabled: boolean;
+  connected: boolean;
+  messages_received: number;
+  messages_processed: number;
+  messages_failed: number;
+  batches_processed: number;
+  avg_batch_latency_ms: number;
+  last_poll_epoch_ms: number;
+}
+
 export interface QueueStatus {
   enabled: boolean;
-  connected?: boolean;
-  messages_received?: number;
-  messages_processed?: number;
-  messages_failed?: number;
-  batches_processed?: number;
-  avg_batch_latency_ms?: number;
-  last_poll_epoch_ms?: number;
+  queues: Record<string, QueueMetricsEntry>;
 }
 
 export async function fetchQueueStatus(): Promise<QueueStatus> {
@@ -230,6 +235,97 @@ export async function fetchQueueStatus(): Promise<QueueStatus> {
     cache: "no-store",
   });
   return res.json();
+}
+
+// ── Queue Connection Management ──────────────────────────────────
+
+export interface QueueConnectionInput {
+  name: string;
+  queue_url: string;
+  dlq_url?: string;
+  provider?: string;
+  enabled?: boolean;
+  region: string;
+  access_key_id?: string;
+  secret_access_key?: string;
+  session_token?: string;
+  endpoint_url?: string;
+  poll_interval_ms?: number;
+  max_batch_size?: number;
+  visibility_timeout_secs?: number;
+  micro_batch_size?: number;
+  micro_batch_timeout_ms?: number;
+  color?: string;
+}
+
+export interface QueueConnectionSafe {
+  id: string;
+  name: string;
+  queue_url: string;
+  dlq_url: string | null;
+  provider: string;
+  enabled: boolean;
+  region: string;
+  access_key_id: string;  // "********"
+  secret_access_key: string;  // "********"
+  session_token: string;  // "********"
+  endpoint_url: string | null;
+  poll_interval_ms: number;
+  max_batch_size: number;
+  visibility_timeout_secs: number;
+  micro_batch_size: number;
+  micro_batch_timeout_ms: number;
+  color: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchQueueConnections(): Promise<QueueConnectionSafe[]> {
+  const res = await checkedFetch(`${API_BASE}/queue-connections`, {
+    cache: "no-store",
+  });
+  return res.json();
+}
+
+export async function fetchQueueConnection(id: string): Promise<QueueConnectionSafe> {
+  const res = await checkedFetch(
+    `${API_BASE}/queue-connections/${encodeURIComponent(id)}`,
+    { cache: "no-store" },
+  );
+  return res.json();
+}
+
+export async function addQueueConnectionApi(
+  input: QueueConnectionInput,
+): Promise<QueueConnectionSafe> {
+  const res = await checkedFetch(`${API_BASE}/queue-connections`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+
+export async function updateQueueConnectionApi(
+  id: string,
+  input: Partial<QueueConnectionInput>,
+): Promise<QueueConnectionSafe> {
+  const res = await checkedFetch(
+    `${API_BASE}/queue-connections/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  return res.json();
+}
+
+export async function deleteQueueConnectionApi(id: string): Promise<void> {
+  await checkedFetch(
+    `${API_BASE}/queue-connections/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
 }
 
 // Query endpoint
@@ -247,4 +343,74 @@ export async function postQuery(question: string): Promise<QueryResponse> {
     body: JSON.stringify({ question }),
   });
   return res.json();
+}
+
+// Agent endpoints
+
+export interface AgentInfo {
+  name: string;
+  tier: string;
+  description: string;
+}
+
+export interface AgentResponse {
+  agent_name: string;
+  status: string;
+  output: string;
+  execution_time_ms: number;
+}
+
+export interface TeamResponse {
+  task: string;
+  strategy: string;
+  agents_used: string[];
+  status: string;
+  outputs: Record<string, string>;
+  execution_time_ms: number;
+}
+
+export async function fetchAgents(): Promise<AgentInfo[]> {
+  const res = await checkedFetch(`${API_BASE}/agents/list`, {
+    cache: "no-store",
+  });
+  const data = await res.json();
+  return data.agents ?? [];
+}
+
+export async function executeAgent(
+  agentName: string,
+  task: string
+): Promise<AgentResponse> {
+  const res = await checkedFetch(`${API_BASE}/agents/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_name: agentName, task }),
+  });
+  return res.json();
+}
+
+export async function executeTeam(
+  task: string,
+  strategy: string
+): Promise<TeamResponse> {
+  const res = await checkedFetch(`${API_BASE}/teams/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task, strategy }),
+  });
+  return res.json();
+}
+
+export interface StrategyInfo {
+  name: string;
+  agents: string[];
+  description: string;
+}
+
+export async function fetchStrategies(): Promise<StrategyInfo[]> {
+  const res = await checkedFetch(`${API_BASE}/teams/strategies`, {
+    cache: "no-store",
+  });
+  const data = await res.json();
+  return data.strategies ?? [];
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 import type { TrendEntry } from "@/lib/api";
 
@@ -35,13 +35,7 @@ interface Props {
 export default function TrendChart({ data }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
-
-  const handleRowClick = useCallback(
-    (_event: MouseEvent, d: TrendEntry) => {
-      setSelectedMetric((prev) => (prev === d.metric ? null : d.metric));
-    },
-    []
-  );
+  const detailRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!svgRef.current || !data.length) return;
@@ -107,9 +101,9 @@ export default function TrendChart({ data }: Props) {
       .data(data)
       .join("g")
       .attr("class", "row")
+      .attr("data-metric", (d) => d.metric)
       .attr("transform", (_, i) => `translate(0,${i * rowHeight})`)
-      .style("cursor", "pointer")
-      .on("click", handleRowClick as never);
+      .style("cursor", "pointer");
 
     // Invisible hit area for easier clicking
     rows
@@ -118,17 +112,18 @@ export default function TrendChart({ data }: Props) {
       .attr("y", 0)
       .attr("width", width)
       .attr("height", rowHeight)
-      .attr("fill", "transparent");
+      .attr("fill", "transparent")
+      .attr("class", "hit-area");
 
-    // Hover highlight
+    // Hover highlight via D3 (visual only, no React state)
     rows
       .on("mouseenter", function () {
         d3.select(this)
-          .select("rect")
+          .select(".hit-area")
           .attr("fill", "rgba(0, 240, 255, 0.04)");
       })
       .on("mouseleave", function () {
-        d3.select(this).select("rect").attr("fill", "transparent");
+        d3.select(this).select(".hit-area").attr("fill", "transparent");
       });
 
     // Metric name
@@ -141,6 +136,7 @@ export default function TrendChart({ data }: Props) {
       .attr("fill", "#94a3b8")
       .attr("font-size", "10px")
       .attr("font-family", "monospace")
+      .style("pointer-events", "none")
       .text((d) => {
         const label = d.metric;
         return label.length > 18 ? label.slice(0, 17) + "\u2026" : label;
@@ -154,6 +150,7 @@ export default function TrendChart({ data }: Props) {
       .attr("dominant-baseline", "middle")
       .attr("font-size", "12px")
       .attr("fill", (d) => directionColor(d.direction))
+      .style("pointer-events", "none")
       .text((d) => DIRECTION_ARROWS[d.direction] || "");
 
     // Magnitude bar
@@ -166,7 +163,8 @@ export default function TrendChart({ data }: Props) {
       .attr("rx", 3)
       .attr("fill", (d) => magnitudeColor(d.magnitude) + "50")
       .attr("stroke", (d) => magnitudeColor(d.magnitude) + "30")
-      .attr("stroke-width", 0.5);
+      .attr("stroke-width", 0.5)
+      .style("pointer-events", "none");
 
     // Magnitude value
     rows
@@ -178,6 +176,7 @@ export default function TrendChart({ data }: Props) {
       .attr("font-size", "9px")
       .attr("font-family", "monospace")
       .attr("font-weight", "bold")
+      .style("pointer-events", "none")
       .text((d) => d.magnitude.toFixed(2));
 
     // Current value vs baseline (right side)
@@ -190,6 +189,7 @@ export default function TrendChart({ data }: Props) {
       .attr("fill", "#cbd5e1")
       .attr("font-size", "10px")
       .attr("font-family", "monospace")
+      .style("pointer-events", "none")
       .text((d) => formatValue(d.current_value));
 
     rows
@@ -201,6 +201,7 @@ export default function TrendChart({ data }: Props) {
       .attr("fill", "#475569")
       .attr("font-size", "8px")
       .attr("font-family", "monospace")
+      .style("pointer-events", "none")
       .text((d) => `baseline ${formatValue(d.baseline_mean)}`);
 
     // Severity dot based on magnitude
@@ -209,17 +210,39 @@ export default function TrendChart({ data }: Props) {
       .attr("cx", barWidth + 14)
       .attr("cy", rowHeight / 2)
       .attr("r", 3)
-      .attr("fill", (d) => magnitudeColor(d.magnitude));
-  }, [data, handleRowClick]);
+      .attr("fill", (d) => magnitudeColor(d.magnitude))
+      .style("pointer-events", "none");
+  }, [data]);
+
+  // React-level click handler — bypasses D3 closure issues with React Compiler
+  function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
+    const target = e.target as SVGElement;
+    const rowGroup = target.closest("g.row");
+    if (!rowGroup) return;
+    const metric = rowGroup.getAttribute("data-metric");
+    if (!metric) return;
+    setSelectedMetric((prev) => (prev === metric ? null : metric));
+  }
 
   const selected = selectedMetric
     ? data.find((d) => d.metric === selectedMetric)
     : null;
 
+  // Scroll detail panel into view when selected
+  useEffect(() => {
+    if (selected && detailRef.current) {
+      detailRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [selected]);
+
   return (
     <div className="w-full h-full overflow-y-auto">
-      <svg ref={svgRef} className="w-full" />
-      {selected && <TrendDetailPanel entry={selected} />}
+      <svg ref={svgRef} className="w-full" onClick={handleSvgClick} />
+      {selected && (
+        <div ref={detailRef}>
+          <TrendDetailPanel entry={selected} />
+        </div>
+      )}
     </div>
   );
 }

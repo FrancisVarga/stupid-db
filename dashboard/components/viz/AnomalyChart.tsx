@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as d3 from "d3";
 import type { AnomalyEntry } from "@/lib/api";
 
@@ -38,13 +38,7 @@ interface Props {
 export default function AnomalyChart({ data }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  const handleBarClick = useCallback(
-    (id: string) => {
-      setSelectedId((prev) => (prev === id ? null : id));
-    },
-    [],
-  );
+  const detailRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!svgRef.current || !data.length) return;
@@ -54,7 +48,7 @@ export default function AnomalyChart({ data }: Props) {
 
     const container = svgRef.current.parentElement!;
     const width = container.clientWidth;
-    const barHeight = 24;
+    const barHeight = 28;
     const margin = { top: 8, right: 90, bottom: 8, left: 140 };
     const height = Math.max(
       data.length * barHeight + margin.top + margin.bottom,
@@ -74,9 +68,9 @@ export default function AnomalyChart({ data }: Props) {
 
     // Threshold lines
     const thresholds = [
-      { value: 0.3, label: "Mild", color: "#ffe60040" },
-      { value: 0.5, label: "Anomalous", color: "#ff8a0040" },
-      { value: 0.7, label: "Critical", color: "#ff475740" },
+      { value: 0.3, color: "#ffe60040" },
+      { value: 0.5, color: "#ff8a0040" },
+      { value: 0.7, color: "#ff475740" },
     ];
 
     for (const t of thresholds) {
@@ -89,24 +83,45 @@ export default function AnomalyChart({ data }: Props) {
         .attr("stroke-dasharray", "3,3");
     }
 
-    // Bars
+    // Bars — use data-id attribute for React click handling
     const bars = g
       .selectAll("g.bar")
       .data(data)
       .join("g")
       .attr("class", "bar")
+      .attr("data-anomaly-id", (d) => d.id)
       .attr("transform", (_, i) => `translate(0,${i * barHeight})`)
-      .style("cursor", "pointer")
-      .on("click", (_, d) => handleBarClick(d.id));
+      .style("cursor", "pointer");
 
+    // Invisible full-width hit area
+    bars
+      .append("rect")
+      .attr("x", -margin.left)
+      .attr("width", width)
+      .attr("height", barHeight)
+      .attr("fill", "transparent")
+      .attr("class", "hit-area");
+
+    // Hover highlight via D3
+    bars
+      .on("mouseenter", function () {
+        d3.select(this).select(".hit-area").attr("fill", "rgba(0, 240, 255, 0.04)");
+      })
+      .on("mouseleave", function () {
+        d3.select(this).select(".hit-area").attr("fill", "transparent");
+      });
+
+    // Visible score bar
     bars
       .append("rect")
       .attr("width", (d) => x(d.score))
-      .attr("height", barHeight - 3)
+      .attr("height", barHeight - 4)
+      .attr("y", 1)
       .attr("rx", 3)
       .attr("fill", (d) => classificationColor(d.score) + "50")
       .attr("stroke", (d) => classificationColor(d.score) + "80")
-      .attr("stroke-width", 0.5);
+      .attr("stroke-width", 0.5)
+      .style("pointer-events", "none");
 
     // Entity type dot
     bars
@@ -114,7 +129,8 @@ export default function AnomalyChart({ data }: Props) {
       .attr("cx", -16)
       .attr("cy", barHeight / 2 - 1)
       .attr("r", 3)
-      .attr("fill", (d) => ENTITY_COLORS[d.entity_type] || "#888");
+      .attr("fill", (d) => ENTITY_COLORS[d.entity_type] || "#888")
+      .style("pointer-events", "none");
 
     // Labels (left)
     bars
@@ -126,8 +142,9 @@ export default function AnomalyChart({ data }: Props) {
       .attr("fill", "#94a3b8")
       .attr("font-size", "10px")
       .attr("font-family", "monospace")
+      .style("pointer-events", "none")
       .text((d) => {
-        const label = d.key.split(":").slice(1).join(":");
+        const label = d.key;
         return label.length > 16 ? label.slice(0, 15) + "\u2026" : label;
       });
 
@@ -140,17 +157,40 @@ export default function AnomalyChart({ data }: Props) {
       .attr("fill", (d) => classificationColor(d.score))
       .attr("font-size", "9px")
       .attr("font-family", "monospace")
+      .style("pointer-events", "none")
       .text(
         (d) => `${d.score.toFixed(3)} ${classificationLabel(d.score)}`,
       );
-  }, [data, handleBarClick]);
+  }, [data]);
 
-  const selected = data.find((d) => d.id === selectedId);
+  // React-level click handler on SVG — bypasses D3 closure issues
+  // and works reliably with React Compiler.
+  function handleSvgClick(e: React.MouseEvent<SVGSVGElement>) {
+    const target = e.target as SVGElement;
+    const barGroup = target.closest("g.bar");
+    if (!barGroup) return;
+    const id = barGroup.getAttribute("data-anomaly-id");
+    if (!id) return;
+    setSelectedId((prev) => (prev === id ? null : id));
+  }
+
+  const selected = selectedId ? data.find((d) => d.id === selectedId) : null;
+
+  // Scroll detail panel into view when selected
+  useEffect(() => {
+    if (selected && detailRef.current) {
+      detailRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [selected]);
 
   return (
     <div className="w-full h-full overflow-y-auto">
-      <svg ref={svgRef} className="w-full" />
-      {selected && <DetailPanel entry={selected} />}
+      <svg ref={svgRef} className="w-full" onClick={handleSvgClick} />
+      {selected && (
+        <div ref={detailRef}>
+          <DetailPanel entry={selected} />
+        </div>
+      )}
     </div>
   );
 }
@@ -167,7 +207,7 @@ function DetailPanel({ entry }: { entry: AnomalyEntry }) {
 
   return (
     <div
-      className="mx-4 mt-2 rounded-lg border p-4"
+      className="mx-4 mt-2 mb-4 rounded-lg border p-4"
       style={{
         background: "#0c1018",
         borderColor: color + "40",

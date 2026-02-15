@@ -1,50 +1,25 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import ChatPanel, { type ChatMessage } from "@/components/chat/ChatPanel";
-import ForceGraph from "@/components/viz/ForceGraph";
-import PageRankChart from "@/components/viz/PageRankChart";
-import DegreeChart from "@/components/viz/DegreeChart";
-import InsightSidebar, {
-  type Insight,
-  type SystemStatus,
-} from "@/components/InsightSidebar";
 import {
   fetchStats,
-  fetchForceGraph,
   fetchPageRank,
   fetchCommunities,
   fetchDegrees,
   fetchPatterns,
-  fetchCooccurrence,
   fetchTrends,
   fetchAnomalies,
   fetchQueueStatus,
-  postQuery,
   type Stats,
   type QueueStatus,
-  type ForceGraphData,
   type PageRankEntry,
   type CommunityEntry,
   type DegreeEntry,
   type TemporalPattern,
-  type CooccurrenceData,
   type TrendEntry,
   type AnomalyEntry,
 } from "@/lib/api";
-import PatternList from "@/components/viz/PatternList";
-import CooccurrenceHeatmap from "@/components/viz/CooccurrenceHeatmap";
-import TrendChart from "@/components/viz/TrendChart";
-import AnomalyChart from "@/components/viz/AnomalyChart";
-import { useWebSocket, type WsCallbacks } from "@/lib/useWebSocket";
-import {
-  saveReport,
-  saveQueryHistory,
-  loadQueryHistory,
-  type ReportMessage,
-  type QueryHistoryItem,
-} from "@/lib/reports";
 
 const ENTITY_COLORS: Record<string, string> = {
   Member: "#00d4ff",
@@ -59,7 +34,549 @@ const ENTITY_COLORS: Record<string, string> = {
   Provider: "#2ec4b6",
 };
 
-type VizTab = "graph" | "pagerank" | "communities" | "degrees" | "patterns" | "cooccurrence" | "trends" | "anomalies";
+function classificationColor(score: number): string {
+  if (score >= 0.7) return "#ff4757";
+  if (score >= 0.5) return "#ff8a00";
+  if (score >= 0.3) return "#ffe600";
+  return "#06d6a0";
+}
+
+function magnitudeColor(mag: number): string {
+  if (mag >= 3.0) return "#ff4757";
+  if (mag >= 2.0) return "#ffe600";
+  return "#06d6a0";
+}
+
+const CATEGORY_COLORS: Record<string, string> = {
+  Churn: "#ff4757",
+  Engagement: "#06d6a0",
+  ErrorChain: "#ff8a00",
+  Funnel: "#00d4ff",
+  Unknown: "#64748b",
+};
+
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+export default function DashboardPage() {
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [queue, setQueue] = useState<QueueStatus | null>(null);
+  const [pagerank, setPagerank] = useState<PageRankEntry[]>([]);
+  const [communities, setCommunities] = useState<CommunityEntry[]>([]);
+  const [degrees, setDegrees] = useState<DegreeEntry[]>([]);
+  const [patterns, setPatterns] = useState<TemporalPattern[]>([]);
+  const [trends, setTrends] = useState<TrendEntry[]>([]);
+  const [anomalies, setAnomalies] = useState<AnomalyEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Fire all fetches in parallel — each updates its own state independently
+    fetchStats().then(setStats).catch(() => setError("Server offline"));
+    fetchPageRank(10).then(setPagerank).catch(() => {});
+    fetchCommunities().then(setCommunities).catch(() => {});
+    fetchDegrees(10).then(setDegrees).catch(() => {});
+    fetchPatterns().then(setPatterns).catch(() => {});
+    fetchTrends().then(setTrends).catch(() => {});
+    fetchAnomalies(20).then(setAnomalies).catch(() => {});
+    fetchQueueStatus().then(setQueue).catch(() => {});
+  }, []);
+
+  const anomalousCount = anomalies.filter((a) => a.is_anomalous).length;
+  const criticalAnomalies = anomalies.filter((a) => a.score >= 0.7);
+  const criticalTrends = trends.filter((t) => t.magnitude >= 3.0);
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      {/* Header */}
+      <header
+        className="px-6 py-3 flex items-center justify-between shrink-0"
+        style={{
+          borderBottom: "1px solid rgba(0, 240, 255, 0.08)",
+          background:
+            "linear-gradient(180deg, rgba(0, 240, 255, 0.02) 0%, transparent 100%)",
+        }}
+      >
+        <div className="flex items-center gap-3">
+          <h1
+            className="text-lg font-bold tracking-wider"
+            style={{ color: "#00f0ff" }}
+          >
+            stupid-db
+          </h1>
+          <span className="text-slate-500 text-xs tracking-widest uppercase">
+            dashboard
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/queue"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(0, 240, 255, 0.08)",
+              border: "1px solid rgba(0, 240, 255, 0.2)",
+              color: "#00f0ff",
+            }}
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{
+                background: Object.values(queue?.queues ?? {}).some((q) => q.connected) ? "#00ff88" : "#64748b",
+              }}
+            />
+            Queue
+          </Link>
+          <Link
+            href="/db"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(6, 214, 160, 0.08)",
+              border: "1px solid rgba(6, 214, 160, 0.2)",
+              color: "#06d6a0",
+            }}
+          >
+            Database
+          </Link>
+          <Link
+            href="/athena"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(16, 185, 129, 0.08)",
+              border: "1px solid rgba(16, 185, 129, 0.2)",
+              color: "#10b981",
+            }}
+          >
+            Athena
+          </Link>
+          <Link
+            href="/agents"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(168, 85, 247, 0.08)",
+              border: "1px solid rgba(168, 85, 247, 0.2)",
+              color: "#a855f7",
+            }}
+          >
+            Agents
+          </Link>
+          <Link
+            href="/explore"
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
+            style={{
+              background: "rgba(0, 240, 255, 0.12)",
+              border: "1px solid rgba(0, 240, 255, 0.25)",
+              color: "#00f0ff",
+            }}
+          >
+            Open Explorer
+          </Link>
+        </div>
+      </header>
+
+      {/* Main content */}
+      <div className="flex-1 overflow-y-auto px-6 py-5">
+        {/* Offline banner */}
+        {error && (
+          <div
+            className="flex items-center gap-3 px-4 py-2.5 rounded-lg mb-5"
+            style={{
+              background: "rgba(255, 71, 87, 0.06)",
+              border: "1px solid rgba(255, 71, 87, 0.15)",
+            }}
+          >
+            <span
+              className="w-2 h-2 rounded-full shrink-0 animate-pulse"
+              style={{ background: "#ff4757" }}
+            />
+            <span className="text-xs text-red-400 font-medium">
+              {error}
+            </span>
+            <span className="text-[10px] text-slate-500 ml-auto">
+              Start:{" "}
+              <code className="text-slate-400 bg-slate-800/50 px-1.5 py-0.5 rounded">
+                stupid-server serve
+              </code>
+            </span>
+          </div>
+        )}
+
+        {/* Stats row */}
+        <div className="grid grid-cols-5 gap-3 mb-6">
+          <StatCard
+            label="Documents"
+            value={stats?.doc_count ?? "--"}
+            accent="#00f0ff"
+          />
+          <StatCard
+            label="Segments"
+            value={stats?.segment_count ?? "--"}
+            accent="#06d6a0"
+          />
+          <StatCard
+            label="Nodes"
+            value={stats?.node_count ?? "--"}
+            accent="#a855f7"
+          />
+          <StatCard
+            label="Edges"
+            value={stats?.edge_count ?? "--"}
+            accent="#f472b6"
+          />
+          <StatCard
+            label="Anomalies"
+            value={anomalousCount}
+            accent={anomalousCount > 0 ? "#ff4757" : "#06d6a0"}
+          />
+        </div>
+
+        {/* Entity type breakdown */}
+        {stats && (
+        <div className="mb-6">
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(stats.nodes_by_type)
+              .sort(([, a], [, b]) => b - a)
+              .map(([type, count]) => {
+                const color = ENTITY_COLORS[type] || "#94a3b8";
+                return (
+                  <span
+                    key={type}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-medium tracking-wide"
+                    style={{
+                      background: `${color}12`,
+                      color: color,
+                      border: `1px solid ${color}25`,
+                    }}
+                  >
+                    {type}
+                    <span className="font-mono font-bold">
+                      {count.toLocaleString()}
+                    </span>
+                  </span>
+                );
+              })}
+          </div>
+        </div>
+        )}
+
+        {/* Panels grid */}
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          {/* Anomalies panel */}
+          <PanelCard
+            title="Anomalies"
+            subtitle={`${anomalousCount} detected`}
+            accentColor={anomalousCount > 0 ? "#ff4757" : "#06d6a0"}
+            href="/anomalies"
+          >
+            {anomalies.length > 0 ? (
+              <div className="space-y-1.5">
+                {anomalies.slice(0, 6).map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{
+                          background:
+                            ENTITY_COLORS[a.entity_type] || "#888",
+                        }}
+                      />
+                      <span className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]">
+                        {a.key}
+                      </span>
+                    </div>
+                    <span
+                      className="text-[10px] font-mono font-bold"
+                      style={{ color: classificationColor(a.score) }}
+                    >
+                      {a.score.toFixed(3)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </PanelCard>
+
+          {/* Trends panel */}
+          <PanelCard
+            title="Trends"
+            subtitle={`${criticalTrends.length} critical`}
+            accentColor={criticalTrends.length > 0 ? "#ff4757" : "#06d6a0"}
+            href="/explore?tab=trends"
+          >
+            {trends.length > 0 ? (
+              <div className="space-y-1.5">
+                {trends.slice(0, 6).map((t) => (
+                  <div
+                    key={t.metric}
+                    className="flex items-center justify-between"
+                  >
+                    <span className="text-[10px] font-mono text-slate-400 truncate max-w-[120px]">
+                      {t.metric}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="text-[10px]"
+                        style={{
+                          color:
+                            t.direction === "Up"
+                              ? "#06d6a0"
+                              : t.direction === "Down"
+                                ? "#ff4757"
+                                : "#64748b",
+                        }}
+                      >
+                        {t.direction === "Up"
+                          ? "\u2191"
+                          : t.direction === "Down"
+                            ? "\u2193"
+                            : "\u2192"}
+                      </span>
+                      <span
+                        className="text-[10px] font-mono font-bold"
+                        style={{ color: magnitudeColor(t.magnitude) }}
+                      >
+                        {t.magnitude.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </PanelCard>
+
+          {/* Patterns panel */}
+          <PanelCard
+            title="Patterns"
+            subtitle={`${patterns.length} detected`}
+            accentColor="#00d4ff"
+            href="/patterns"
+          >
+            {patterns.length > 0 ? (
+              <div className="space-y-1.5">
+                {patterns.slice(0, 5).map((p) => {
+                  const catColor =
+                    CATEGORY_COLORS[p.category] || "#64748b";
+                  return (
+                    <div key={p.id} className="flex items-center gap-2">
+                      <span
+                        className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0"
+                        style={{
+                          background: `${catColor}15`,
+                          color: catColor,
+                        }}
+                      >
+                        {p.category}
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono truncate">
+                        {p.sequence.join(" \u2192 ")}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </PanelCard>
+        </div>
+
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          {/* PageRank top influencers */}
+          <PanelCard
+            title="Top Influencers"
+            subtitle="PageRank"
+            accentColor="#a855f7"
+            href="/explore?tab=pagerank"
+          >
+            {pagerank.length > 0 ? (
+              <div className="space-y-1.5">
+                {pagerank.slice(0, 6).map((p, i) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[9px] font-mono text-slate-600 w-3">
+                        {i + 1}
+                      </span>
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{
+                          background:
+                            ENTITY_COLORS[p.entity_type] || "#888",
+                        }}
+                      />
+                      <span className="text-[10px] font-mono text-slate-400 truncate max-w-[100px]">
+                        {p.key}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-purple-400">
+                      {p.score.toFixed(4)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </PanelCard>
+
+          {/* Communities */}
+          <PanelCard
+            title="Communities"
+            subtitle={`${communities.length} clusters`}
+            accentColor="#f472b6"
+            href="/explore?tab=communities"
+          >
+            {communities.length > 0 ? (
+              <div className="space-y-1.5">
+                {communities.slice(0, 6).map((c) => (
+                  <div
+                    key={c.community_id}
+                    className="flex items-center justify-between"
+                  >
+                    <span className="text-[10px] font-mono text-slate-400">
+                      Cluster {c.community_id}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-pink-400">
+                        {c.member_count} members
+                      </span>
+                      <span className="text-[9px] text-slate-600 truncate max-w-[80px]">
+                        {c.top_nodes
+                          .slice(0, 2)
+                          .map((n) => n.key)
+                          .join(", ")}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </PanelCard>
+
+          {/* Degree centrality */}
+          <PanelCard
+            title="Most Connected"
+            subtitle="Degree centrality"
+            accentColor="#06d6a0"
+            href="/explore?tab=degrees"
+          >
+            {degrees.length > 0 ? (
+              <div className="space-y-1.5">
+                {degrees.slice(0, 6).map((d, i) => (
+                  <div
+                    key={d.id}
+                    className="flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[9px] font-mono text-slate-600 w-3">
+                        {i + 1}
+                      </span>
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{
+                          background:
+                            ENTITY_COLORS[d.entity_type] || "#888",
+                        }}
+                      />
+                      <span className="text-[10px] font-mono text-slate-400 truncate max-w-[100px]">
+                        {d.key}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-emerald-400">
+                      {d.total}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </PanelCard>
+        </div>
+
+        {/* Alerts section */}
+        {(criticalAnomalies.length > 0 || criticalTrends.length > 0) && (
+          <div className="mb-6">
+            <h2 className="text-[10px] font-bold tracking-[0.15em] uppercase text-slate-500 mb-3">
+              Active Alerts
+            </h2>
+            <div className="space-y-2">
+              {criticalAnomalies.slice(0, 3).map((a) => (
+                <AlertRow
+                  key={a.id}
+                  type="anomaly"
+                  label={`${a.entity_type}: ${a.key}`}
+                  value={`Score ${a.score.toFixed(3)}`}
+                  color="#ff4757"
+                />
+              ))}
+              {criticalTrends.slice(0, 3).map((t) => (
+                <AlertRow
+                  key={t.metric}
+                  type="trend"
+                  label={t.metric}
+                  value={`${t.direction} ${t.magnitude.toFixed(2)}x`}
+                  color="#ff8a00"
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Quick actions */}
+        <div className="flex items-center gap-3">
+          <Link
+            href="/explore"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
+            style={{
+              background: "rgba(0, 240, 255, 0.08)",
+              border: "1px solid rgba(0, 240, 255, 0.15)",
+              color: "#00f0ff",
+            }}
+          >
+            Chat Explorer
+          </Link>
+          <Link
+            href="/explore?tab=graph"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
+            style={{
+              background: "rgba(165, 85, 247, 0.08)",
+              border: "1px solid rgba(165, 85, 247, 0.15)",
+              color: "#a855f7",
+            }}
+          >
+            Knowledge Graph
+          </Link>
+          <Link
+            href="/reports"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
+            style={{
+              background: "rgba(6, 214, 160, 0.08)",
+              border: "1px solid rgba(6, 214, 160, 0.15)",
+              color: "#06d6a0",
+            }}
+          >
+            Saved Reports
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Reusable components ──────────────────────────────────────────────
 
 function StatCard({
   label,
@@ -85,718 +602,99 @@ function StatCard({
         className="text-2xl font-bold font-mono mt-1"
         style={{ color: accent }}
       >
-        {typeof value === "number" ? value.toLocaleString() : value}
+        {typeof value === "number" ? formatNumber(value) : value}
       </div>
     </div>
   );
 }
 
-function EntityBadge({ type, count }: { type: string; count: number }) {
-  const color = ENTITY_COLORS[type] || "#94a3b8";
+function PanelCard({
+  title,
+  subtitle,
+  accentColor,
+  href,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  accentColor: string;
+  href: string;
+  children: React.ReactNode;
+}) {
   return (
-    <span
-      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-medium tracking-wide"
+    <Link
+      href={href}
+      className="block rounded-xl p-4 relative overflow-hidden hover:opacity-95 transition-opacity"
       style={{
-        background: `${color}12`,
-        color: color,
-        border: `1px solid ${color}25`,
+        background: "linear-gradient(135deg, #0c1018 0%, #111827 100%)",
+        border: `1px solid ${accentColor}20`,
+        boxShadow: `0 0 20px ${accentColor}05`,
       }}
     >
-      {type}
-      <span className="font-mono font-bold">{count.toLocaleString()}</span>
-    </span>
-  );
-}
-
-let msgIdCounter = 0;
-function makeMsg(
-  role: "user" | "system",
-  content: string,
-  extra?: { suggestions?: string[] }
-): ChatMessage {
-  return {
-    id: `msg-${++msgIdCounter}`,
-    role,
-    content,
-    timestamp: new Date(),
-    suggestions: extra?.suggestions,
-  };
-}
-
-export default function Home() {
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [graphData, setGraphData] = useState<ForceGraphData | null>(null);
-  const [pageRankData, setPageRankData] = useState<PageRankEntry[]>([]);
-  const [communityData, setCommunityData] = useState<CommunityEntry[]>([]);
-  const [degreeData, setDegreeData] = useState<DegreeEntry[]>([]);
-  const [patternData, setPatternData] = useState<TemporalPattern[]>([]);
-  const [cooccurrenceData, setCooccurrenceData] = useState<CooccurrenceData | null>(null);
-  const [trendData, setTrendData] = useState<TrendEntry[]>([]);
-  const [anomalyData, setAnomalyData] = useState<AnomalyEntry[]>([]);
-  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [activeTab, setActiveTab] = useState<VizTab>("graph");
-  const [error, setError] = useState<string | null>(null);
-
-  // Insight sidebar state
-  const [insights, setInsights] = useState<Insight[]>([]);
-  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
-
-  // Query history
-  const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
-
-  // Load query history on mount
-  useEffect(() => {
-    const history = loadQueryHistory();
-    queueMicrotask(() => setQueryHistory(history));
-  }, []);
-
-  // WebSocket for realtime updates — updates stats when server pushes new data.
-  const handleWsStats = useCallback((wsStats: Stats) => {
-    setStats((prev) => {
-      if (!prev) return wsStats;
-      // Only update if data actually changed (avoid unnecessary re-renders).
-      if (
-        prev.doc_count === wsStats.doc_count &&
-        prev.node_count === wsStats.node_count &&
-        prev.edge_count === wsStats.edge_count
-      ) {
-        return prev;
-      }
-      return wsStats;
-    });
-    // Clear cached compute data so tabs re-fetch with new graph data.
-    setPageRankData([]);
-    setCommunityData([]);
-    setDegreeData([]);
-    setPatternData([]);
-    setCooccurrenceData(null);
-    setTrendData([]);
-    setAnomalyData([]);
-    // Re-fetch force graph for the updated graph.
-    fetchForceGraph(300).then(setGraphData).catch(() => {});
-  }, []);
-
-  // WebSocket callbacks for insight and system status messages
-  const wsCallbacks: WsCallbacks = {
-    onInsight: useCallback((insight: Insight) => {
-      setInsights((prev) => {
-        // Avoid duplicates
-        if (prev.some((i) => i.id === insight.id)) return prev;
-        return [insight, ...prev];
-      });
-    }, []),
-    onInsightResolved: useCallback((insightId: string) => {
-      setInsights((prev) => prev.filter((i) => i.id !== insightId));
-    }, []),
-    onSystemStatus: useCallback((status: SystemStatus) => {
-      setSystemStatus(status);
-    }, []),
-  };
-
-  const wsEnabled = !error && stats !== null;
-  const { status: wsStatus } = useWebSocket(handleWsStats, wsEnabled, wsCallbacks);
-
-  // Community map for graph coloring — expand top_nodes from each community summary
-  const communityMap =
-    activeTab === "communities" && communityData.length > 0
-      ? new Map(
-          communityData.flatMap((c) =>
-            c.top_nodes.map((n) => [n.id, c.community_id] as [string, number])
-          )
-        )
-      : undefined;
-
-  // Initial data fetch (HTTP fallback — WS will push updates after this)
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const s = await fetchStats();
-        setStats(s);
-
-        const welcome = [
-          `Connected to stupid-db.`,
-          `${s.doc_count.toLocaleString()} documents across ${Object.keys(s.nodes_by_type).length} entity types.`,
-          `${s.node_count.toLocaleString()} nodes, ${s.edge_count.toLocaleString()} edges in the knowledge graph.`,
-          ``,
-          `Try the visualization tabs on the right, or ask a question below.`,
-        ].join("\n");
-        setMessages([makeMsg("system", welcome, {
-          suggestions: [
-            "Show me the top influencers",
-            "What communities exist?",
-            "Show anomalies",
-            "What patterns did you find?",
-          ],
-        })]);
-
-        fetchQueueStatus().then(setQueueStatus).catch(() => {});
-
-        const gd = await fetchForceGraph(300);
-        setGraphData(gd);
-      } catch (e) {
-        setError(`Failed to connect: ${(e as Error).message}`);
-      }
-    };
-    load();
-  }, []);
-
-  // Load compute data when tab changes
-  useEffect(() => {
-    if (activeTab === "pagerank" && pageRankData.length === 0) {
-      fetchPageRank(50).then(setPageRankData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load PageRank data. Is the compute engine running?"),
-        ]);
-      });
-    }
-    if (activeTab === "communities" && communityData.length === 0) {
-      fetchCommunities().then(setCommunityData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load community data."),
-        ]);
-      });
-    }
-    if (activeTab === "degrees" && degreeData.length === 0) {
-      fetchDegrees(50).then(setDegreeData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load degree data."),
-        ]);
-      });
-    }
-    if (activeTab === "patterns" && patternData.length === 0) {
-      fetchPatterns().then(setPatternData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load pattern data. Is the compute engine running?"),
-        ]);
-      });
-    }
-    if (activeTab === "cooccurrence" && !cooccurrenceData) {
-      fetchCooccurrence().then(setCooccurrenceData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load co-occurrence data."),
-        ]);
-      });
-    }
-    if (activeTab === "trends" && trendData.length === 0) {
-      fetchTrends().then(setTrendData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load trend data."),
-        ]);
-      });
-    }
-    if (activeTab === "anomalies" && anomalyData.length === 0) {
-      fetchAnomalies(50).then(setAnomalyData).catch(() => {
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Failed to load anomaly data. Is the compute engine running?"),
-        ]);
-      });
-    }
-  }, [activeTab, pageRankData.length, communityData.length, degreeData.length, patternData.length, cooccurrenceData, trendData.length, anomalyData.length]);
-
-  const handleSend = useCallback(
-    (text: string) => {
-      setMessages((prev) => [...prev, makeMsg("user", text)]);
-
-      // Save to query history
-      saveQueryHistory(text);
-      setQueryHistory(loadQueryHistory());
-
-      // Local command handling
-      const lower = text.toLowerCase();
-      if (lower.includes("stats") || lower.includes("status")) {
-        if (stats) {
-          const reply = [
-            `Documents: ${stats.doc_count.toLocaleString()}`,
-            `Nodes: ${stats.node_count.toLocaleString()}`,
-            `Edges: ${stats.edge_count.toLocaleString()}`,
-            ``,
-            `Entity breakdown:`,
-            ...Object.entries(stats.nodes_by_type)
-              .sort(([, a], [, b]) => b - a)
-              .map(([t, c]) => `  ${t}: ${c.toLocaleString()}`),
-          ].join("\n");
-          setMessages((prev) => [...prev, makeMsg("system", reply, {
-            suggestions: [
-              "Show me the knowledge graph",
-              "Who are the top influencers?",
-              "What anomalies exist?",
-            ],
-          })]);
-        }
-      } else if (lower.includes("pagerank") || lower.includes("rank")) {
-        setActiveTab("pagerank");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to PageRank view. Loading top nodes by influence...", {
-            suggestions: ["Show degree centrality", "Show communities"],
-          }),
-        ]);
-      } else if (lower.includes("communit")) {
-        setActiveTab("communities");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Communities view. Nodes are now colored by Louvain cluster.", {
-            suggestions: ["Show PageRank", "Show co-occurrence patterns"],
-          }),
-        ]);
-      } else if (lower.includes("degree")) {
-        setActiveTab("degrees");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Degrees view. Showing most connected nodes...", {
-            suggestions: ["Show PageRank", "Show anomalies"],
-          }),
-        ]);
-      } else if (lower.includes("pattern")) {
-        setActiveTab("patterns");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Patterns view. Loading temporal patterns...", {
-            suggestions: ["Show trends", "Show co-occurrence heatmap"],
-          }),
-        ]);
-      } else if (lower.includes("cooccurrence") || lower.includes("co-occurrence") || lower.includes("heatmap")) {
-        setActiveTab("cooccurrence");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Co-occurrence view. Loading PMI heatmap...", {
-            suggestions: ["Show patterns", "Show trends"],
-          }),
-        ]);
-      } else if (lower.includes("trend")) {
-        setActiveTab("trends");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Trends view. Loading anomaly detection...", {
-            suggestions: ["Show anomalies", "Show patterns"],
-          }),
-        ]);
-      } else if (lower.includes("anomal")) {
-        setActiveTab("anomalies");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Anomalies view. Loading anomaly scores...", {
-            suggestions: ["Show trends", "Show degree centrality"],
-          }),
-        ]);
-      } else if (lower.includes("graph") || lower.includes("force")) {
-        setActiveTab("graph");
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Switched to Force Graph view.", {
-            suggestions: ["Show communities", "Show PageRank"],
-          }),
-        ]);
-      } else {
-        // Send to LLM query endpoint
-        setMessages((prev) => [
-          ...prev,
-          makeMsg("system", "Thinking..."),
-        ]);
-        postQuery(text)
-          .then((res) => {
-            const resultText = res.results.length > 0
-              ? JSON.stringify(res.results, null, 2)
-              : "No results found.";
-            setMessages((prev) => {
-              // Remove the "Thinking..." message
-              const filtered = prev.filter((m) => m.content !== "Thinking...");
-              return [
-                ...filtered,
-                makeMsg("system", resultText, {
-                  suggestions: [
-                    "Tell me more about this",
-                    "Export as CSV",
-                    "Show the knowledge graph",
-                  ],
-                }),
-              ];
-            });
-          })
-          .catch((err) => {
-            setMessages((prev) => {
-              const filtered = prev.filter((m) => m.content !== "Thinking...");
-              return [
-                ...filtered,
-                makeMsg(
-                  "system",
-                  `Query failed: ${(err as Error).message}\n\nTry: stats, pagerank, communities, degrees, or graph.`
-                ),
-              ];
-            });
-          });
-      }
-    },
-    [stats]
-  );
-
-  const handleCooccurrenceTypeChange = useCallback((typeA: string, typeB: string) => {
-    fetchCooccurrence(typeA, typeB).then(setCooccurrenceData).catch(() => {});
-  }, []);
-
-  // Insight handlers
-  const handleInsightClick = useCallback(
-    (query: string) => {
-      handleSend(query);
-    },
-    [handleSend]
-  );
-
-  const handleDismissInsight = useCallback((id: string) => {
-    setInsights((prev) => prev.filter((i) => i.id !== id));
-  }, []);
-
-  // Save current conversation as report
-  const handleSaveReport = useCallback(() => {
-    const reportMessages: ReportMessage[] = messages.map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp.toISOString(),
-      renderBlocks: m.renderBlocks,
-      suggestions: m.suggestions,
-    }));
-    const report = saveReport(reportMessages);
-    setMessages((prev) => [
-      ...prev,
-      makeMsg("system", `Report saved! View it at /reports/${report.id}`),
-    ]);
-  }, [messages]);
-
-  if (error) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div
-          className="rounded-xl p-8 max-w-md"
-          style={{
-            background: "linear-gradient(135deg, #1a0a0a 0%, #0d0606 100%)",
-            border: "1px solid rgba(255, 71, 87, 0.2)",
-            boxShadow: "0 0 40px rgba(255, 71, 87, 0.05)",
-          }}
-        >
-          <h2 className="text-red-400 font-bold text-lg tracking-wide">
-            CONNECTION FAILED
-          </h2>
-          <p className="text-red-300/70 mt-2 text-sm">{error}</p>
-          <p className="text-slate-500 text-xs mt-4">
-            Start the server:{" "}
-            <code className="text-slate-300 bg-slate-800/50 px-1.5 py-0.5 rounded">
-              stupid-server serve
-            </code>
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  const tabs: { key: VizTab; label: string }[] = [
-    { key: "graph", label: "Graph" },
-    { key: "pagerank", label: "PageRank" },
-    { key: "communities", label: "Communities" },
-    { key: "degrees", label: "Degrees" },
-    { key: "patterns", label: "Patterns" },
-    { key: "cooccurrence", label: "Co-occur" },
-    { key: "trends", label: "Trends" },
-    { key: "anomalies", label: "Anomalies" },
-  ];
-
-  return (
-    <div className="h-screen flex flex-col">
-      {/* Header */}
-      <header
-        className="px-6 py-2.5 flex items-center justify-between shrink-0"
+      <div
+        className="absolute top-0 left-0 w-full h-[1px]"
         style={{
-          borderBottom: "1px solid rgba(0, 240, 255, 0.08)",
-          background:
-            "linear-gradient(180deg, rgba(0, 240, 255, 0.02) 0%, transparent 100%)",
+          background: `linear-gradient(90deg, transparent, ${accentColor}40, transparent)`,
         }}
-      >
-        <div className="flex items-center gap-3">
-          <h1
-            className="text-lg font-bold tracking-wider"
-            style={{ color: "#00f0ff" }}
-          >
-            stupid-db
-          </h1>
-          <span className="text-slate-500 text-xs tracking-widest uppercase">
-            knowledge engine
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* Query history dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setShowHistory(!showHistory)}
-              className="text-[10px] font-bold tracking-wider uppercase px-2.5 py-1.5 rounded-lg transition-all"
-              style={{
-                color: "#64748b",
-                background: "rgba(100, 116, 139, 0.06)",
-                border: "1px solid rgba(100, 116, 139, 0.12)",
-              }}
-            >
-              History
-            </button>
-            {showHistory && queryHistory.length > 0 && (
-              <div
-                className="absolute right-0 top-full mt-1 z-50 rounded-lg overflow-hidden max-h-60 overflow-y-auto"
-                style={{
-                  width: 280,
-                  background: "rgba(12, 16, 24, 0.95)",
-                  border: "1px solid rgba(0, 240, 255, 0.1)",
-                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.5)",
-                }}
-              >
-                {queryHistory.slice(0, 15).map((item, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      handleSend(item.question);
-                      setShowHistory(false);
-                    }}
-                    className="w-full text-left px-3 py-2 text-[10px] text-slate-400 hover:text-slate-200 transition-colors font-mono truncate"
-                    style={{
-                      borderBottom: "1px solid rgba(30, 41, 59, 0.5)",
-                    }}
-                  >
-                    {item.question}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Save report */}
-          <button
-            onClick={handleSaveReport}
-            className="text-[10px] font-bold tracking-wider uppercase px-2.5 py-1.5 rounded-lg transition-all"
-            style={{
-              color: "#06d6a0",
-              background: "rgba(6, 214, 160, 0.06)",
-              border: "1px solid rgba(6, 214, 160, 0.12)",
-            }}
-          >
-            Save Report
-          </button>
-
-          {/* Queue link */}
-          {queueStatus?.enabled && (
-            <Link href="/queue" className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity" style={{ background: 'rgba(0, 240, 255, 0.08)', border: '1px solid rgba(0, 240, 255, 0.2)', color: '#00f0ff' }}>
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: queueStatus.connected ? '#00ff88' : '#64748b' }} />
-              Queue
-            </Link>
-          )}
-
-          {/* WebSocket status */}
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-1.5 h-1.5 rounded-full ${
-                wsStatus === "connected"
-                  ? "bg-green-400 animate-pulse"
-                  : wsStatus === "reconnecting"
-                  ? "bg-yellow-400 animate-pulse"
-                  : "bg-slate-600"
-              }`}
-            />
-            <span className="text-slate-500 text-xs font-mono">
-              {stats
-                ? `${stats.segment_count} segments`
-                : wsStatus === "connecting"
-                ? "connecting..."
-                : ""}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      {/* Stats bar */}
-      {stats && (
-        <div
-          className="px-6 py-3 shrink-0"
-          style={{ borderBottom: "1px solid rgba(0, 240, 255, 0.06)" }}
+      />
+      <div className="flex items-center justify-between mb-3">
+        <span
+          className="text-xs font-bold tracking-wider uppercase"
+          style={{ color: accentColor }}
         >
-          <div className="grid grid-cols-4 gap-3 mb-2">
-            <StatCard label="Documents" value={stats.doc_count} accent="#00f0ff" />
-            <StatCard label="Segments" value={stats.segment_count} accent="#06d6a0" />
-            <StatCard label="Nodes" value={stats.node_count} accent="#a855f7" />
-            <StatCard label="Edges" value={stats.edge_count} accent="#f472b6" />
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(stats.nodes_by_type)
-              .sort(([, a], [, b]) => b - a)
-              .map(([type, count]) => (
-                <EntityBadge key={type} type={type} count={count} />
-              ))}
-          </div>
-        </div>
-      )}
-
-      {/* Main: Chat (left) + Viz (center) + Insights (right) */}
-      <div className="flex-1 flex min-h-0">
-        {/* Chat panel */}
-        <div
-          className="flex flex-col"
-          style={{
-            width: "35%",
-            borderRight: "1px solid rgba(0, 240, 255, 0.08)",
-          }}
-        >
-          <ChatPanel messages={messages} onSend={handleSend} />
-        </div>
-
-        {/* Viz panel */}
-        <div className="flex flex-col" style={{ width: "45%" }}>
-          {/* Tabs */}
-          <div
-            className="flex shrink-0"
-            style={{ borderBottom: "1px solid rgba(0, 240, 255, 0.08)" }}
-          >
-            {tabs.map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                className="flex-1 py-2.5 text-[10px] font-bold tracking-[0.15em] uppercase transition-all"
-                style={{
-                  color:
-                    activeTab === tab.key ? "#00f0ff" : "#475569",
-                  background:
-                    activeTab === tab.key
-                      ? "rgba(0, 240, 255, 0.05)"
-                      : "transparent",
-                  borderBottom:
-                    activeTab === tab.key
-                      ? "2px solid #00f0ff"
-                      : "2px solid transparent",
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <div className="flex-1 min-h-0 relative graph-bg">
-            {activeTab === "graph" && (
-              graphData ? (
-                <ForceGraph data={graphData} />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading graph...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "pagerank" && (
-              pageRankData.length > 0 ? (
-                <PageRankChart data={pageRankData} />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading PageRank...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "communities" && (
-              graphData ? (
-                <ForceGraph
-                  data={graphData}
-                  communityMap={communityMap}
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading communities...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "degrees" && (
-              degreeData.length > 0 ? (
-                <DegreeChart data={degreeData} />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading degrees...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "patterns" && (
-              patternData.length > 0 ? (
-                <PatternList data={patternData} />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading patterns...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "cooccurrence" && (
-              cooccurrenceData ? (
-                <CooccurrenceHeatmap
-                  data={cooccurrenceData}
-                  onTypeChange={handleCooccurrenceTypeChange}
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading co-occurrence...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "trends" && (
-              trendData.length > 0 ? (
-                <TrendChart data={trendData} />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading trends...
-                  </div>
-                </div>
-              )
-            )}
-            {activeTab === "anomalies" && (
-              anomalyData.length > 0 ? (
-                <AnomalyChart data={anomalyData} />
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-slate-600 text-sm animate-pulse">
-                    Loading anomalies...
-                  </div>
-                </div>
-              )
-            )}
-          </div>
-        </div>
-
-        {/* Insight sidebar */}
-        <div
-          className="flex flex-col"
-          style={{
-            width: "20%",
-            borderLeft: "1px solid rgba(0, 240, 255, 0.08)",
-          }}
-        >
-          <InsightSidebar
-            insights={insights}
-            systemStatus={systemStatus}
-            onInsightClick={handleInsightClick}
-            onDismissInsight={handleDismissInsight}
-          />
-        </div>
+          {title}
+        </span>
+        <span className="text-[10px] text-slate-500 font-mono">
+          {subtitle}
+        </span>
       </div>
+      {children}
+    </Link>
+  );
+}
+
+function AlertRow({
+  type,
+  label,
+  value,
+  color,
+}: {
+  type: string;
+  label: string;
+  value: string;
+  color: string;
+}) {
+  return (
+    <div
+      className="flex items-center gap-3 px-4 py-2 rounded-lg"
+      style={{
+        background: `${color}08`,
+        border: `1px solid ${color}20`,
+      }}
+    >
+      <span
+        className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded"
+        style={{ background: `${color}15`, color }}
+      >
+        {type}
+      </span>
+      <span className="text-[10px] font-mono text-slate-400 flex-1 truncate">
+        {label}
+      </span>
+      <span
+        className="text-[10px] font-mono font-bold"
+        style={{ color }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="text-[10px] text-slate-600 font-mono py-2">
+      No data yet — compute engine may still be processing
     </div>
   );
 }
