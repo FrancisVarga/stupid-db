@@ -43,6 +43,24 @@ fn profiled_env_u32(profile: &str, key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+fn profiled_env_u64(profile: &str, key: &str, default: u64) -> u64 {
+    profiled_env_opt(profile, key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn profiled_env_usize(profile: &str, key: &str, default: usize) -> usize {
+    profiled_env_opt(profile, key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn profiled_env_bool(profile: &str, key: &str, default: bool) -> bool {
+    profiled_env_opt(profile, key)
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(default)
+}
+
 // ── Top-level config ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +75,7 @@ pub struct Config {
     pub llm: LlmConfig,
     pub ollama: OllamaConfig,
     pub embedding: EmbeddingConfig,
+    pub queue: QueueConfig,
 }
 
 /// Well-known env keys that identify a profile when prefixed.
@@ -92,6 +111,7 @@ impl Config {
             llm: LlmConfig::from_env_profiled(p),
             ollama: OllamaConfig::from_env_profiled(p),
             embedding: EmbeddingConfig::from_env_profiled(p),
+            queue: QueueConfig::from_env_profiled(p),
         }
     }
 
@@ -131,6 +151,7 @@ impl Config {
         tracing::info!("  llm:         provider={}", self.llm.provider);
         tracing::info!("  ollama:      url={}", self.ollama.url);
         tracing::info!("  embedding:   provider={}", self.embedding.provider);
+        tracing::info!("  queue:       enabled={}, provider={}, url={}", self.queue.enabled, self.queue.provider, self.queue.queue_url);
     }
 
     /// Return a redacted view safe for API responses (no secrets).
@@ -162,6 +183,14 @@ impl Config {
             },
             "ollama": { "url": self.ollama.url, "model": self.ollama.model },
             "embedding": { "provider": self.embedding.provider, "dimensions": self.embedding.dimensions },
+            "queue": {
+                "enabled": self.queue.enabled,
+                "provider": self.queue.provider,
+                "queue_url": self.queue.queue_url,
+                "poll_interval_ms": self.queue.poll_interval_ms,
+                "max_batch_size": self.queue.max_batch_size,
+                "micro_batch_size": self.queue.micro_batch_size,
+            },
         })
     }
 }
@@ -393,6 +422,68 @@ impl EmbeddingConfig {
             dimensions: profiled_env_u32(p, "EMBEDDING_DIMENSIONS", 768),
             onnx_model_path: profiled_env_opt(p, "ONNX_MODEL_PATH"),
             batch_size: profiled_env_u32(p, "EMBEDDING_BATCH_SIZE", 64),
+        }
+    }
+}
+
+// ── Queue Consumer ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueConfig {
+    /// Enable queue consumer (default: false).
+    pub enabled: bool,
+    /// Queue provider: "sqs", "redis", "mqtt" (default: "sqs").
+    pub provider: String,
+    /// Queue URL (e.g., SQS queue URL).
+    pub queue_url: String,
+    /// Polling interval in milliseconds (default: 1000).
+    pub poll_interval_ms: u64,
+    /// Max messages per poll (SQS max is 10) (default: 10).
+    pub max_batch_size: u32,
+    /// SQS visibility timeout in seconds (default: 30).
+    pub visibility_timeout_secs: u32,
+    /// Micro-batch size before processing (default: 100).
+    pub micro_batch_size: usize,
+    /// Micro-batch timeout in milliseconds (default: 1000).
+    pub micro_batch_timeout_ms: u64,
+    /// Dead-letter queue URL (optional).
+    pub dlq_url: Option<String>,
+    /// Queue-specific AWS credentials (override global AwsConfig).
+    /// Read from `QUEUE_AWS_*` env vars, falls back to global `AWS_*`.
+    pub aws: AwsConfig,
+}
+
+impl QueueConfig {
+    fn from_env_profiled(p: &str) -> Self {
+        let dlq_raw = profiled_env_or(p, "QUEUE_DLQ_URL", "");
+
+        // Queue-specific AWS: QUEUE_AWS_* → falls back to AWS_*
+        let aws = AwsConfig {
+            region: profiled_env_opt(p, "QUEUE_AWS_REGION")
+                .unwrap_or_else(|| profiled_env_or(p, "AWS_REGION", "ap-southeast-1")),
+            access_key_id: profiled_env_opt(p, "QUEUE_AWS_ACCESS_KEY_ID")
+                .or_else(|| profiled_env_opt(p, "AWS_ACCESS_KEY_ID")),
+            secret_access_key: profiled_env_opt(p, "QUEUE_AWS_SECRET_ACCESS_KEY")
+                .or_else(|| profiled_env_opt(p, "AWS_SECRET_ACCESS_KEY")),
+            session_token: profiled_env_opt(p, "QUEUE_AWS_SESSION_TOKEN")
+                .or_else(|| profiled_env_opt(p, "AWS_SESSION_TOKEN")),
+            s3_bucket: None,
+            s3_prefix: None,
+            endpoint_url: profiled_env_opt(p, "QUEUE_AWS_ENDPOINT_URL")
+                .or_else(|| profiled_env_opt(p, "AWS_ENDPOINT_URL")),
+        };
+
+        Self {
+            enabled: profiled_env_bool(p, "QUEUE_ENABLED", false),
+            provider: profiled_env_or(p, "QUEUE_PROVIDER", "sqs"),
+            queue_url: profiled_env_or(p, "QUEUE_URL", ""),
+            poll_interval_ms: profiled_env_u64(p, "QUEUE_POLL_INTERVAL_MS", 1000),
+            max_batch_size: profiled_env_u32(p, "QUEUE_MAX_BATCH_SIZE", 10),
+            visibility_timeout_secs: profiled_env_u32(p, "QUEUE_VISIBILITY_TIMEOUT_SECS", 30),
+            micro_batch_size: profiled_env_usize(p, "QUEUE_MICRO_BATCH_SIZE", 100),
+            micro_batch_timeout_ms: profiled_env_u64(p, "QUEUE_MICRO_BATCH_TIMEOUT_MS", 1000),
+            dlq_url: if dlq_raw.is_empty() { None } else { Some(dlq_raw) },
+            aws,
         }
     }
 }

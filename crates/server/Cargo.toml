@@ -13,6 +13,7 @@ stupid-compute = { path = "../compute" }
 stupid-catalog = { path = "../catalog" }
 stupid-llm = { path = "../llm" }
 stupid-storage = { path = "../storage" }
+stupid-queue = { path = "../queue" }
 tokio = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
@@ -26,3 +27,5 @@ chrono = { workspace = true }
 dotenvy = { workspace = true }
 walkdir = { workspace = true }
 rayon = { workspace = true }
+notify = { workspace = true }
+futures = { workspace = true }
