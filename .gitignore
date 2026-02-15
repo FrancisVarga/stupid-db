@@ -2,8 +2,9 @@
 /target/
 Cargo.lock
 
-# Data
-/data/
+# Data (parquet segments are large — only track rule YAML configs)
+/data/*
+!/data/rules/
 
 # Node
 node_modules/
