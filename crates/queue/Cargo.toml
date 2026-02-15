@@ -14,5 +14,4 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 aws-sdk-sqs = "1"
-aws-config = "1"
 aws-credential-types = "1"

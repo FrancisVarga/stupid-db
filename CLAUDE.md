@@ -18,8 +18,21 @@
 
 - Never modify D:\w88_data — treat as read-only production sample data
 
+## Architecture Patterns
+
+- Mirror existing CRUD patterns when adding new resource types — same file structure, naming, API routes
+- Form → Next.js proxy → Rust backend (encrypted JSON) → Dashboard is standard 4-layer data flow
+
 ## Design Workflow
 
 - For new features, propose architecture in conversation before writing docs or code
 - Update docs before implementing features — architecture stabilizes through writing
 - Document ADRs in docs/architecture/decisions/ before major architectural changes
+
+## Windows Development
+
+- On Windows, always check system PATH and environment variables early when debugging tool/binary resolution issues. Prefer modifying system PATH over shims, symlinks, or wrapper scripts.
+
+## Troubleshooting
+
+- When stuck, consult git history (commits, PRs) and .claude/retrospectives/ for context and past solutions

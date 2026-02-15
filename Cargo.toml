@@ -10,6 +10,7 @@ members = [
     "crates/llm",
     "crates/storage",
     "crates/athena",
+    "crates/agent",
     "crates/server",
     "crates/queue",
 ]
@@ -82,3 +83,15 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-athena = "1"
 aws-sdk-s3 = "1"
 aws-types = "1"
+
+# ── Dev build optimizations ────────────────────────────────────────
+# See issue #61: https://github.com/FrancisVarga/stupid-db/issues/61
+
+[profile.dev]
+opt-level = 0                    # fastest compilation for our code
+debug = 1                        # line tables only (smaller PDB, faster link)
+split-debuginfo = "unpacked"     # faster incremental linking on Windows
+
+[profile.dev.package."*"]
+opt-level = 1                    # basic optimizations for deps (cached, rarely change)
+debug = false                    # no debug info for third-party deps
