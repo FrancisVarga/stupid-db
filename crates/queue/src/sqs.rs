@@ -89,7 +89,7 @@ impl QueueConsumer for SqsConsumer {
             .message_system_attribute_names(aws_sdk_sqs::types::MessageSystemAttributeName::All)
             .send()
             .await
-            .map_err(|e| QueueError::Connection(format!("SQS receive failed: {e}")))?;
+            .map_err(|e| QueueError::Connection(format!("SQS receive failed: {e:?}")))?;
 
         let sqs_messages = resp.messages.unwrap_or_default();
         debug!(count = sqs_messages.len(), "Received SQS messages");
@@ -154,7 +154,7 @@ impl QueueConsumer for SqsConsumer {
             .receipt_handle(receipt_handle)
             .send()
             .await
-            .map_err(|e| QueueError::Ack(format!("SQS delete failed: {e}")))?;
+            .map_err(|e| QueueError::Ack(format!("SQS delete failed: {e:?}")))?;
 
         Ok(())
     }
@@ -169,7 +169,7 @@ impl QueueConsumer for SqsConsumer {
             .visibility_timeout(0)
             .send()
             .await
-            .map_err(|e| QueueError::Provider(format!("SQS visibility change failed: {e}")))?;
+            .map_err(|e| QueueError::Provider(format!("SQS visibility change failed: {e:?}")))?;
 
         Ok(())
     }
@@ -182,7 +182,7 @@ impl QueueConsumer for SqsConsumer {
             .attribute_names(QueueAttributeName::ApproximateNumberOfMessages)
             .send()
             .await
-            .map_err(|e| QueueError::Connection(format!("SQS health check failed: {e}")))?;
+            .map_err(|e| QueueError::Connection(format!("SQS health check failed: {e:?}")))?;
 
         let count = resp
             .attributes()
@@ -209,7 +209,7 @@ impl QueueConsumer for SqsConsumer {
             .attribute_names(QueueAttributeName::ApproximateNumberOfMessages)
             .send()
             .await
-            .map_err(|e| QueueError::Connection(format!("SQS DLQ check failed: {e}")))?;
+            .map_err(|e| QueueError::Connection(format!("SQS DLQ check failed: {e:?}")))?;
 
         let count = resp
             .attributes()

@@ -469,8 +469,9 @@ impl QueueConfig {
                 .or_else(|| profiled_env_opt(p, "AWS_SESSION_TOKEN")),
             s3_bucket: None,
             s3_prefix: None,
-            endpoint_url: profiled_env_opt(p, "QUEUE_AWS_ENDPOINT_URL")
-                .or_else(|| profiled_env_opt(p, "AWS_ENDPOINT_URL")),
+            // No fallback to AWS_ENDPOINT_URL — that's typically S3-specific.
+            // SQS auto-resolves its endpoint from the region.
+            endpoint_url: profiled_env_opt(p, "QUEUE_AWS_ENDPOINT_URL"),
         };
 
         Self {
