@@ -1,3 +1,9 @@
 pub mod communities;
+pub mod dbscan;
 pub mod degree;
+pub mod graph_stats;
+pub mod kmeans;
 pub mod pagerank;
+pub mod prefixspan;
+pub mod shortest_path;
+pub mod streaming_kmeans;
