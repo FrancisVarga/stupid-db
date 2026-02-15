@@ -7,7 +7,6 @@ import {
   updateAnomalyRule,
   type AnomalyRule,
   type NotificationChannel,
-  type ChannelType,
 } from "@/lib/api-anomaly-rules";
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -117,52 +116,45 @@ function makeEmptyChannel(): ChannelFormEntry {
 }
 
 function channelEntryToNotification(ch: ChannelFormEntry): NotificationChannel {
-  let channel: ChannelType;
-  if (ch.kind === "webhook") {
-    channel = { webhook: { url: ch.url, method: ch.method || "POST" } };
-  } else if (ch.kind === "email") {
-    channel = {
-      email: {
-        to: ch.to
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        ...(ch.from ? { from: ch.from } : {}),
-        ...(ch.smtpHost ? { smtp_host: ch.smtpHost } : {}),
-        ...(ch.smtpPort ? { smtp_port: parseInt(ch.smtpPort) || 587 } : {}),
-      },
-    };
-  } else {
-    channel = { telegram: { bot_token: ch.botToken, chat_id: ch.chatId } };
-  }
-  return {
-    channel,
+  const base: NotificationChannel = {
+    channel: ch.kind as "webhook" | "email" | "telegram",
     ...(ch.on ? { on: ch.on.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
     ...(ch.subject ? { subject: ch.subject } : {}),
-    ...(ch.body ? { body: ch.body } : {}),
+    ...(ch.body ? { template: ch.body } : {}),
   };
+  if (ch.kind === "webhook") {
+    base.url = ch.url;
+    base.method = ch.method || "POST";
+  } else if (ch.kind === "email") {
+    base.to = ch.to.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ch.from) base.from = ch.from;
+    if (ch.smtpHost) base.smtp_host = ch.smtpHost;
+    if (ch.smtpPort) base.smtp_port = parseInt(ch.smtpPort) || 587;
+  } else {
+    base.bot_token = ch.botToken;
+    base.chat_id = ch.chatId;
+  }
+  return base;
 }
 
 function notificationToChannelEntry(n: NotificationChannel): ChannelFormEntry {
   const entry = makeEmptyChannel();
-  if ("webhook" in n.channel) {
-    entry.kind = "webhook";
-    entry.url = n.channel.webhook.url;
-    entry.method = n.channel.webhook.method || "POST";
-  } else if ("email" in n.channel) {
-    entry.kind = "email";
-    entry.to = n.channel.email.to.join(", ");
-    entry.from = n.channel.email.from || "";
-    entry.smtpHost = n.channel.email.smtp_host || "";
-    entry.smtpPort = String(n.channel.email.smtp_port || 587);
-  } else if ("telegram" in n.channel) {
-    entry.kind = "telegram";
-    entry.botToken = n.channel.telegram.bot_token;
-    entry.chatId = n.channel.telegram.chat_id;
+  entry.kind = n.channel;
+  if (n.channel === "webhook") {
+    entry.url = n.url || "";
+    entry.method = n.method || "POST";
+  } else if (n.channel === "email") {
+    entry.to = (n.to || []).join(", ");
+    entry.from = n.from || "";
+    entry.smtpHost = n.smtp_host || "";
+    entry.smtpPort = String(n.smtp_port || 587);
+  } else if (n.channel === "telegram") {
+    entry.botToken = n.bot_token || "";
+    entry.chatId = n.chat_id || "";
   }
   entry.on = n.on?.join(", ") || "";
   entry.subject = n.subject || "";
-  entry.body = n.body || "";
+  entry.body = n.template || "";
   return entry;
 }
 
@@ -188,14 +180,13 @@ function formToYaml(form: FormState, ruleId?: string): string {
 
   lines.push("detection:");
   if (form.detectionType === "template") {
-    lines.push("  template:");
-    lines.push(`    type: ${form.templateType}`);
-    lines.push("    params:");
-    if (form.feature) lines.push(`      feature: "${form.feature}"`);
+    lines.push(`  template: ${form.templateType}`);
+    lines.push("  params:");
+    if (form.feature) lines.push(`    feature: "${form.feature}"`);
     for (const [k, v] of Object.entries(form.templateParams)) {
       if (v) {
         const num = Number(v);
-        lines.push(`      ${k}: ${isNaN(num) ? `"${v}"` : v}`);
+        lines.push(`    ${k}: ${isNaN(num) ? `"${v}"` : v}`);
       }
     }
   } else {
@@ -225,23 +216,22 @@ function formToYaml(form: FormState, ruleId?: string): string {
     lines.push("notifications:");
     for (const ch of form.channels) {
       const n = channelEntryToNotification(ch);
-      lines.push("  - channel:");
-      if ("webhook" in n.channel) {
-        lines.push("      webhook:");
-        lines.push(`        url: "${n.channel.webhook.url}"`);
-        if (n.channel.webhook.method) lines.push(`        method: "${n.channel.webhook.method}"`);
-      } else if ("email" in n.channel) {
-        lines.push("      email:");
-        lines.push(`        to: [${n.channel.email.to.map((t) => `"${t}"`).join(", ")}]`);
-        if (n.channel.email.from) lines.push(`        from: "${n.channel.email.from}"`);
-      } else if ("telegram" in n.channel) {
-        lines.push("      telegram:");
-        lines.push(`        bot_token: "${n.channel.telegram.bot_token}"`);
-        lines.push(`        chat_id: "${n.channel.telegram.chat_id}"`);
+      lines.push(`  - channel: ${n.channel}`);
+      if (n.on?.length) lines.push(`    on: [${n.on.map((o: string) => `"${o}"`).join(", ")}]`);
+      if (n.channel === "webhook") {
+        if (n.url) lines.push(`    url: "${n.url}"`);
+        if (n.method) lines.push(`    method: "${n.method}"`);
+      } else if (n.channel === "email") {
+        if (n.to?.length) lines.push(`    to: [${n.to.map((t: string) => `"${t}"`).join(", ")}]`);
+        if (n.from) lines.push(`    from: "${n.from}"`);
+        if (n.smtp_host) lines.push(`    smtp_host: "${n.smtp_host}"`);
+        if (n.smtp_port) lines.push(`    smtp_port: ${n.smtp_port}`);
+      } else if (n.channel === "telegram") {
+        if (n.bot_token) lines.push(`    bot_token: "${n.bot_token}"`);
+        if (n.chat_id) lines.push(`    chat_id: "${n.chat_id}"`);
       }
-      if (n.on?.length) lines.push(`    on: [${n.on.map((o) => `"${o}"`).join(", ")}]`);
       if (n.subject) lines.push(`    subject: "${n.subject}"`);
-      if (n.body) lines.push(`    body: "${n.body}"`);
+      if (n.template) lines.push(`    template: "${n.template}"`);
     }
   }
 
@@ -260,8 +250,8 @@ function ruleToFormState(rule: AnomalyRule): FormState {
 
   if (rule.detection.template) {
     form.detectionType = "template";
-    form.templateType = (rule.detection.template.type as TemplateType) || "spike";
-    const params = { ...rule.detection.template.params };
+    form.templateType = (rule.detection.template as TemplateType) || "spike";
+    const params = { ...(rule.detection.params || {}) };
     form.feature = String(params.feature || "");
     delete params.feature;
     form.templateParams = Object.fromEntries(

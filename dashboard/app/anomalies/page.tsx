@@ -49,17 +49,11 @@ export default function AnomaliesPage() {
   const [entityFilter, setEntityFilter] = useState<string | null>(null);
 
   useEffect(() => {
-    async function load() {
-      const results = await Promise.allSettled([
-        fetchAnomalies(limit),
-        fetchStats(),
-      ]);
-      if (results[0].status === "fulfilled") setAnomalies(results[0].value);
-      else setError("Server offline");
-      if (results[1].status === "fulfilled") setStats(results[1].value);
-      setLoading(false);
-    }
-    load();
+    setLoading(true);
+    fetchAnomalies(limit)
+      .then((a) => { setAnomalies(a); setLoading(false); })
+      .catch(() => { setError("Server offline"); setLoading(false); });
+    fetchStats().then(setStats).catch(() => {});
   }, [limit]);
 
   const filtered = anomalies.filter((a) => {

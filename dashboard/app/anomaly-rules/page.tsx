@@ -426,17 +426,19 @@ export default function AnomalyRulesPage() {
                             color: "#a855f7",
                           }}
                         >
-                          {selectedRule.detection.template.type}
+                          {selectedRule.detection.template}
                         </span>
                       </div>
-                      <div className="space-y-1">
-                        {Object.entries(selectedRule.detection.template.params).map(([k, v]) => (
-                          <div key={k} className="flex items-center gap-2">
-                            <span className="text-[9px] text-slate-500 font-mono">{k}:</span>
-                            <span className="text-[10px] text-slate-300 font-mono">{String(v)}</span>
-                          </div>
-                        ))}
-                      </div>
+                      {selectedRule.detection.params && (
+                        <div className="space-y-1">
+                          {Object.entries(selectedRule.detection.params).map(([k, v]) => (
+                            <div key={k} className="flex items-center gap-2">
+                              <span className="text-[9px] text-slate-500 font-mono">{k}:</span>
+                              <span className="text-[10px] text-slate-300 font-mono">{String(v)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   {selectedRule.detection.compose && (
@@ -534,16 +536,16 @@ export default function AnomalyRulesPage() {
                   ) : (
                     <div className="space-y-2">
                       {selectedRule.notifications.map((n, i) => {
-                        const channelName = "webhook" in n.channel
+                        const channelName = n.channel === "webhook"
                           ? "Webhook"
-                          : "email" in n.channel
+                          : n.channel === "email"
                           ? "Email"
                           : "Telegram";
-                        const detail = "webhook" in n.channel
-                          ? n.channel.webhook.url
-                          : "email" in n.channel
-                          ? n.channel.email.to.join(", ")
-                          : n.channel.telegram.chat_id;
+                        const detail = n.channel === "webhook"
+                          ? (n.url || "")
+                          : n.channel === "email"
+                          ? (n.to || []).join(", ")
+                          : (n.chat_id || "");
 
                         return (
                           <div key={i} className="flex items-center gap-2">

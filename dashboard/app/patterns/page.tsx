@@ -34,17 +34,10 @@ export default function PatternsPage() {
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
 
   useEffect(() => {
-    async function load() {
-      const results = await Promise.allSettled([
-        fetchPatterns(),
-        fetchStats(),
-      ]);
-      if (results[0].status === "fulfilled") setPatterns(results[0].value);
-      else setError("Server offline");
-      if (results[1].status === "fulfilled") setStats(results[1].value);
-      setLoading(false);
-    }
-    load();
+    fetchPatterns()
+      .then((p) => { setPatterns(p); setLoading(false); })
+      .catch(() => { setError("Server offline"); setLoading(false); });
+    fetchStats().then(setStats).catch(() => {});
   }, []);
 
   const filtered =

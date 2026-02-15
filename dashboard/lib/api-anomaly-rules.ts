@@ -23,6 +23,8 @@ export interface RuleSummary {
   template: string | null;
   cron: string;
   channel_count: number;
+  last_triggered?: string | null;
+  trigger_count: number;
 }
 
 /** Full anomaly rule (returned by GET/POST/PUT endpoints) */
@@ -51,13 +53,10 @@ export interface Schedule {
 }
 
 export interface Detection {
-  template?: DetectionTemplate;
+  template?: string;
+  params?: Record<string, unknown>;
   compose?: Composition;
-}
-
-export interface DetectionTemplate {
-  type: string;
-  params: Record<string, unknown>;
+  enrich?: Record<string, unknown>;
 }
 
 export interface Composition {
@@ -91,16 +90,26 @@ export interface FilterCondition {
 }
 
 export interface NotificationChannel {
-  channel: ChannelType;
+  channel: "webhook" | "email" | "telegram";
   on?: string[];
+  // Webhook fields
+  url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body_template?: string;
+  // Email fields
+  smtp_host?: string;
+  smtp_port?: number;
+  tls?: boolean;
+  from?: string;
+  to?: string[];
   subject?: string;
-  body?: string;
+  template?: string;
+  // Telegram fields
+  bot_token?: string;
+  chat_id?: string;
+  parse_mode?: string;
 }
-
-export type ChannelType =
-  | { webhook: { url: string; method?: string; headers?: Record<string, string> } }
-  | { email: { to: string[]; from?: string; smtp_host?: string; smtp_port?: number } }
-  | { telegram: { bot_token: string; chat_id: string } };
 
 // ── Lifecycle response types ─────────────────────────────────────────
 

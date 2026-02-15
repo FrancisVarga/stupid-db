@@ -192,18 +192,44 @@ export default function AnomalyRuleSidebar({
                 </span>
               </div>
 
-              {/* Row 3: channel count */}
-              <div className="flex items-center gap-1 mt-1 ml-3.5">
-                <svg
-                  width="9" height="9" viewBox="0 0 24 24" fill="none"
-                  stroke="#475569" strokeWidth="2" className="shrink-0"
-                >
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-                <span className="text-[8px] text-slate-600 font-mono">
-                  {rule.channel_count} channel{rule.channel_count !== 1 ? "s" : ""}
-                </span>
+              {/* Row 3: trigger status + channel count */}
+              <div className="flex items-center gap-2 mt-1 ml-3.5">
+                {rule.enabled && rule.trigger_count > 0 && (
+                  <span
+                    className="text-[8px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                    style={{
+                      color: "#06d6a0",
+                      background: "rgba(6, 214, 160, 0.08)",
+                      border: "1px solid rgba(6, 214, 160, 0.15)",
+                    }}
+                  >
+                    {rule.trigger_count}x triggered
+                  </span>
+                )}
+                {rule.enabled && rule.trigger_count === 0 && (
+                  <span
+                    className="text-[8px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded animate-pulse"
+                    style={{
+                      color: "#00f0ff",
+                      background: "rgba(0, 240, 255, 0.06)",
+                      border: "1px solid rgba(0, 240, 255, 0.12)",
+                    }}
+                  >
+                    scheduled
+                  </span>
+                )}
+                <div className="flex items-center gap-1">
+                  <svg
+                    width="9" height="9" viewBox="0 0 24 24" fill="none"
+                    stroke="#475569" strokeWidth="2" className="shrink-0"
+                  >
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                  <span className="text-[8px] text-slate-600 font-mono">
+                    {rule.channel_count}
+                  </span>
+                </div>
               </div>
             </button>
           );
