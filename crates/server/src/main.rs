@@ -1,3 +1,4 @@
+mod anomaly_rules;
 mod api;
 #[cfg(feature = "aws")]
 mod athena_connections;
@@ -465,6 +466,19 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
     #[cfg(feature = "aws")]
     info!("Athena connection store initialized");
 
+    // Initialize anomaly rule loader.
+    let rules_dir = config.storage.data_dir.join("rules");
+    let rule_loader = stupid_rules::loader::RuleLoader::new(rules_dir.clone());
+    match rule_loader.load_all() {
+        Ok(results) => {
+            let loaded = results.iter().filter(|r| matches!(r.status, stupid_rules::loader::LoadStatus::Loaded { .. })).count();
+            info!("Loaded {} anomaly rules from {}", loaded, rules_dir.display());
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load anomaly rules: {} — rules API will start empty", e);
+        }
+    }
+
     let state = Arc::new(state::AppState {
         graph: shared_graph.clone(),
         knowledge: knowledge.clone(),
@@ -485,6 +499,9 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         queue_connections: Arc::new(RwLock::new(queue_conn_store)),
         #[cfg(feature = "aws")]
         athena_connections: Arc::new(RwLock::new(athena_conn_store)),
+        rule_loader,
+        trigger_history: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+        audit_log: stupid_rules::audit_log::AuditLog::new(),
     });
 
     let app = Router::new()
@@ -529,6 +546,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh));
 
     let app = app
+        .merge(anomaly_rules::anomaly_rules_router())
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 

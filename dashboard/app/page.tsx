@@ -162,6 +162,17 @@ export default function DashboardPage() {
             Agents
           </Link>
           <Link
+            href="/anomaly-rules"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(249, 115, 22, 0.08)",
+              border: "1px solid rgba(249, 115, 22, 0.2)",
+              color: "#f97316",
+            }}
+          >
+            Rules
+          </Link>
+          <Link
             href="/explore"
             className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
             style={{
