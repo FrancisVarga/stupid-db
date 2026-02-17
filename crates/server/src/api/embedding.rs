@@ -4,6 +4,7 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -145,6 +146,16 @@ pub async fn upload(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB insert failed: {e}")))?;
 
+    // Persist original file to data/embeddings/{document_id}/
+    let embeddings_dir = state.data_dir.join("embeddings").join(document_id.to_string());
+    fs::create_dir_all(&embeddings_dir)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create storage dir: {e}")))?;
+    fs::write(embeddings_dir.join(&filename), &bytes)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save file: {e}")))?;
+    info!("Saved original file to {}", embeddings_dir.join(&filename).display());
+
     // Insert chunks with embeddings
     let chunk_inserts: Vec<ChunkInsert> = chunks
         .iter()
@@ -233,6 +244,11 @@ pub async fn delete_document(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Delete failed: {e}")))?;
 
     if deleted {
+        // Clean up stored file
+        let embeddings_dir = state.data_dir.join("embeddings").join(id.to_string());
+        if let Err(e) = fs::remove_dir_all(&embeddings_dir).await {
+            warn!("Failed to remove file dir {}: {e}", embeddings_dir.display());
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, "Document not found".to_string()))
