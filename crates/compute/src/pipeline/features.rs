@@ -257,6 +257,71 @@ fn encode_currency(currency: &str) -> f64 {
     }
 }
 
+// ── Config-driven encoding ─────────────────────────────────────────
+
+/// Encode VIP group using a compiled FeatureConfig map.
+///
+/// Looks up the lowercased group in the config's vip_encoding map.
+/// Falls back according to the config's fallback strategy.
+pub fn encode_vip_group_from_config(
+    group: &str,
+    config: &stupid_rules::feature_config::CompiledFeatureConfig,
+) -> f64 {
+    let key = group.to_lowercase();
+    if let Some(&val) = config.vip_encoding.get(&key) {
+        return val;
+    }
+    match &config.vip_fallback {
+        stupid_rules::feature_config::FallbackStrategy::HashBased => {
+            let hash: u32 = group.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            (hash % 100) as f64 / 100.0
+        }
+        stupid_rules::feature_config::FallbackStrategy::Default(v) => *v,
+    }
+}
+
+/// Encode currency using a compiled FeatureConfig map.
+pub fn encode_currency_from_config(
+    currency: &str,
+    config: &stupid_rules::feature_config::CompiledFeatureConfig,
+) -> f64 {
+    let key = currency.to_uppercase();
+    if let Some(&val) = config.currency_encoding.get(&key) {
+        return val;
+    }
+    match &config.currency_fallback {
+        stupid_rules::feature_config::FallbackStrategy::HashBased => {
+            let hash: u32 = currency.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            (hash % 100) as f64 / 100.0
+        }
+        stupid_rules::feature_config::FallbackStrategy::Default(v) => *v,
+    }
+}
+
+/// Check if a platform string indicates mobile using config keywords.
+pub fn is_mobile_from_config(
+    platform: &str,
+    config: &stupid_rules::feature_config::CompiledFeatureConfig,
+) -> bool {
+    let lower = platform.to_lowercase();
+    config.mobile_keywords.iter().any(|kw| lower.contains(kw.as_str()))
+}
+
+/// Classify an event type into a category using config keywords.
+///
+/// Returns the first matching category, or `None` if no match.
+pub fn classify_event_from_config(
+    event_type: &str,
+    config: &stupid_rules::feature_config::CompiledFeatureConfig,
+) -> Option<String> {
+    for (category, keywords) in &config.event_classification {
+        if keywords.iter().any(|kw| event_type.contains(kw.as_str())) {
+            return Some(category.clone());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

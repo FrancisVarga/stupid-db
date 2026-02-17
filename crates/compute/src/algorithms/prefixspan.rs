@@ -405,6 +405,114 @@ fn classify_pattern(sequence: &[EventTypeCompressed]) -> PatternCategory {
     PatternCategory::Unknown
 }
 
+// ── Config-driven variants ──────────────────────────────────────────
+
+/// Compress an event using a compiled FeatureConfig's event compression rules.
+///
+/// Looks up `doc.event_type` in `config.event_compression` for the compression
+/// code and optional subtype field. Falls back to first 3 characters for
+/// unknown event types.
+pub fn compress_event_with_config(
+    doc: &Document,
+    config: &stupid_rules::feature_config::CompiledFeatureConfig,
+) -> EventTypeCompressed {
+    let get = |name: &str| -> Option<&str> {
+        doc.fields.get(name).and_then(FieldValue::as_str).filter(|s| !s.is_empty())
+    };
+
+    if let Some(rule) = config.event_compression.get(doc.event_type.as_str()) {
+        let code = if let Some(ref field) = rule.subtype_field {
+            if let Some(subtype) = get(field) {
+                let truncated = if subtype.len() > 8 { &subtype[..8] } else { subtype };
+                format!("{}:{}", rule.code, truncated)
+            } else {
+                rule.code.clone()
+            }
+        } else {
+            rule.code.clone()
+        };
+        EventTypeCompressed(code)
+    } else {
+        // Fallback for unknown event types.
+        let short = if doc.event_type.len() > 3 { &doc.event_type[..3] } else { &doc.event_type };
+        EventTypeCompressed(short.to_string())
+    }
+}
+
+/// Classify a pattern using declarative PatternConfig rules.
+///
+/// Evaluates each classification rule in order; first match wins.
+/// If no rule matches, returns `PatternCategory::Unknown`.
+pub fn classify_pattern_with_rules(
+    sequence: &[EventTypeCompressed],
+    rules: &[stupid_rules::pattern_config::ClassificationRule],
+) -> PatternCategory {
+    for rule in rules {
+        if matches_classification_condition(sequence, &rule.condition) {
+            return pattern_category_from_str(&rule.category);
+        }
+    }
+    PatternCategory::Unknown
+}
+
+/// Evaluate a single classification condition against a pattern sequence.
+fn matches_classification_condition(
+    sequence: &[EventTypeCompressed],
+    condition: &stupid_rules::pattern_config::ClassificationCondition,
+) -> bool {
+    match condition.check.as_str() {
+        "count_gte" => {
+            let code = condition.event_code.as_deref().unwrap_or("");
+            let min = condition.min_count.unwrap_or(0);
+            let count = sequence.iter().filter(|e| {
+                if code.is_empty() { true } else { e.0.starts_with(code) }
+            }).count();
+            count >= min
+        }
+        "sequence_match" => {
+            if let Some(ref seq_codes) = condition.sequence {
+                // Check if the pattern contains the specified sequence in order.
+                let mut seq_idx = 0;
+                for event in sequence {
+                    if seq_idx < seq_codes.len() && event.0.starts_with(&seq_codes[seq_idx]) {
+                        seq_idx += 1;
+                    }
+                }
+                seq_idx >= seq_codes.len()
+            } else {
+                false
+            }
+        }
+        "has_then_absent" => {
+            let present = condition.present_code.as_deref().unwrap_or("");
+            let absent = condition.absent_code.as_deref().unwrap_or("");
+            let has_present = sequence.iter().any(|e| e.0.starts_with(present));
+            if !has_present {
+                return false;
+            }
+            // Check that the absent code doesn't appear after the last occurrence of present.
+            let last_present_pos = sequence.iter().rposition(|e| e.0.starts_with(present));
+            if let Some(pos) = last_present_pos {
+                !sequence[pos + 1..].iter().any(|e| e.0.starts_with(absent))
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Map a category string from PatternConfig YAML to our PatternCategory enum.
+fn pattern_category_from_str(s: &str) -> PatternCategory {
+    match s {
+        "ErrorChain" => PatternCategory::ErrorChain,
+        "Churn" => PatternCategory::Churn,
+        "Funnel" => PatternCategory::Funnel,
+        "Engagement" => PatternCategory::Engagement,
+        _ => PatternCategory::Unknown,
+    }
+}
+
 /// Generate a deterministic pattern ID from the sequence.
 fn pattern_id(sequence: &[EventTypeCompressed]) -> String {
     use std::hash::{Hash, Hasher};

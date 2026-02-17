@@ -211,6 +211,18 @@ impl RuleDocument {
             _ => None,
         }
     }
+
+    /// Serialize this document to YAML, delegating to the inner type.
+    pub fn to_yaml(&self) -> std::result::Result<String, serde_yaml::Error> {
+        match self {
+            RuleDocument::Anomaly(r) => serde_yaml::to_string(r),
+            RuleDocument::EntitySchema(r) => serde_yaml::to_string(r),
+            RuleDocument::FeatureConfig(r) => serde_yaml::to_string(r),
+            RuleDocument::ScoringConfig(r) => serde_yaml::to_string(r),
+            RuleDocument::TrendConfig(r) => serde_yaml::to_string(r),
+            RuleDocument::PatternConfig(r) => serde_yaml::to_string(r),
+        }
+    }
 }
 
 // ── Root anomaly rule document ──────────────────────────────────────

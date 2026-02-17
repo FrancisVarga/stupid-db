@@ -2,6 +2,7 @@
 //!
 //! Watches the rules directory for YAML file changes (create, modify, delete)
 //! and reloads affected rules into the in-memory rule set.
+//! Supports all rule kinds via two-pass deserialization (RuleEnvelope → RuleDocument).
 
 use std::collections::HashMap;
 use std::fs;
@@ -15,7 +16,7 @@ use notify::{
 };
 use tracing::{info, warn};
 
-use crate::schema::AnomalyRule;
+use crate::schema::{AnomalyRule, RuleDocument, RuleEnvelope};
 
 // ── Deep-merge for `extends` inheritance ────────────────────────────
 
@@ -164,14 +165,18 @@ pub enum LoadStatus {
 
 /// Filesystem-backed rule loader with optional hot-reload.
 ///
-/// Scans a directory for `*.yml` / `*.yaml` files, deserializes them into
-/// [`AnomalyRule`] instances, and maintains an in-memory map keyed by rule ID.
-/// An optional `notify` watcher can be started to pick up changes automatically.
+/// Scans a directory (recursively) for `*.yml` / `*.yaml` files, deserializes
+/// them into [`RuleDocument`] instances via two-pass deserialization, and
+/// maintains an in-memory map keyed by rule ID.
+///
+/// For backward compatibility, anomaly rules are also accessible via [`rules()`].
 pub struct RuleLoader {
-    /// Directory containing rule YAML files.
+    /// Root directory containing rule YAML files.
     rules_dir: PathBuf,
-    /// In-memory rule store keyed by rule `metadata.id`.
-    rules: Arc<RwLock<HashMap<String, AnomalyRule>>>,
+    /// In-memory store of all rule documents keyed by `metadata.id`.
+    documents: Arc<RwLock<HashMap<String, RuleDocument>>>,
+    /// Backward-compatible anomaly-only store.
+    anomaly_rules: Arc<RwLock<HashMap<String, AnomalyRule>>>,
     /// Active filesystem watcher (held to keep it alive).
     _watcher: Option<RecommendedWatcher>,
 }
@@ -188,39 +193,56 @@ impl RuleLoader {
         }
         Self {
             rules_dir,
-            rules: Arc::new(RwLock::new(HashMap::new())),
+            documents: Arc::new(RwLock::new(HashMap::new())),
+            anomaly_rules: Arc::new(RwLock::new(HashMap::new())),
             _watcher: None,
         }
     }
 
-    /// Scan the rules directory and load all YAML files.
+    /// Recursively scan the rules directory and load all YAML files.
     ///
-    /// Dotfiles (filenames starting with `.`) are skipped.
+    /// Dotfiles (filenames starting with `.`) and non-YAML files are skipped.
+    /// Subdirectories are scanned recursively.
     /// Parse errors are reported per-file but do not abort the scan.
     pub fn load_all(&self) -> Result<Vec<LoadResult>> {
         let mut results = Vec::new();
+        self.scan_dir_recursive(&self.rules_dir, &mut results)?;
+        Ok(results)
+    }
 
-        let entries = fs::read_dir(&self.rules_dir)?;
+    /// Recursively scan a directory for YAML rule files.
+    fn scan_dir_recursive(&self, dir: &Path, results: &mut Vec<LoadResult>) -> Result<()> {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(path = %dir.display(), error = %e, "failed to read directory");
+                return Ok(());
+            }
+        };
+
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
 
-            // Skip directories
-            if path.is_dir() {
-                continue;
-            }
-
-            // Skip dotfiles
+            // Skip dotfiles/dotdirs
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.starts_with('.') {
-                    results.push(LoadResult {
-                        path,
-                        status: LoadStatus::Skipped {
-                            reason: "dotfile".to_string(),
-                        },
-                    });
+                    if path.is_file() {
+                        results.push(LoadResult {
+                            path,
+                            status: LoadStatus::Skipped {
+                                reason: "dotfile".to_string(),
+                            },
+                        });
+                    }
                     continue;
                 }
+            }
+
+            // Recurse into subdirectories
+            if path.is_dir() {
+                self.scan_dir_recursive(&path, results)?;
+                continue;
             }
 
             // Skip non-YAML extensions
@@ -241,13 +263,10 @@ impl RuleLoader {
             }
 
             match self.load_file(&path) {
-                Ok(rule) => {
-                    let rule_id = rule.metadata.id.clone();
-                    info!(rule_id = %rule_id, path = %path.display(), "loaded rule");
-                    self.rules
-                        .write()
-                        .expect("rules lock poisoned")
-                        .insert(rule_id.clone(), rule);
+                Ok(doc) => {
+                    let rule_id = doc.metadata().id.clone();
+                    info!(rule_id = %rule_id, kind = %doc.kind(), path = %path.display(), "loaded rule");
+                    self.insert_document(rule_id.clone(), doc);
                     results.push(LoadResult {
                         path,
                         status: LoadStatus::Loaded { rule_id },
@@ -265,22 +284,56 @@ impl RuleLoader {
             }
         }
 
-        Ok(results)
+        Ok(())
     }
 
-    /// Parse a single YAML file into an [`AnomalyRule`].
-    pub fn load_file(&self, path: &Path) -> Result<AnomalyRule> {
-        let contents = fs::read_to_string(path)?;
-        let rule: AnomalyRule = serde_yaml::from_str(&contents)?;
+    /// Insert a RuleDocument into both the documents map and (if anomaly) the anomaly_rules map.
+    fn insert_document(&self, id: String, doc: RuleDocument) {
+        if let RuleDocument::Anomaly(ref rule) = doc {
+            self.anomaly_rules
+                .write()
+                .expect("anomaly_rules lock poisoned")
+                .insert(id.clone(), rule.clone());
+        }
+        self.documents
+            .write()
+            .expect("documents lock poisoned")
+            .insert(id, doc);
+    }
 
-        // Basic validation
-        if rule.metadata.id.is_empty() {
+    /// Remove a document from both maps.
+    fn remove_document(&self, id: &str) {
+        self.documents
+            .write()
+            .expect("documents lock poisoned")
+            .remove(id);
+        self.anomaly_rules
+            .write()
+            .expect("anomaly_rules lock poisoned")
+            .remove(id);
+    }
+
+    /// Parse a single YAML file into a [`RuleDocument`] via two-pass deserialization.
+    ///
+    /// First pass: deserialize as [`RuleEnvelope`] to read the `kind` field.
+    /// Second pass: reconstruct and deserialize into the kind-specific type.
+    pub fn load_file(&self, path: &Path) -> Result<RuleDocument> {
+        let contents = fs::read_to_string(path)?;
+
+        // First pass: extract envelope (kind + metadata).
+        let envelope: RuleEnvelope = serde_yaml::from_str(&contents)?;
+
+        // Basic validation.
+        if envelope.metadata.id.is_empty() {
             return Err(RuleError::Validation(
                 "rule metadata.id must not be empty".to_string(),
             ));
         }
 
-        Ok(rule)
+        // Second pass: deserialize into kind-specific type.
+        envelope
+            .parse_full()
+            .map_err(|e| RuleError::Validation(format!("failed to parse rule '{}': {}", envelope.metadata.id, e)))
     }
 
     /// Start a filesystem watcher with 500ms debounce.
@@ -289,54 +342,60 @@ impl RuleLoader {
     /// On file delete the rule is removed from the in-memory map.
     /// Parse errors are logged as warnings; the previous version is kept.
     pub fn watch(&mut self) -> Result<()> {
-        let rules = Arc::clone(&self.rules);
+        let documents = Arc::clone(&self.documents);
+        let anomaly_rules = Arc::clone(&self.anomaly_rules);
         let rules_dir = self.rules_dir.clone();
 
         let mut watcher = notify::recommended_watcher(move |res: std::result::Result<Event, notify::Error>| {
             match res {
-                Ok(event) => handle_fs_event(&event, &rules, &rules_dir),
+                Ok(event) => handle_fs_event(&event, &documents, &anomaly_rules, &rules_dir),
                 Err(e) => warn!(error = %e, "filesystem watcher error"),
             }
         })?;
 
-        watcher.watch(&self.rules_dir, RecursiveMode::NonRecursive)?;
+        // Watch recursively to pick up changes in subdirectories.
+        watcher.watch(&self.rules_dir, RecursiveMode::Recursive)?;
 
-        // Configure debounce if available via the Config trait.
-        // notify v7 RecommendedWatcher may support configure().
         let _ = watcher.configure(notify::Config::default().with_poll_interval(Duration::from_millis(500)));
 
-        info!(path = %self.rules_dir.display(), "watching rules directory for changes");
+        info!(path = %self.rules_dir.display(), "watching rules directory for changes (recursive)");
         self._watcher = Some(watcher);
         Ok(())
     }
 
-    /// Get a clone of the shared rules map.
+    /// Get the shared anomaly rules map (backward compatibility).
     pub fn rules(&self) -> Arc<RwLock<HashMap<String, AnomalyRule>>> {
-        Arc::clone(&self.rules)
+        Arc::clone(&self.anomaly_rules)
     }
 
-    /// Atomically write a rule to a YAML file.
+    /// Get the shared documents map containing all rule kinds.
+    pub fn documents(&self) -> Arc<RwLock<HashMap<String, RuleDocument>>> {
+        Arc::clone(&self.documents)
+    }
+
+    /// Atomically write a rule document to a YAML file.
     ///
     /// Writes to a `.tmp` file first, then renames to the final path to
     /// avoid partial writes on crash.
-    pub fn write_rule(&self, rule: &AnomalyRule) -> Result<PathBuf> {
-        let filename = format!("{}.yml", rule.metadata.id);
+    pub fn write_document(&self, doc: &RuleDocument) -> Result<PathBuf> {
+        let meta = doc.metadata();
+        let filename = format!("{}.yml", meta.id);
         let final_path = self.rules_dir.join(&filename);
-        let tmp_path = self.rules_dir.join(format!(".{}.tmp", rule.metadata.id));
+        let tmp_path = self.rules_dir.join(format!(".{}.tmp", meta.id));
 
-        let yaml = serde_yaml::to_string(rule)?;
+        let yaml = doc.to_yaml().map_err(RuleError::Parse)?;
         fs::write(&tmp_path, yaml)?;
         fs::rename(&tmp_path, &final_path)?;
 
-        info!(rule_id = %rule.metadata.id, path = %final_path.display(), "wrote rule file");
+        info!(rule_id = %meta.id, kind = %doc.kind(), path = %final_path.display(), "wrote rule file");
 
-        // Also update in-memory map
-        self.rules
-            .write()
-            .expect("rules lock poisoned")
-            .insert(rule.metadata.id.clone(), rule.clone());
-
+        self.insert_document(meta.id.clone(), doc.clone());
         Ok(final_path)
+    }
+
+    /// Atomically write an anomaly rule to a YAML file (backward compatibility).
+    pub fn write_rule(&self, rule: &AnomalyRule) -> Result<PathBuf> {
+        self.write_document(&RuleDocument::Anomaly(rule.clone()))
     }
 
     /// Delete a rule file by rule ID.
@@ -364,10 +423,7 @@ impl RuleLoader {
             )));
         }
 
-        self.rules
-            .write()
-            .expect("rules lock poisoned")
-            .remove(id);
+        self.remove_document(id);
 
         info!(rule_id = %id, "deleted rule");
         Ok(())
@@ -379,8 +435,9 @@ impl RuleLoader {
 /// Handle a single filesystem event from the notify watcher.
 fn handle_fs_event(
     event: &Event,
-    rules: &Arc<RwLock<HashMap<String, AnomalyRule>>>,
-    rules_dir: &Path,
+    documents: &Arc<RwLock<HashMap<String, RuleDocument>>>,
+    anomaly_rules: &Arc<RwLock<HashMap<String, AnomalyRule>>>,
+    _rules_dir: &Path,
 ) {
     for path in &event.paths {
         // Only process YAML files
@@ -405,49 +462,61 @@ fn handle_fs_event(
             EventKind::Create(CreateKind::File)
             | EventKind::Modify(ModifyKind::Data(_))
             | EventKind::Modify(ModifyKind::Name(_)) => {
-                // File created or modified: re-parse and upsert
-                match fs::read_to_string(path)
-                    .map_err(RuleError::from)
-                    .and_then(|s| serde_yaml::from_str::<AnomalyRule>(&s).map_err(RuleError::from))
-                {
-                    Ok(rule) => {
-                        let rule_id = rule.metadata.id.clone();
-                        info!(rule_id = %rule_id, path = %path.display(), "hot-reloaded rule");
-                        rules
-                            .write()
-                            .expect("rules lock poisoned")
-                            .insert(rule_id, rule);
+                // File created or modified: two-pass parse and upsert.
+                match fs::read_to_string(path) {
+                    Ok(contents) => {
+                        match serde_yaml::from_str::<RuleEnvelope>(&contents)
+                            .map_err(|e| e.to_string())
+                            .and_then(|env| env.parse_full())
+                        {
+                            Ok(doc) => {
+                                let rule_id = doc.metadata().id.clone();
+                                let kind = doc.kind();
+                                info!(rule_id = %rule_id, kind = %kind, path = %path.display(), "hot-reloaded rule");
+
+                                if let RuleDocument::Anomaly(ref rule) = doc {
+                                    anomaly_rules
+                                        .write()
+                                        .expect("anomaly_rules lock poisoned")
+                                        .insert(rule_id.clone(), rule.clone());
+                                }
+                                documents
+                                    .write()
+                                    .expect("documents lock poisoned")
+                                    .insert(rule_id, doc);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "failed to parse rule during hot-reload, keeping previous version"
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
-                        warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "failed to parse rule during hot-reload, keeping previous version"
-                        );
+                        warn!(path = %path.display(), error = %e, "failed to read file during hot-reload");
                     }
                 }
             }
             EventKind::Remove(RemoveKind::File) => {
-                // File deleted: find and remove the rule whose file this was
-                let _ = remove_rule_by_path(rules, path, rules_dir);
+                // File deleted: find and remove the rule whose file this was.
+                let _ = remove_rule_by_path(documents, anomaly_rules, path);
             }
             _ => {}
         }
     }
 }
 
-/// Remove a rule from the map given its file path.
-///
-/// Derives the rule ID from the filename stem. This is a best-effort
-/// approach; if the rule ID differs from the filename, the watcher
-/// won't be able to remove it (the next `load_all` will reconcile).
+/// Remove a rule from both maps given its file path.
 fn remove_rule_by_path(
-    rules: &Arc<RwLock<HashMap<String, AnomalyRule>>>,
+    documents: &Arc<RwLock<HashMap<String, RuleDocument>>>,
+    anomaly_rules: &Arc<RwLock<HashMap<String, AnomalyRule>>>,
     path: &Path,
-    _rules_dir: &Path,
-) -> Option<AnomalyRule> {
+) -> Option<RuleDocument> {
     let stem = path.file_stem()?.to_str()?;
-    let removed = rules.write().expect("rules lock poisoned").remove(stem);
+    let removed = documents.write().expect("documents lock poisoned").remove(stem);
+    anomaly_rules.write().expect("anomaly_rules lock poisoned").remove(stem);
     if removed.is_some() {
         info!(rule_id = %stem, path = %path.display(), "removed rule after file deletion");
     }
@@ -487,9 +556,10 @@ detection:
         let rule_path = dir.path().join("test-rule.yml");
         fs::write(&rule_path, VALID_RULE_YAML).unwrap();
 
-        let rule = loader.load_file(&rule_path).unwrap();
-        assert_eq!(rule.metadata.id, "test-rule");
-        assert_eq!(rule.metadata.name, "Test Rule");
+        let doc = loader.load_file(&rule_path).unwrap();
+        assert_eq!(doc.metadata().id, "test-rule");
+        assert_eq!(doc.metadata().name, "Test Rule");
+        assert!(doc.as_anomaly().is_some());
     }
 
     #[test]
@@ -519,9 +589,126 @@ detection:
         assert_eq!(loaded.len(), 1);
         assert_eq!(skipped.len(), 2);
 
-        // Verify rule is in the map
+        // Verify rule is in both maps
         let rules = loader.rules();
         let guard = rules.read().unwrap();
+        assert!(guard.contains_key("test-rule"));
+
+        let docs = loader.documents();
+        let guard = docs.read().unwrap();
+        assert!(guard.contains_key("test-rule"));
+    }
+
+    #[test]
+    fn load_all_recursive_subdirectories() {
+        let (dir, loader) = temp_loader();
+
+        // Rule in root
+        fs::write(dir.path().join("rule1.yml"), VALID_RULE_YAML).unwrap();
+
+        // Rule in subdirectory
+        let sub = dir.path().join("subdir");
+        fs::create_dir(&sub).unwrap();
+        let sub_yaml = VALID_RULE_YAML.replace("test-rule", "sub-rule");
+        fs::write(sub.join("sub-rule.yml"), sub_yaml).unwrap();
+
+        let results = loader.load_all().unwrap();
+
+        let loaded: Vec<_> = results
+            .iter()
+            .filter_map(|r| match &r.status {
+                LoadStatus::Loaded { rule_id } => Some(rule_id.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(loaded.len(), 2, "Should load rules from root and subdirectory");
+
+        let docs = loader.documents();
+        let guard = docs.read().unwrap();
+        assert!(guard.contains_key("test-rule"));
+        assert!(guard.contains_key("sub-rule"));
+    }
+
+    #[test]
+    fn load_file_two_pass_non_anomaly() {
+        let (dir, loader) = temp_loader();
+        let yaml = r#"
+apiVersion: v1
+kind: TrendConfig
+metadata:
+  id: trend-test
+  name: Trend Test
+  enabled: true
+spec:
+  default_window_size: 168
+  min_data_points: 3
+  z_score_trigger: 2.0
+  direction_thresholds:
+    up: 0.5
+    down: 0.5
+  severity_thresholds:
+    notable: 2.0
+    significant: 3.0
+    critical: 4.0
+"#;
+        let path = dir.path().join("trend-test.yml");
+        fs::write(&path, yaml).unwrap();
+
+        let doc = loader.load_file(&path).unwrap();
+        assert_eq!(doc.kind(), crate::schema::RuleKind::TrendConfig);
+        assert_eq!(doc.metadata().id, "trend-test");
+        assert!(doc.as_trend_config().is_some());
+        // Should NOT be in anomaly_rules
+        assert!(doc.as_anomaly().is_none());
+    }
+
+    #[test]
+    fn load_all_multi_kind() {
+        let (dir, loader) = temp_loader();
+
+        // AnomalyRule
+        fs::write(dir.path().join("anomaly.yml"), VALID_RULE_YAML).unwrap();
+
+        // TrendConfig in subdirectory
+        let sub = dir.path().join("scoring");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join("trend.yml"), r#"
+apiVersion: v1
+kind: TrendConfig
+metadata:
+  id: trend-cfg
+  name: Trend Config
+  enabled: true
+spec:
+  default_window_size: 168
+  min_data_points: 3
+  z_score_trigger: 2.0
+  direction_thresholds:
+    up: 0.5
+    down: 0.5
+  severity_thresholds:
+    notable: 2.0
+    significant: 3.0
+    critical: 4.0
+"#).unwrap();
+
+        let results = loader.load_all().unwrap();
+        let loaded: Vec<_> = results
+            .iter()
+            .filter(|r| matches!(r.status, LoadStatus::Loaded { .. }))
+            .collect();
+        assert_eq!(loaded.len(), 2);
+
+        // Both in documents map
+        let docs = loader.documents();
+        let guard = docs.read().unwrap();
+        assert_eq!(guard.len(), 2);
+
+        // Only anomaly rule in the backward-compat map
+        let rules = loader.rules();
+        let guard = rules.read().unwrap();
+        assert_eq!(guard.len(), 1);
         assert!(guard.contains_key("test-rule"));
     }
 
@@ -537,8 +724,36 @@ detection:
 
         // Read it back
         let loaded = loader.load_file(&path).unwrap();
-        assert_eq!(loaded.metadata.id, rule.metadata.id);
-        assert_eq!(loaded.metadata.name, rule.metadata.name);
+        assert_eq!(loaded.metadata().id, rule.metadata.id);
+        assert_eq!(loaded.metadata().name, rule.metadata.name);
+    }
+
+    #[test]
+    fn write_document_non_anomaly() {
+        let (dir, loader) = temp_loader();
+
+        let yaml = include_str!("../../../data/rules/scoring/trend-config.yml");
+        let rule: crate::trend_config::TrendConfigRule = serde_yaml::from_str(yaml).unwrap();
+        let doc = RuleDocument::TrendConfig(rule);
+
+        let path = loader.write_document(&doc).unwrap();
+        assert!(path.exists());
+
+        // Should be in documents but not in anomaly_rules
+        let docs = loader.documents();
+        let guard = docs.read().unwrap();
+        assert!(guard.contains_key("trend-config-default"));
+
+        let rules = loader.rules();
+        let guard = rules.read().unwrap();
+        assert!(!guard.contains_key("trend-config-default"));
+
+        // Read back
+        let loaded = loader.load_file(&path).unwrap();
+        assert_eq!(loaded.kind(), crate::schema::RuleKind::TrendConfig);
+
+        // Clean up
+        let _ = fs::remove_file(dir.path().join("trend-config-default.yml"));
     }
 
     #[test]
@@ -552,8 +767,13 @@ detection:
         loader.delete_rule("test-rule").unwrap();
         assert!(!path.exists());
 
+        // Removed from both maps
         let rules = loader.rules();
         let guard = rules.read().unwrap();
+        assert!(!guard.contains_key("test-rule"));
+
+        let docs = loader.documents();
+        let guard = docs.read().unwrap();
         assert!(!guard.contains_key("test-rule"));
     }
 
@@ -572,7 +792,6 @@ detection:
 
         let result = loader.load_file(&bad_path);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), RuleError::Parse(_)));
     }
 
     #[test]

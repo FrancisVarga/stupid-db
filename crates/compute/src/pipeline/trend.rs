@@ -89,6 +89,18 @@ pub struct TrendDetector {
     baselines: HashMap<String, MetricBaseline>,
     /// Number of historical data points to retain (default: 168 = 7 days * 24 hours).
     window_size: usize,
+    /// Minimum data points for z-score calculation.
+    min_data_points: usize,
+    /// Z-score trigger threshold.
+    z_score_trigger: f64,
+    /// Z-score threshold for Up direction.
+    direction_up: f64,
+    /// Z-score threshold for Down direction (positive value, compared to -z).
+    direction_down: f64,
+    /// |z| threshold for Significant severity.
+    severity_significant: f64,
+    /// |z| threshold for Critical severity.
+    severity_critical: f64,
 }
 
 impl TrendDetector {
@@ -97,14 +109,33 @@ impl TrendDetector {
         Self {
             baselines: HashMap::new(),
             window_size: 168,
+            min_data_points: 3,
+            z_score_trigger: 2.0,
+            direction_up: 0.5,
+            direction_down: 0.5,
+            severity_significant: 3.0,
+            severity_critical: 4.0,
         }
     }
 
     /// Create a new trend detector with a custom window size.
     pub fn with_window(window_size: usize) -> Self {
+        let mut det = Self::new();
+        det.window_size = window_size;
+        det
+    }
+
+    /// Create a new trend detector from a compiled TrendConfig.
+    pub fn with_config(config: &stupid_rules::trend_config::CompiledTrendConfig) -> Self {
         Self {
             baselines: HashMap::new(),
-            window_size,
+            window_size: config.default_window_size,
+            min_data_points: config.min_data_points,
+            z_score_trigger: config.z_score_trigger,
+            direction_up: config.direction_thresholds.up,
+            direction_down: config.direction_thresholds.down,
+            severity_significant: config.severity_thresholds.significant,
+            severity_critical: config.severity_thresholds.critical,
         }
     }
 
@@ -173,23 +204,23 @@ impl TrendDetector {
             let mean = baseline.mean();
             let stddev = baseline.stddev();
 
-            // Need at least a few data points and nonzero stddev to compute z-score.
-            if baseline.values.len() >= 3 && stddev > f64::EPSILON {
+            // Need at least min_data_points and nonzero stddev to compute z-score.
+            if baseline.values.len() >= self.min_data_points && stddev > f64::EPSILON {
                 let z_score = (current_value - mean) / stddev;
 
                 let abs_z = z_score.abs();
-                if abs_z > 2.0 {
-                    let direction = if z_score > 0.5 {
+                if abs_z > self.z_score_trigger {
+                    let direction = if z_score > self.direction_up {
                         TrendDirection::Up
-                    } else if z_score < -0.5 {
+                    } else if z_score < -self.direction_down {
                         TrendDirection::Down
                     } else {
                         TrendDirection::Stable
                     };
 
-                    let severity = if abs_z > 4.0 {
+                    let severity = if abs_z > self.severity_critical {
                         Severity::Critical
-                    } else if abs_z > 3.0 {
+                    } else if abs_z > self.severity_significant {
                         Severity::Significant
                     } else {
                         Severity::Notable

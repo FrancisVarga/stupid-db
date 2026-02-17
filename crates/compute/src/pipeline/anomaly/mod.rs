@@ -206,6 +206,51 @@ pub fn multi_signal_score(
     }
 }
 
+/// Combine four detector signals using weights from a ScoringConfig.
+pub fn multi_signal_score_with_config(
+    statistical: f64,
+    dbscan_noise: f64,
+    behavioral: f64,
+    graph: f64,
+    config: &stupid_rules::scoring_config::CompiledScoringConfig,
+) -> AnomalyResult {
+    let w = &config.multi_signal_weights;
+    let score = statistical * w.statistical
+        + dbscan_noise * w.dbscan_noise
+        + behavioral * w.behavioral
+        + graph * w.graph;
+
+    let score = score.clamp(0.0, 1.0);
+    let classification = classify_score_with_config(score, &config.classification_thresholds);
+
+    AnomalyResult {
+        score,
+        classification,
+        signals: vec![
+            ("statistical".to_string(), statistical),
+            ("dbscan_noise".to_string(), dbscan_noise),
+            ("behavioral".to_string(), behavioral),
+            ("graph".to_string(), graph),
+        ],
+    }
+}
+
+/// Classify an anomaly score using config-driven thresholds.
+pub fn classify_score_with_config(
+    score: f64,
+    thresholds: &stupid_rules::scoring_config::ClassificationThresholds,
+) -> AnomalyClassification {
+    if score >= thresholds.highly_anomalous {
+        AnomalyClassification::HighlyAnomalous
+    } else if score >= thresholds.anomalous {
+        AnomalyClassification::Anomalous
+    } else if score >= thresholds.mild {
+        AnomalyClassification::Mild
+    } else {
+        AnomalyClassification::Normal
+    }
+}
+
 /// Score all members using the multi-signal approach.
 ///
 /// This is the main entry point for the anomaly detection pipeline.

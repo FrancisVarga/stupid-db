@@ -306,32 +306,157 @@ fn parse_graph_anomaly_default() {
 #[test]
 fn rule_loader_loads_all_defaults() {
     let loader = stupid_rules::loader::RuleLoader::new(defaults_dir());
-    let results = loader.load_all().unwrap();
+    let _results = loader.load_all().unwrap();
 
-    let loaded: Vec<_> = results
-        .iter()
-        .filter_map(|r| match &r.status {
-            stupid_rules::loader::LoadStatus::Loaded { rule_id } => Some(rule_id.as_str()),
-            _ => None,
-        })
-        .collect();
+    // Use the deduplicated documents map (examples/ dir has copies of some anomaly rules).
+    let docs = loader.documents();
+    let guard = docs.read().unwrap();
+    let mut loaded: Vec<&str> = guard.keys().map(|s| s.as_str()).collect();
+    loaded.sort();
 
-    // All 9 default rules should load (4 original + 5 new compute-default)
+    // All default rules: 9 anomaly rules + 5 config rules in subdirectories
     let expected = vec![
         "behavioral-drift",
         "dbscan-noise",
+        "entity-schema-default",
         "error-burst",
+        "feature-config-default",
         "graph-anomaly",
         "login-spike",
         "multi-signal-fraud",
+        "pattern-config-default",
+        "scoring-default",
         "statistical-outlier",
+        "trend-config-default",
         "trend-spike",
         "vip-absence",
     ];
 
-    let mut sorted = loaded.clone();
-    sorted.sort();
-    assert_eq!(sorted, expected, "Expected all 9 default rules to load");
+    assert_eq!(loaded, expected, "Expected all default rules to load (anomaly + config)");
+
+    // Verify backward-compat: anomaly_rules map should only contain AnomalyRule kinds
+    let rules = loader.rules();
+    let rules_guard = rules.read().unwrap();
+    assert_eq!(rules_guard.len(), 9, "Should have exactly 9 anomaly rules");
+
+    // Verify documents map has all rule kinds
+    assert_eq!(guard.len(), expected.len(), "Documents map should contain all rule kinds");
+}
+
+// ── Schema sync: YAML entity/edge types ↔ Rust enum variants ─
+
+/// Verify every `EntityType` enum variant has a matching entry in the YAML schema
+/// and vice versa. Catches drift between Rust code and the externalized YAML config.
+#[test]
+fn entity_schema_entity_types_match_rust_enum() {
+    use stupid_rules::entity_schema::EntitySchemaRule;
+
+    let yaml = std::fs::read_to_string(defaults_dir().join("schema/entity-schema.yml"))
+        .expect("Failed to read entity-schema.yml");
+    let schema: EntitySchemaRule = serde_yaml::from_str(&yaml)
+        .expect("Failed to parse entity-schema.yml");
+
+    let yaml_entity_names: std::collections::BTreeSet<String> = schema
+        .spec
+        .entity_types
+        .iter()
+        .map(|et| et.name.clone())
+        .collect();
+
+    // All Rust EntityType variants (must be kept in sync manually).
+    let rust_variants: std::collections::BTreeSet<String> = [
+        "Member", "Device", "Game", "Affiliate", "Currency",
+        "VipGroup", "Error", "Platform", "Popup", "Provider",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    assert_eq!(
+        yaml_entity_names, rust_variants,
+        "YAML entity_types and Rust EntityType enum are out of sync.\n\
+         In YAML but not Rust: {:?}\n\
+         In Rust but not YAML: {:?}",
+        yaml_entity_names.difference(&rust_variants).collect::<Vec<_>>(),
+        rust_variants.difference(&yaml_entity_names).collect::<Vec<_>>(),
+    );
+}
+
+/// Verify every `EdgeType` enum variant has a matching entry in the YAML schema.
+#[test]
+fn entity_schema_edge_types_match_rust_enum() {
+    use stupid_rules::entity_schema::EntitySchemaRule;
+
+    let yaml = std::fs::read_to_string(defaults_dir().join("schema/entity-schema.yml"))
+        .expect("Failed to read entity-schema.yml");
+    let schema: EntitySchemaRule = serde_yaml::from_str(&yaml)
+        .expect("Failed to parse entity-schema.yml");
+
+    let yaml_edge_names: std::collections::BTreeSet<String> = schema
+        .spec
+        .edge_types
+        .iter()
+        .map(|et| et.name.clone())
+        .collect();
+
+    let rust_variants: std::collections::BTreeSet<String> = [
+        "LoggedInFrom", "OpenedGame", "SawPopup", "HitError", "BelongsToGroup",
+        "ReferredBy", "UsesCurrency", "PlaysOnPlatform", "ProvidedBy",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    assert_eq!(
+        yaml_edge_names, rust_variants,
+        "YAML edge_types and Rust EdgeType enum are out of sync.\n\
+         In YAML but not Rust: {:?}\n\
+         In Rust but not YAML: {:?}",
+        yaml_edge_names.difference(&rust_variants).collect::<Vec<_>>(),
+        rust_variants.difference(&yaml_edge_names).collect::<Vec<_>>(),
+    );
+}
+
+/// Verify that the compiled schema resolves all field mappings correctly.
+#[test]
+fn entity_schema_compiled_field_lookups() {
+    use stupid_rules::entity_schema::EntitySchemaRule;
+
+    let yaml = std::fs::read_to_string(defaults_dir().join("schema/entity-schema.yml"))
+        .expect("Failed to read entity-schema.yml");
+    let schema: EntitySchemaRule = serde_yaml::from_str(&yaml)
+        .expect("Failed to parse entity-schema.yml");
+    let compiled = schema.compile();
+
+    // Every field mapping (including aliases) should resolve to its entity type.
+    for fm in &schema.spec.field_mappings {
+        assert_eq!(
+            compiled.field_to_entity.get(&fm.field).map(|s| s.as_str()),
+            Some(fm.entity_type.as_str()),
+            "Field '{}' should map to entity type '{}'",
+            fm.field,
+            fm.entity_type,
+        );
+        for alias in &fm.aliases {
+            assert_eq!(
+                compiled.field_to_entity.get(alias).map(|s| s.as_str()),
+                Some(fm.entity_type.as_str()),
+                "Alias '{}' of field '{}' should map to entity type '{}'",
+                alias,
+                fm.field,
+                fm.entity_type,
+            );
+        }
+    }
+
+    // Every entity type should have a key prefix.
+    for et in &schema.spec.entity_types {
+        assert!(
+            compiled.key_prefixes.contains_key(&et.name),
+            "Entity type '{}' should have a key prefix in compiled schema",
+            et.name,
+        );
+    }
 }
 
 // ── Round-trip: all examples survive serialize → deserialize ─
