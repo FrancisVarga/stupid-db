@@ -4,7 +4,7 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::state::AppState;
@@ -86,23 +86,50 @@ pub async fn upload(
 
     let file_size = bytes.len() as i64;
 
-    // Check file size limit (50MB)
-    if file_size > 50 * 1024 * 1024 {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "File exceeds 50MB limit".to_string()));
+    // Check file size limit (1GB)
+    if file_size > 1024 * 1024 * 1024 {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "File exceeds 1GB limit".to_string()));
     }
 
     // Extract text
     let doc = stupid_ingest::document::extract_text(&bytes, &filename)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Text extraction failed: {e}")))?;
 
+    let total_chars = doc.total_chars();
+    info!(
+        "Extracted '{}' (type={}): {} pages, {} chars",
+        filename,
+        doc.file_type,
+        doc.pages.len(),
+        total_chars,
+    );
+
+    if total_chars == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Document '{}' ({}) contains no extractable text. \
+                 For PDFs, ensure the file contains a text layer (scanned/image PDFs are not supported).",
+                filename, doc.file_type
+            ),
+        ));
+    }
+
     // Chunk the document
     let config = stupid_ingest::document::chunker::ChunkConfig::default();
     let chunks = stupid_ingest::document::chunker::chunk_document(&doc, &config);
 
     if chunks.is_empty() {
+        warn!(
+            "Document '{}' has {} chars but produced 0 chunks (min_chunk_tokens={})",
+            filename, total_chars, config.min_chunk_tokens
+        );
         return Err((
             StatusCode::BAD_REQUEST,
-            "Document produced no chunks (empty or unreadable)".to_string(),
+            format!(
+                "Document '{}' produced no chunks ({} chars extracted, but below minimum chunk threshold of ~{} words)",
+                filename, total_chars, config.min_chunk_tokens
+            ),
         ));
     }
 

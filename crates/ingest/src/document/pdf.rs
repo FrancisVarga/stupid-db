@@ -6,6 +6,16 @@ pub fn extract_pdf(bytes: &[u8]) -> Result<Vec<PageContent>, ExtractionError> {
 
     // pdf-extract returns all text as one string.
     // Split on form feed characters (\x0C) which typically separate pages.
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        // pdf-extract succeeded but no text found (scanned/image PDF)
+        return Ok(vec![PageContent {
+            page_number: 1,
+            text: String::new(),
+            headings: Vec::new(),
+        }]);
+    }
+
     let pages: Vec<PageContent> = if text.contains('\x0C') {
         text.split('\x0C')
             .enumerate()
@@ -20,7 +30,7 @@ pub fn extract_pdf(bytes: &[u8]) -> Result<Vec<PageContent>, ExtractionError> {
         // No page breaks found — treat as single page
         vec![PageContent {
             page_number: 1,
-            text: text.trim().to_string(),
+            text: trimmed.to_string(),
             headings: Vec::new(),
         }]
     };

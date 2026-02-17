@@ -21,6 +21,7 @@ mod state;
 use std::path::Path;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::RwLock;
@@ -144,7 +145,10 @@ fn build_embedder(config: &stupid_core::Config) -> Option<Arc<dyn stupid_ingest:
             Some(Arc::new(embedder))
         }
         "openai" => {
-            let api_key = config.llm.openai_api_key.clone()?;
+            let Some(api_key) = config.llm.openai_api_key.clone() else {
+                tracing::warn!("EMBEDDING_PROVIDER=openai but OPENAI_API_KEY is empty — embedding features disabled");
+                return None;
+            };
             let embedder = OpenAiEmbedder::new(
                 api_key,
                 "text-embedding-3-small".to_string(),
@@ -309,7 +313,8 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/athena-connections/{id}/query-log", get(api::athena_connections_query_log));
 
     let app = app
-        .route("/embeddings/upload", post(api::embedding::upload))
+        .route("/embeddings/upload", post(api::embedding::upload)
+            .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))) // 1GB
         .route("/embeddings/search", post(api::embedding::search))
         .route("/embeddings/documents", get(api::embedding::list_documents))
         .route("/embeddings/documents/{id}", axum::routing::delete(api::embedding::delete_document));
