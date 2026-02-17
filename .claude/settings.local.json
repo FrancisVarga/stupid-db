@@ -1,4 +1,30 @@
 {
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  },
+  "outputStyle": "Explanatory",
   "permissions": {
     "allow": [
       "Bash(python3:*)",
@@ -7,7 +33,5 @@
       "Bash(do echo \"=== $dir ===\")",
       "Bash(done)"
     ]
-  },
-  "enableAllProjectMcpServers": true,
-  "outputStyle": "Explanatory"
+  }
 }
