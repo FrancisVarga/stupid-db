@@ -46,7 +46,7 @@ fn build_agent_executor(config: &stupid_core::Config) -> Option<stupid_agent::Ag
     let agents_dir = std::env::var("AGENTS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            std::path::PathBuf::from("packages/stupid-claude-agent/.claude/agents")
+            std::path::PathBuf::from("agents/stupid-db-claude-code/agents")
         });
 
     if !agents_dir.exists() {
