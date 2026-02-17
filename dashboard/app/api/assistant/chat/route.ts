@@ -53,8 +53,10 @@ export async function POST(req: Request): Promise<Response> {
 
   if (!rustRes.ok) {
     const errorText = await rustRes.text().catch(() => "Rust server error");
+    // Use 502 for all backend errors — never forward backend status directly,
+    // as forwarding 404 makes Next.js think *this route* doesn't exist.
     return new Response(JSON.stringify({ error: errorText }), {
-      status: rustRes.status,
+      status: 502,
       headers: { "Content-Type": "application/json" },
     });
   }
