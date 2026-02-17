@@ -20,6 +20,7 @@
     "@uiw/react-codemirror": "^4.25.4",
     "ai": "^6.0.89",
     "ai-elements": "^1.8.4",
+    "ai-sdk-provider-claude-code": "^3.4.0",
     "d3": "^7.9.0",
     "d3-sankey": "^0.12.3",
     "lightningcss-linux-x64-gnu": "^1.31.1",

@@ -15,30 +15,53 @@ import type { ChatMetadata, ChatUIMessage } from "../api/ai-sdk/chat/route";
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const MODELS = [
-  { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-  { id: "claude-opus-4-6", label: "Opus 4.6" },
-  { id: "claude-sonnet-4-5", label: "Sonnet 4.5" },
-  { id: "claude-opus-4-5", label: "Opus 4.5" },
-  { id: "claude-haiku-4-5", label: "Haiku 4.5" },
-];
+const PROVIDERS = [
+  { id: "anthropic", label: "Anthropic API" },
+  { id: "claude-code", label: "Claude Code CLI" },
+] as const;
+
+type ProviderType = (typeof PROVIDERS)[number]["id"];
+
+const MODELS_BY_PROVIDER: Record<ProviderType, { id: string; label: string }[]> = {
+  anthropic: [
+    { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+    { id: "claude-opus-4-6", label: "Opus 4.6" },
+    { id: "claude-sonnet-4-5", label: "Sonnet 4.5" },
+    { id: "claude-opus-4-5", label: "Opus 4.5" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5" },
+  ],
+  "claude-code": [
+    { id: "cc-sonnet", label: "Sonnet (via CLI)" },
+    { id: "cc-opus", label: "Opus (via CLI)" },
+    { id: "cc-haiku", label: "Haiku (via CLI)" },
+  ],
+};
 
 // ── Page ─────────────────────────────────────────────────────────────
 
 export default function AiSdkPage() {
-  const [selectedModel, setSelectedModel] = useState<string>(MODELS[0].id);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderType>("anthropic");
+  const [selectedModel, setSelectedModel] = useState<string>(
+    MODELS_BY_PROVIDER.anthropic[0].id,
+  );
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<FileList | undefined>(undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Update model when provider changes
+  useEffect(() => {
+    const models = MODELS_BY_PROVIDER[selectedProvider];
+    setSelectedModel(models[0].id);
+  }, [selectedProvider]);
+
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: "/api/ai-sdk/chat",
-        body: { model: selectedModel },
+        body: { model: selectedModel, provider: selectedProvider },
       }),
-    [selectedModel],
+    [selectedModel, selectedProvider],
   );
 
   const {
@@ -101,15 +124,18 @@ export default function AiSdkPage() {
           </h1>
         </div>
         <div className="flex items-center gap-3">
+          <ProviderSelector
+            providers={PROVIDERS}
+            selected={selectedProvider}
+            onChange={setSelectedProvider}
+            disabled={isActive}
+          />
           <ModelSelector
-            models={MODELS}
+            models={MODELS_BY_PROVIDER[selectedProvider]}
             selected={selectedModel}
             onChange={setSelectedModel}
             disabled={isActive}
           />
-          <span className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">
-            Anthropic Direct
-          </span>
         </div>
       </header>
 
@@ -260,6 +286,39 @@ export default function AiSdkPage() {
   );
 }
 
+// ── Provider Selector ────────────────────────────────────────────────
+
+function ProviderSelector<T extends string>({
+  providers,
+  selected,
+  onChange,
+  disabled,
+}: {
+  providers: readonly { id: T; label: string }[];
+  selected: T;
+  onChange: (id: T) => void;
+  disabled: boolean;
+}) {
+  return (
+    <select
+      value={selected}
+      onChange={(e) => onChange(e.target.value as T)}
+      disabled={disabled}
+      className="bg-transparent text-[10px] font-mono text-slate-400 outline-none cursor-pointer px-2 py-1 rounded"
+      style={{
+        border: "1px solid rgba(139, 92, 246, 0.15)",
+        background: "rgba(139, 92, 246, 0.05)",
+      }}
+    >
+      {providers.map((p) => (
+        <option key={p.id} value={p.id} className="bg-[#0c1018] text-slate-300">
+          {p.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 // ── Model Selector ───────────────────────────────────────────────────
 
 function ModelSelector({
@@ -268,7 +327,7 @@ function ModelSelector({
   onChange,
   disabled,
 }: {
-  models: readonly { id: string; label: string }[];
+  models: { id: string; label: string }[];
   selected: string;
   onChange: (id: string) => void;
   disabled: boolean;
@@ -524,8 +583,8 @@ function EmptyState() {
           AI SDK Chat
         </div>
         <p className="text-slate-500 text-xs leading-relaxed font-mono mb-4">
-          Direct connection to Claude via Vercel AI SDK.
-          Supports streaming, reasoning, file attachments, and model selection.
+          Chat with Claude via Anthropic API or Claude Code CLI.
+          Supports streaming, reasoning, attachments, and provider/model selection.
         </p>
         <div className="flex gap-2 justify-center flex-wrap">
           {[
