@@ -9,6 +9,7 @@ import {
   ALL_RULE_KINDS,
   type RuleKind,
 } from "@/lib/api-rules";
+import CodeEditor from "@/components/db/CodeEditor";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -279,12 +280,12 @@ export default function RuleForm({ mode, ruleId, initialKind, onSave, onCancel }
         <p className="text-[10px] text-slate-600 mb-2">
           Edit the full rule definition as YAML. The server validates the document on save.
         </p>
-        <textarea
+        <CodeEditor
           value={yamlText}
-          onChange={(e) => setYamlText(e.target.value)}
-          rows={20}
-          spellCheck={false}
-          className="w-full px-4 py-3 rounded-lg text-xs font-mono bg-[#060a10] text-slate-300 border border-slate-700/50 focus:border-cyan-500/50 focus:outline-none resize-y leading-relaxed"
+          onChange={setYamlText}
+          language="yaml"
+          minHeight="300px"
+          maxHeight="600px"
         />
       </div>
 

@@ -10,8 +10,13 @@
   },
   "dependencies": {
     "@ai-sdk/react": "^3.0.88",
+    "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/lang-yaml": "^6.1.2",
     "@scalar/nextjs-api-reference": "^0.9.18",
     "@types/d3": "^7.4.3",
+    "@uiw/codemirror-theme-tokyo-night": "^4.25.4",
+    "@uiw/react-codemirror": "^4.25.4",
     "ai": "^6.0.86",
     "d3": "^7.9.0",
     "d3-sankey": "^0.12.3",

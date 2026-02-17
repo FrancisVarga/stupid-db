@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { executeQuery, type QueryResult } from "@/lib/api-db";
+import CodeEditor from "./CodeEditor";
 
 interface QueryPanelProps {
   db: string;
@@ -28,33 +29,19 @@ export default function QueryPanel({ db }: QueryPanelProps) {
     }
   }, [db, sql]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
-        handleExecute();
-      }
-    },
-    [handleExecute]
-  );
-
   return (
     <div className="flex flex-col h-full">
       {/* SQL input */}
       <div className="shrink-0 p-4">
-        <div className="relative">
-          <textarea
+        <div>
+          <CodeEditor
             value={sql}
-            onChange={(e) => setSql(e.target.value)}
-            onKeyDown={handleKeyDown}
+            onChange={setSql}
+            language="sql"
             placeholder="SELECT * FROM ..."
-            rows={5}
-            spellCheck={false}
-            className="w-full bg-transparent text-xs text-slate-300 font-mono rounded-lg px-4 py-3 outline-none resize-y"
-            style={{
-              background: "rgba(6, 8, 13, 0.6)",
-              border: "1px solid rgba(30, 41, 59, 0.6)",
-            }}
+            minHeight="100px"
+            maxHeight="200px"
+            onSubmit={handleExecute}
           />
           <div className="flex items-center justify-between mt-2">
             <span className="text-[9px] text-slate-600 font-mono">

@@ -12,6 +12,7 @@ import {
   type MatchSummary,
 } from "@/lib/api-anomaly-rules";
 import AuditLogViewer from "@/components/db/AuditLogViewer";
+import CodeBlock from "@/components/db/CodeBlock";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -301,9 +302,7 @@ function AnomalyRuleDetail({ rule, refreshKey }: { rule: RuleDocument; refreshKe
             </div>
           )}
           {rule.detection?.compose != null && (
-            <pre className="text-[9px] text-slate-400 font-mono overflow-x-auto">
-              {JSON.stringify(rule.detection.compose, null, 2)}
-            </pre>
+            <CodeBlock code={JSON.stringify(rule.detection.compose, null, 2)} language="json" maxHeight="200px" />
           )}
         </DetailCard>
 
@@ -813,9 +812,7 @@ function SpecFallback() {
 function SpecYamlCard({ spec, color }: { spec: Record<string, unknown>; color: string }) {
   return (
     <DetailCard title="Full Spec (JSON)" color={color}>
-      <pre className="text-[9px] text-slate-400 font-mono overflow-x-auto max-h-48 overflow-y-auto">
-        {JSON.stringify(spec, null, 2)}
-      </pre>
+      <CodeBlock code={JSON.stringify(spec, null, 2)} language="json" maxHeight="200px" />
     </DetailCard>
   );
 }

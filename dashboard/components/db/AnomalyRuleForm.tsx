@@ -8,6 +8,7 @@ import {
   type AnomalyRule,
   type NotificationChannel,
 } from "@/lib/api-anomaly-rules";
+import CodeEditor from "./CodeEditor";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -473,12 +474,12 @@ export default function AnomalyRuleForm({ mode, ruleId, onSave, onCancel }: Anom
             Edit the full rule definition as YAML. Switch to Visual mode to edit fields individually.
             Note: complex rules may not fully parse back to visual mode.
           </p>
-          <textarea
+          <CodeEditor
             value={yamlText}
-            onChange={(e) => setYamlText(e.target.value)}
-            rows={24}
-            spellCheck={false}
-            className="w-full px-4 py-3 rounded-lg text-xs font-mono bg-[#060a10] text-slate-300 border border-slate-700/50 focus:border-cyan-500/50 focus:outline-none resize-y leading-relaxed"
+            onChange={setYamlText}
+            language="yaml"
+            minHeight="400px"
+            maxHeight="600px"
           />
         </div>
       )}
@@ -638,12 +639,12 @@ export default function AnomalyRuleForm({ mode, ruleId, onSave, onCancel }: Anom
             {form.detectionType === "composition" && (
               <div>
                 <label className={labelClass}>Compose Block (YAML)</label>
-                <textarea
+                <CodeEditor
                   value={form.composeYaml}
-                  onChange={(e) => set("composeYaml", e.target.value)}
-                  rows={8}
-                  spellCheck={false}
-                  className="w-full px-4 py-3 rounded-lg text-xs font-mono bg-[#060a10] text-slate-300 border border-slate-700/50 focus:border-cyan-500/50 focus:outline-none resize-y leading-relaxed"
+                  onChange={(v) => set("composeYaml", v)}
+                  language="yaml"
+                  minHeight="160px"
+                  maxHeight="300px"
                 />
               </div>
             )}

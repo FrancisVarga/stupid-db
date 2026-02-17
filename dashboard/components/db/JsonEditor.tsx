@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import CodeEditor from "./CodeEditor";
 
 interface JsonEditorProps {
   value: string;
@@ -54,20 +55,14 @@ export default function JsonEditor({ value, onChange, label }: JsonEditorProps) 
         </label>
       )}
       <div className="relative">
-        <textarea
+        <CodeEditor
           value={value}
-          onChange={(e) => handleChange(e.target.value)}
-          rows={8}
-          spellCheck={false}
-          className="w-full bg-transparent text-xs text-slate-300 font-mono rounded-lg px-3 py-2 outline-none resize-y"
-          style={{
-            background: "rgba(6, 8, 13, 0.6)",
-            border: error
-              ? "1px solid rgba(255, 71, 87, 0.4)"
-              : "1px solid rgba(30, 41, 59, 0.6)",
-          }}
+          onChange={handleChange}
+          language="json"
+          minHeight="120px"
+          maxHeight="300px"
         />
-        <div className="absolute top-1.5 right-1.5 flex gap-1">
+        <div className="absolute top-1.5 right-1.5 z-10 flex gap-1">
           <button
             type="button"
             onClick={handleFormat}

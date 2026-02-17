@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { executeAthenaQuery, downloadAthenaParquet } from "@/lib/db/athena-query";
+import CodeEditor from "./CodeEditor";
 
 interface AthenaQueryPanelProps {
   connectionId: string;
@@ -91,16 +92,6 @@ export default function AthenaQueryPanel({
     setStatus("CANCELLED");
   }, []);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
-        handleExecute();
-      }
-    },
-    [handleExecute],
-  );
-
   const handleExportParquet = useCallback(async () => {
     if (!sql.trim()) return;
     setExporting(true);
@@ -144,20 +135,16 @@ export default function AthenaQueryPanel({
           />
         </div>
 
-        {/* SQL textarea */}
-        <div className="relative">
-          <textarea
+        {/* SQL editor */}
+        <div>
+          <CodeEditor
             value={sql}
-            onChange={(e) => setSql(e.target.value)}
-            onKeyDown={handleKeyDown}
+            onChange={setSql}
+            language="sql"
             placeholder="SELECT * FROM ..."
-            rows={5}
-            spellCheck={false}
-            className="w-full bg-transparent text-xs text-slate-300 font-mono rounded-lg px-4 py-3 outline-none resize-y"
-            style={{
-              background: "rgba(6, 8, 13, 0.6)",
-              border: "1px solid rgba(30, 41, 59, 0.6)",
-            }}
+            minHeight="100px"
+            maxHeight="200px"
+            onSubmit={handleExecute}
           />
           <div className="flex items-center justify-between mt-2">
             <span className="text-[9px] text-slate-600 font-mono">

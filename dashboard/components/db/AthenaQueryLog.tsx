@@ -7,6 +7,7 @@ import {
   type AthenaQueryLogEntry,
   type DailyCostSummary,
 } from "@/lib/db/athena-connections";
+import CodeBlock from "./CodeBlock";
 
 interface AthenaQueryLogProps {
   connectionId: string;
@@ -464,9 +465,7 @@ function LogEntry({
             <div className="text-[9px] text-slate-600 font-mono uppercase tracking-wider mb-1">
               SQL
             </div>
-            <pre className="text-[10px] text-slate-300 font-mono whitespace-pre-wrap break-all">
-              {entry.sql}
-            </pre>
+            <CodeBlock code={entry.sql} language="sql" maxHeight="160px" />
           </div>
 
           {/* Stats grid */}
