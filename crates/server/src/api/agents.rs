@@ -11,6 +11,11 @@ use axum::Json;
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
+use tokio_stream::wrappers::ReceiverStream;
+
+use stupid_tool_runtime::conversation::{AssistantContent, ConversationMessage};
+use stupid_tool_runtime::stream::StreamEvent;
+use stupid_tool_runtime::tool::ToolContext;
 
 use crate::state::AppState;
 
@@ -670,4 +675,178 @@ pub async fn sessions_execute(
         session: stupid_agent::session::SessionSummary::from(&session),
         response: result,
     }))
+}
+
+// ── Session Streaming endpoint ──────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct SessionStreamRequest {
+    pub task: String,
+    pub system_prompt: Option<String>,
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: usize,
+}
+
+fn default_max_iterations() -> usize {
+    10
+}
+
+/// Stream an agentic loop response as SSE events within a session.
+///
+/// Uses the `AgenticLoop` from AppState, which wraps the LLM provider with
+/// tool-use support. Each `StreamEvent` is sent as a JSON SSE data line.
+/// After the stream completes, the assistant's response is persisted to the session.
+pub async fn sessions_stream(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SessionStreamRequest>,
+) -> Result<
+    Sse<impl futures::Stream<Item = Result<Event, Infallible>>>,
+    (axum::http::StatusCode, Json<QueryErrorResponse>),
+> {
+    let agentic_loop = state.agentic_loop.clone().ok_or_else(|| {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Json(QueryErrorResponse {
+                error: "Agentic loop not configured. Check LLM provider settings.".into(),
+            }),
+        )
+    })?;
+
+    // Append user message to session
+    let user_msg = stupid_agent::session::SessionMessage {
+        id: uuid::Uuid::new_v4().to_string(),
+        role: stupid_agent::session::SessionMessageRole::User,
+        content: req.task.clone(),
+        timestamp: chrono::Utc::now(),
+        agent_name: None,
+        status: None,
+        execution_time_ms: None,
+        team_outputs: None,
+        agents_used: None,
+        strategy: None,
+    };
+
+    {
+        let store = state.session_store.write().await;
+        store.append_message(&id, user_msg).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse {
+                    error: format!("Failed to append user message: {}", e),
+                }),
+            )
+        })?.ok_or_else(|| {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(QueryErrorResponse {
+                    error: format!("Session not found: {}", id),
+                }),
+            )
+        })?;
+    }
+
+    // Load session history and convert to Conversation
+    let session_messages = {
+        let store = state.session_store.read().await;
+        store.get(&id).map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse {
+                    error: format!("Failed to read session: {}", e),
+                }),
+            )
+        })?.map(|s| s.messages).unwrap_or_default()
+    };
+
+    let mut conversation = stupid_tool_runtime::Conversation::new(8192);
+    if let Some(ref prompt) = req.system_prompt {
+        conversation = conversation.with_system_prompt(prompt.clone());
+    }
+
+    // Convert SessionMessages to ConversationMessages (skip the last one — it's the
+    // user message we just appended, which run_streaming will add itself)
+    let history_messages = if session_messages.len() > 1 {
+        &session_messages[..session_messages.len() - 1]
+    } else {
+        &[]
+    };
+
+    for msg in history_messages {
+        match msg.role {
+            stupid_agent::session::SessionMessageRole::User => {
+                conversation.add_user_message(msg.content.clone());
+            }
+            stupid_agent::session::SessionMessageRole::Agent => {
+                conversation.add_assistant_response(AssistantContent {
+                    text: Some(msg.content.clone()),
+                    tool_calls: Vec::new(),
+                });
+            }
+            _ => {} // Skip Team/Error messages for the agentic loop
+        }
+    }
+
+    // Set up streaming channel
+    let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(256);
+
+    let tool_context = ToolContext {
+        working_directory: state.data_dir.clone(),
+    };
+
+    // Clone what we need for the background task
+    let task = req.task.clone();
+    let max_iterations = req.max_iterations;
+    let session_store = state.session_store.clone();
+    let session_id = id.clone();
+
+    // Spawn the agentic loop in a background task
+    tokio::spawn(async move {
+        let loop_with_config = agentic_loop.with_max_iterations(max_iterations);
+
+        let result = loop_with_config
+            .run_streaming(&mut conversation, task, &tool_context, tx)
+            .await;
+
+        // Collect the assistant's response text from conversation history
+        let response_text = conversation.messages().iter().rev().find_map(|msg| {
+            if let ConversationMessage::Assistant(content) = msg {
+                content.text.clone()
+            } else {
+                None
+            }
+        }).unwrap_or_default();
+
+        // Persist assistant response to session
+        let agent_msg = stupid_agent::session::SessionMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            role: stupid_agent::session::SessionMessageRole::Agent,
+            content: response_text,
+            timestamp: chrono::Utc::now(),
+            agent_name: Some("assistant".to_string()),
+            status: Some(if result.is_ok() { "completed" } else { "error" }.to_string()),
+            execution_time_ms: None,
+            team_outputs: None,
+            agents_used: None,
+            strategy: None,
+        };
+
+        let store = session_store.write().await;
+        if let Err(e) = store.append_message(&session_id, agent_msg) {
+            tracing::warn!(error = %e, session = %session_id, "Failed to persist assistant response");
+        }
+
+        if let Err(e) = result {
+            tracing::warn!(error = %e, session = %session_id, "Agentic loop error");
+        }
+    });
+
+    // Stream events as SSE
+    use tokio_stream::StreamExt;
+    let sse_stream = ReceiverStream::new(rx).map(|event| {
+        let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+        Ok(Event::default().data(data))
+    });
+
+    Ok(Sse::new(sse_stream))
 }

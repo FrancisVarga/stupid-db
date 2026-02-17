@@ -63,6 +63,7 @@ pub use agents::{
     teams_execute, teams_strategies,
     sessions_list, sessions_create, sessions_get, sessions_update, sessions_delete,
     sessions_execute_agent, sessions_execute_team, sessions_execute,
+    sessions_stream,
 };
 pub use connections::{
     connections_list, connections_add, connections_get,

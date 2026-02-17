@@ -26,6 +26,12 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use stupid_storage::StorageEngine;
+use stupid_tool_runtime::permission::{PermissionLevel, PermissionPolicy, PolicyChecker};
+use stupid_tool_runtime::{
+    AgenticLoop, LlmProviderBridge, PermissionChecker, ToolRegistry,
+    BashExecuteTool, FileReadTool, FileWriteTool,
+    GraphQueryTool, RuleListTool, RuleEvaluateTool,
+};
 
 use crate::state::LoadingState;
 
@@ -78,6 +84,46 @@ fn build_agent_executor(config: &stupid_core::Config) -> Option<stupid_agent::Ag
         config.llm.temperature,
         config.llm.max_tokens,
     ))
+}
+
+/// Build the agentic loop from config, using `LlmProviderBridge` to wrap the
+/// existing LLM provider into a `ToolAwareLlmProvider` with all 6 tools registered.
+fn build_agentic_loop(config: &stupid_core::Config) -> Option<AgenticLoop> {
+    // Create LLM provider and wrap it through the bridge
+    let llm_provider = match stupid_llm::providers::create_provider(&config.llm, &config.ollama) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Failed to create LLM provider for agentic loop: {} — agentic loop disabled", e);
+            return None;
+        }
+    };
+
+    let adapter = stupid_llm::LlmProviderAdapter(llm_provider);
+    let provider = Arc::new(LlmProviderBridge::new(
+        Box::new(adapter),
+        config.llm.provider.clone(),
+    ));
+
+    // Register all 6 built-in tools
+    let mut registry = ToolRegistry::new();
+    registry.register(BashExecuteTool).expect("register BashExecuteTool");
+    registry.register(FileReadTool).expect("register FileReadTool");
+    registry.register(FileWriteTool).expect("register FileWriteTool");
+    registry.register(GraphQueryTool).expect("register GraphQueryTool");
+    registry.register(RuleListTool).expect("register RuleListTool");
+    registry.register(RuleEvaluateTool).expect("register RuleEvaluateTool");
+
+    // Server-side: auto-approve all tool executions (no interactive confirmation)
+    let mut policy = PermissionPolicy::new();
+    policy.default = PermissionLevel::AutoApprove;
+    let permission_checker: Arc<dyn PermissionChecker> = Arc::new(PolicyChecker::new(policy));
+
+    let agentic_loop = AgenticLoop::new(provider, Arc::new(registry), permission_checker)
+        .with_temperature(config.llm.temperature)
+        .with_max_tokens(config.llm.max_tokens);
+
+    info!("Agentic loop ready (provider: {}, 6 tools registered)", config.llm.provider);
+    Some(agentic_loop)
 }
 
 async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow::Result<()> {
@@ -164,6 +210,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         queue_writer: Arc::new(std::sync::Mutex::new(None)),
         data_dir: config.storage.data_dir.clone(),
         agent_executor: build_agent_executor(config),
+        agentic_loop: build_agentic_loop(config),
         connections: Arc::new(RwLock::new(conn_store)),
         queue_connections: Arc::new(RwLock::new(queue_conn_store)),
         athena_connections: Arc::new(RwLock::new(athena_conn_store)),
@@ -202,6 +249,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/sessions/{id}/execute-agent", post(api::sessions_execute_agent))
         .route("/sessions/{id}/execute-team", post(api::sessions_execute_team))
         .route("/sessions/{id}/execute", post(api::sessions_execute))
+        .route("/sessions/{id}/stream", post(api::sessions_stream))
         .route("/connections", get(api::connections_list).post(api::connections_add))
         .route("/connections/{id}", get(api::connections_get).put(api::connections_update).delete(api::connections_delete))
         .route("/connections/{id}/credentials", get(api::connections_credentials))

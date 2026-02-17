@@ -13,6 +13,7 @@ stupid-compute = { path = "../compute" }
 stupid-catalog = { path = "../catalog" }
 stupid-llm = { path = "../llm" }
 stupid-agent = { path = "../agent" }
+stupid-tool-runtime = { path = "../tool-runtime" }
 stupid-rules = { path = "../rules" }
 stupid-notify = { path = "../notify" }
 tokio = { workspace = true }
@@ -31,6 +32,7 @@ walkdir = { workspace = true }
 rayon = { workspace = true }
 notify = { workspace = true }
 futures = { workspace = true }
+async-trait = { workspace = true }
 aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"

@@ -10,6 +10,7 @@ use stupid_catalog::Catalog;
 use stupid_compute::SharedKnowledgeState;
 use stupid_graph::GraphStore;
 use stupid_llm::QueryGenerator;
+use stupid_tool_runtime::AgenticLoop;
 
 pub type SharedGraph = Arc<RwLock<GraphStore>>;
 pub type SharedPipeline = Arc<std::sync::Mutex<stupid_compute::Pipeline>>;
@@ -46,6 +47,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Agent executor for running AI agents.
     pub agent_executor: Option<stupid_agent::AgentExecutor>,
+    /// Agentic loop for tool-aware LLM interaction (streaming, tool use).
+    pub agentic_loop: Option<AgenticLoop>,
     /// Encrypted connection credential store.
     pub connections: Arc<tokio::sync::RwLock<crate::connections::ConnectionStore>>,
     /// Encrypted queue connection store.
