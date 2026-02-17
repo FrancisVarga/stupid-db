@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AthenaQueryPanel from "@/components/db/AthenaQueryPanel";
+import AthenaQueryLogPanel from "@/components/db/AthenaQueryLog";
 import {
   getAthenaSchema,
   refreshAthenaSchema,
@@ -29,6 +30,10 @@ export default function AthenaConnectionDetailPage() {
   // Schema tree expand state
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set());
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
+
+  // Right panel tab
+  const [rightTab, setRightTab] = useState<"query" | "logs">("query");
+  const [queryLogRefreshKey, setQueryLogRefreshKey] = useState(0);
 
   // Clipboard feedback
   const [copiedTable, setCopiedTable] = useState<string | null>(null);
@@ -294,15 +299,66 @@ export default function AthenaConnectionDetailPage() {
           </div>
         </div>
 
-        {/* Right: Query panel */}
+        {/* Right: Query / Logs panel */}
         <div className="flex-1 min-w-0 flex flex-col">
-          <AthenaQueryPanel
-            connectionId={id}
-            defaultDatabase={connection.database}
-          />
+          {/* Right panel tab bar */}
+          <div
+            className="flex items-center gap-1 px-4 pt-3 pb-1 shrink-0"
+            style={{ borderBottom: "1px solid rgba(16, 185, 129, 0.06)" }}
+          >
+            <RightTabButton active={rightTab === "query"} onClick={() => setRightTab("query")}>
+              Query
+            </RightTabButton>
+            <RightTabButton active={rightTab === "logs"} onClick={() => {
+              setRightTab("logs");
+              setQueryLogRefreshKey((k) => k + 1);
+            }}>
+              Costs &amp; Logs
+            </RightTabButton>
+          </div>
+
+          {rightTab === "query" ? (
+            <AthenaQueryPanel
+              connectionId={id}
+              defaultDatabase={connection.database}
+            />
+          ) : (
+            <AthenaQueryLogPanel
+              connectionId={id}
+              refreshKey={queryLogRefreshKey}
+            />
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Right panel tab button ─────────────────────────────────────────────
+
+function RightTabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all"
+      style={{
+        background: active ? "rgba(16, 185, 129, 0.1)" : "transparent",
+        border: active
+          ? "1px solid rgba(16, 185, 129, 0.3)"
+          : "1px solid transparent",
+        color: active ? "#10b981" : "#64748b",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -400,9 +456,9 @@ function SchemaTree({
                       {/* Columns */}
                       {isTableExpanded && (
                         <div className="ml-8 py-0.5">
-                          {table.columns.map((col) => (
+                          {table.columns.map((col, colIdx) => (
                             <div
-                              key={`${tableKey}.${col.name}`}
+                              key={`${tableKey}.${colIdx}.${col.name}`}
                               className="flex items-center gap-2 px-2 py-0.5"
                             >
                               <span className="w-1 h-1 rounded-full shrink-0" style={{ background: "#334155" }} />

@@ -146,3 +146,73 @@ export async function refreshAthenaSchema(
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+// ── Query Log & Cost Tracking ────────────────────────────────────
+
+export interface AthenaQueryLogEntry {
+  entry_id: number;
+  connection_id: string;
+  query_execution_id?: string | null;
+  source: "user_query" | "schema_refresh_databases" | "schema_refresh_tables" | "schema_refresh_describe";
+  sql: string;
+  database: string;
+  workgroup: string;
+  outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+  error_message?: string | null;
+  data_scanned_bytes: number;
+  engine_execution_time_ms: number;
+  total_rows?: number | null;
+  estimated_cost_usd: number;
+  started_at: string;
+  completed_at: string;
+  wall_clock_ms: number;
+}
+
+export interface DailyCostSummary {
+  date: string;
+  query_count: number;
+  total_bytes_scanned: number;
+  total_cost_usd: number;
+  by_source: Record<string, number>;
+}
+
+export interface QueryLogSummary {
+  total_queries: number;
+  total_bytes_scanned: number;
+  total_cost_usd: number;
+  daily: DailyCostSummary[];
+}
+
+export interface QueryLogResponse {
+  connection_id: string;
+  entries: AthenaQueryLogEntry[];
+  summary: QueryLogSummary;
+}
+
+export interface QueryLogParams {
+  source?: string;
+  outcome?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  sql_contains?: string;
+}
+
+export async function getAthenaQueryLog(
+  id: string,
+  params?: QueryLogParams,
+): Promise<QueryLogResponse> {
+  const url = new URL(
+    `${API_BASE}/athena-connections/${encodeURIComponent(id)}/query-log`,
+  );
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") {
+        url.searchParams.set(k, String(v));
+      }
+    });
+  }
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
