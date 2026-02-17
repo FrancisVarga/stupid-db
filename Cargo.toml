@@ -15,6 +15,9 @@ members = [
     "crates/queue",
     "crates/rules",
     "crates/notify",
+    "crates/tool-runtime",
+    "crates/mcp",
+    "crates/cli",
 ]
 resolver = "2"
 
@@ -69,7 +72,7 @@ zstd = "0.13"
 rayon = "1.10"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 async-trait = "0.1"
 
 # Filesystem
@@ -98,6 +101,12 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-athena = "1"
 aws-sdk-s3 = "1"
 aws-types = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+crossterm = "0.28"
+toml = "0.8"
 
 # ── Dev build optimizations ────────────────────────────────────────
 # See issue #61: https://github.com/FrancisVarga/stupid-db/issues/61

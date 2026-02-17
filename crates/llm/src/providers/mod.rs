@@ -1,4 +1,5 @@
 pub mod claude;
+pub mod claude_tool_provider;
 pub mod ollama;
 pub mod openai;
 
