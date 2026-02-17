@@ -29,7 +29,7 @@ pub struct ConnectionConfig {
 }
 
 /// JSON-safe version with masked password (returned by list/get endpoints).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ConnectionSafe {
     pub id: String,
     pub name: String,
@@ -37,6 +37,7 @@ pub struct ConnectionSafe {
     pub port: u16,
     pub database: String,
     pub username: String,
+    #[schema(value_type = String)]
     pub password: &'static str,
     pub ssl: bool,
     pub color: String,
@@ -45,7 +46,7 @@ pub struct ConnectionSafe {
 }
 
 /// Decrypted credentials returned by the `/credentials` endpoint.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ConnectionCredentials {
     pub id: String,
     pub name: String,
@@ -60,7 +61,7 @@ pub struct ConnectionCredentials {
 /// User input for creating/updating a connection.
 /// Accepts either individual fields OR a `connection_string`.
 /// When `connection_string` is provided, it overrides host/port/database/username/password/ssl.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct ConnectionInput {
     pub name: String,
     /// Optional connection string: `postgresql://user:pass@host:port/dbname?sslmode=require`

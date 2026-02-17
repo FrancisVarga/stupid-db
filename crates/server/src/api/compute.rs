@@ -13,14 +13,15 @@ use crate::state::AppState;
 
 // ── Shared query params ──────────────────────────────────────────
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
 pub struct ComputeQueryParams {
+    /// Maximum number of results to return (default 50, max 500).
     pub limit: Option<usize>,
 }
 
 // ── PageRank ─────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PageRankEntry {
     pub id: String,
     pub entity_type: String,
@@ -28,6 +29,16 @@ pub struct PageRankEntry {
     pub score: f64,
 }
 
+/// Top nodes by PageRank score, sorted descending.
+#[utoipa::path(
+    get,
+    path = "/compute/pagerank",
+    tag = "Compute",
+    params(ComputeQueryParams),
+    responses(
+        (status = 200, description = "PageRank scores", body = Vec<PageRankEntry>)
+    )
+)]
 pub async fn compute_pagerank(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<ComputeQueryParams>,
@@ -64,20 +75,29 @@ pub async fn compute_pagerank(
 
 // ── Communities ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CommunitySummary {
     pub community_id: u64,
     pub member_count: usize,
     pub top_nodes: Vec<CommunityNode>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CommunityNode {
     pub id: String,
     pub entity_type: String,
     pub key: String,
 }
 
+/// Louvain community detection results sorted by member count descending.
+#[utoipa::path(
+    get,
+    path = "/compute/communities",
+    tag = "Compute",
+    responses(
+        (status = 200, description = "Community summaries", body = Vec<CommunitySummary>)
+    )
+)]
 pub async fn compute_communities(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<CommunitySummary>> {
@@ -127,7 +147,7 @@ pub async fn compute_communities(
 
 // ── Degrees ──────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DegreeEntry {
     pub id: String,
     pub entity_type: String,
@@ -137,6 +157,16 @@ pub struct DegreeEntry {
     pub total: usize,
 }
 
+/// Node degree centrality sorted by total degree descending.
+#[utoipa::path(
+    get,
+    path = "/compute/degrees",
+    tag = "Compute",
+    params(ComputeQueryParams),
+    responses(
+        (status = 200, description = "Degree entries", body = Vec<DegreeEntry>)
+    )
+)]
 pub async fn compute_degrees(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<ComputeQueryParams>,
@@ -177,7 +207,7 @@ pub async fn compute_degrees(
 
 // ── Pattern detection ────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PatternResponse {
     pub id: String,
     pub sequence: Vec<String>,
@@ -188,6 +218,16 @@ pub struct PatternResponse {
     pub description: Option<String>,
 }
 
+/// Detected sequential patterns (PrefixSpan) sorted by support.
+#[utoipa::path(
+    get,
+    path = "/compute/patterns",
+    tag = "Compute",
+    params(ComputeQueryParams),
+    responses(
+        (status = 200, description = "Sequential patterns", body = Vec<PatternResponse>)
+    )
+)]
 pub async fn compute_patterns(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<ComputeQueryParams>,
@@ -215,14 +255,17 @@ pub async fn compute_patterns(
 
 // ── Co-occurrence ────────────────────────────────────────────────
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
 pub struct CooccurrenceQueryParams {
+    /// Filter by first entity type (case-insensitive).
     pub entity_type_a: Option<String>,
+    /// Filter by second entity type (case-insensitive).
     pub entity_type_b: Option<String>,
+    /// Maximum pairs per entity-type combination (default 50, max 500).
     pub limit: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CooccurrenceEntry {
     pub entity_a: String,
     pub entity_b: String,
@@ -230,13 +273,23 @@ pub struct CooccurrenceEntry {
     pub pmi: Option<f64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CooccurrenceResponse {
     pub entity_type_a: String,
     pub entity_type_b: String,
     pub pairs: Vec<CooccurrenceEntry>,
 }
 
+/// Entity co-occurrence matrices with optional PMI scores.
+#[utoipa::path(
+    get,
+    path = "/compute/cooccurrence",
+    tag = "Compute",
+    params(CooccurrenceQueryParams),
+    responses(
+        (status = 200, description = "Co-occurrence matrices", body = Vec<CooccurrenceResponse>)
+    )
+)]
 pub async fn compute_cooccurrence(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<CooccurrenceQueryParams>,
@@ -338,7 +391,7 @@ pub async fn compute_cooccurrence(
 
 // ── Trends ───────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct TrendResponse {
     pub metric: String,
     pub current_value: f64,
@@ -347,6 +400,15 @@ pub struct TrendResponse {
     pub magnitude: f64,
 }
 
+/// Detected metric trends sorted by magnitude descending.
+#[utoipa::path(
+    get,
+    path = "/compute/trends",
+    tag = "Compute",
+    responses(
+        (status = 200, description = "Metric trends", body = Vec<TrendResponse>)
+    )
+)]
 pub async fn compute_trends(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<TrendResponse>> {
@@ -372,7 +434,7 @@ pub async fn compute_trends(
 
 // ── Anomaly detection ────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct FeatureDimension {
     pub name: &'static str,
     pub value: f64,
@@ -392,7 +454,7 @@ const FEATURE_NAMES: [&str; 10] = [
     "currency",
 ];
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AnomalyEntry {
     pub id: String,
     pub entity_type: String,
@@ -405,6 +467,16 @@ pub struct AnomalyEntry {
     pub cluster_id: Option<u64>,
 }
 
+/// Anomaly scores from DBSCAN clustering, sorted by score descending.
+#[utoipa::path(
+    get,
+    path = "/compute/anomalies",
+    tag = "Compute",
+    params(ComputeQueryParams),
+    responses(
+        (status = 200, description = "Anomaly entries with optional features", body = Vec<AnomalyEntry>)
+    )
+)]
 pub async fn compute_anomalies(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<ComputeQueryParams>,

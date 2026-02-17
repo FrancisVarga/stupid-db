@@ -23,6 +23,18 @@ use super::QueryErrorResponse;
 
 // ── Agent endpoints ────────────────────────────────────────────
 
+/// List all configured agents
+///
+/// Returns agent metadata for all agents loaded from the agents directory.
+#[utoipa::path(
+    get,
+    path = "/agents/list",
+    tag = "Agents",
+    responses(
+        (status = 200, description = "List of configured agents", body = Object),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn agents_list(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
@@ -38,14 +50,29 @@ pub async fn agents_list(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AgentExecuteRequest {
     pub agent_name: String,
     pub task: String,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
 }
 
+/// Execute an agent with a task
+///
+/// Runs the named agent against the provided task and optional context.
+#[utoipa::path(
+    post,
+    path = "/agents/execute",
+    tag = "Agents",
+    request_body = AgentExecuteRequest,
+    responses(
+        (status = 200, description = "Agent execution result", body = Object),
+        (status = 400, description = "Bad request", body = QueryErrorResponse),
+        (status = 503, description = "Agent system not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn agents_execute(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AgentExecuteRequest>,
@@ -80,7 +107,19 @@ pub async fn agents_execute(
     Ok(Json(result))
 }
 
-/// SSE streaming endpoint for agent chat.
+/// Stream agent chat response
+///
+/// Returns Server-Sent Events (SSE) with event types: agent_response, error, done
+#[utoipa::path(
+    post,
+    path = "/agents/chat",
+    tag = "Agents",
+    request_body = AgentExecuteRequest,
+    responses(
+        (status = 200, description = "SSE stream of agent responses", content_type = "text/event-stream"),
+        (status = 503, description = "Agent system not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn agents_chat(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AgentExecuteRequest>,
@@ -130,12 +169,14 @@ pub async fn agents_chat(
 
 // ── Team endpoints ─────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct TeamExecuteRequest {
     pub task: String,
     #[serde(default = "default_strategy")]
+    #[schema(value_type = String)]
     pub strategy: stupid_agent::TeamStrategy,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
 }
 
@@ -143,6 +184,19 @@ fn default_strategy() -> stupid_agent::TeamStrategy {
     stupid_agent::TeamStrategy::FullHierarchy
 }
 
+/// Execute a team of agents
+///
+/// Runs all agents as a team using the specified strategy (e.g., FullHierarchy, Parallel).
+#[utoipa::path(
+    post,
+    path = "/teams/execute",
+    tag = "Teams",
+    request_body = TeamExecuteRequest,
+    responses(
+        (status = 200, description = "Team execution result", body = Object),
+        (status = 503, description = "Agent system not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn teams_execute(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TeamExecuteRequest>,
@@ -173,6 +227,17 @@ pub async fn teams_execute(
     Ok(Json(result))
 }
 
+/// List available team strategies
+///
+/// Returns all supported team execution strategies.
+#[utoipa::path(
+    get,
+    path = "/teams/strategies",
+    tag = "Teams",
+    responses(
+        (status = 200, description = "Available team strategies", body = Object)
+    )
+)]
 pub async fn teams_strategies() -> Json<serde_json::Value> {
     let strategies = stupid_agent::TeamExecutor::strategies();
     Json(serde_json::json!({ "strategies": strategies }))
@@ -180,7 +245,18 @@ pub async fn teams_strategies() -> Json<serde_json::Value> {
 
 // ── Session CRUD endpoints ────────────────────────────────────
 
-/// List all sessions (summaries only, sorted by updated_at desc).
+/// List all sessions
+///
+/// Returns summaries of all sessions, sorted by updated_at descending.
+#[utoipa::path(
+    get,
+    path = "/sessions",
+    tag = "Sessions",
+    responses(
+        (status = 200, description = "List of session summaries", body = Object),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<stupid_agent::session::SessionSummary>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
@@ -195,12 +271,24 @@ pub async fn sessions_list(
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SessionCreateRequest {
     pub name: Option<String>,
 }
 
-/// Create a new empty session.
+/// Create a new session
+///
+/// Creates an empty session with an optional name.
+#[utoipa::path(
+    post,
+    path = "/sessions",
+    tag = "Sessions",
+    request_body = SessionCreateRequest,
+    responses(
+        (status = 201, description = "Session created", body = Object),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_create(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SessionCreateRequest>,
@@ -219,7 +307,22 @@ pub async fn sessions_create(
         })
 }
 
-/// Get a full session with all messages.
+/// Get a session by ID
+///
+/// Returns the full session including all messages.
+#[utoipa::path(
+    get,
+    path = "/sessions/{id}",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    responses(
+        (status = 200, description = "Full session with messages", body = Object),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -242,12 +345,28 @@ pub async fn sessions_get(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SessionUpdateRequest {
     pub name: String,
 }
 
-/// Rename a session.
+/// Rename a session
+///
+/// Updates the session name.
+#[utoipa::path(
+    put,
+    path = "/sessions/{id}",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    request_body = SessionUpdateRequest,
+    responses(
+        (status = 200, description = "Session updated", body = Object),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -271,7 +390,22 @@ pub async fn sessions_update(
     }
 }
 
-/// Delete a session.
+/// Delete a session
+///
+/// Permanently removes a session and all its messages.
+#[utoipa::path(
+    delete,
+    path = "/sessions/{id}",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    responses(
+        (status = 204, description = "Session deleted"),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -296,11 +430,12 @@ pub async fn sessions_delete(
 
 // ── Session Execute endpoints ─────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SessionExecuteAgentRequest {
     pub agent_name: String,
     pub task: String,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
     #[serde(default = "default_max_history")]
     pub max_history: usize,
@@ -310,13 +445,33 @@ fn default_max_history() -> usize {
     10
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SessionExecuteResponse<T: Serialize> {
+    #[schema(value_type = Object)]
     pub session: stupid_agent::session::SessionSummary,
+    #[schema(value_type = Object)]
     pub response: T,
 }
 
-/// Execute an agent within a session, persisting both user message and response.
+/// Execute an agent within a session
+///
+/// Runs the named agent within a session context, persisting both the user
+/// message and the agent response to the session history.
+#[utoipa::path(
+    post,
+    path = "/sessions/{id}/execute-agent",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    request_body = SessionExecuteAgentRequest,
+    responses(
+        (status = 200, description = "Agent execution result with session summary", body = Object),
+        (status = 400, description = "Bad request", body = QueryErrorResponse),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 503, description = "Agent system not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_execute_agent(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -435,19 +590,38 @@ pub async fn sessions_execute_agent(
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub struct SessionExecuteTeamRequest {
     pub task: String,
     #[serde(default = "default_strategy")]
+    #[schema(value_type = String)]
     pub strategy: stupid_agent::TeamStrategy,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
     #[serde(default = "default_max_history")]
     pub max_history: usize,
 }
 
-/// Execute a team within a session, persisting both user message and team response.
+/// Execute a team within a session
+///
+/// Runs all agents as a team within a session context, persisting both the
+/// user message and the team response to the session history.
+#[utoipa::path(
+    post,
+    path = "/sessions/{id}/execute-team",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    request_body = SessionExecuteTeamRequest,
+    responses(
+        (status = 200, description = "Team execution result with session summary", body = Object),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 503, description = "Agent system not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_execute_team(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -549,16 +723,35 @@ pub async fn sessions_execute_team(
     }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SessionExecuteRequest {
     pub task: String,
     #[serde(default)]
+    #[schema(value_type = Object)]
     pub context: serde_json::Value,
     #[serde(default = "default_max_history")]
     pub max_history: usize,
 }
 
-/// Execute directly against the LLM within a session (no agent selection needed).
+/// Execute directly against the LLM within a session
+///
+/// Runs a task directly against the LLM without agent selection, within a
+/// session context. Both the user message and response are persisted.
+#[utoipa::path(
+    post,
+    path = "/sessions/{id}/execute",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    request_body = SessionExecuteRequest,
+    responses(
+        (status = 200, description = "Direct execution result with session summary", body = Object),
+        (status = 400, description = "Bad request", body = QueryErrorResponse),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 503, description = "Agent system not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_execute(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -679,7 +872,7 @@ pub async fn sessions_execute(
 
 // ── Session Streaming endpoint ──────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SessionStreamRequest {
     pub task: String,
     pub system_prompt: Option<String>,
@@ -691,11 +884,26 @@ fn default_max_iterations() -> usize {
     10
 }
 
-/// Stream an agentic loop response as SSE events within a session.
+/// Stream an agentic loop response within a session
 ///
-/// Uses the `AgenticLoop` from AppState, which wraps the LLM provider with
-/// tool-use support. Each `StreamEvent` is sent as a JSON SSE data line.
-/// After the stream completes, the assistant's response is persisted to the session.
+/// Uses the AgenticLoop from AppState with tool-use support. Each StreamEvent
+/// is sent as a JSON SSE data line. After the stream completes, the assistant's
+/// response is persisted to the session. Event types: text_delta, tool_call,
+/// tool_result, error, done.
+#[utoipa::path(
+    post,
+    path = "/sessions/{id}/stream",
+    tag = "Sessions",
+    params(
+        ("id" = String, Path, description = "Session ID")
+    ),
+    request_body = SessionStreamRequest,
+    responses(
+        (status = 200, description = "SSE stream of agentic loop events", content_type = "text/event-stream"),
+        (status = 404, description = "Session not found", body = QueryErrorResponse),
+        (status = 503, description = "Agentic loop not configured", body = QueryErrorResponse)
+    )
+)]
 pub async fn sessions_stream(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

@@ -16,7 +16,7 @@ use super::NotReadyResponse;
 
 // ── Health & Loading ──────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
@@ -24,6 +24,15 @@ pub struct HealthResponse {
     pub loading_phase: &'static str,
 }
 
+/// Basic health check returning server status and readiness.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Server is running", body = HealthResponse)
+    )
+)]
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let status = state.loading.to_status().await;
     Json(HealthResponse {
@@ -34,6 +43,15 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
     })
 }
 
+/// Current loading progress with phase, progress count, and elapsed time.
+#[utoipa::path(
+    get,
+    path = "/loading",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Loading progress", body = Object)
+    )
+)]
 pub async fn loading(
     State(state): State<Arc<AppState>>,
 ) -> Json<crate::state::LoadingStatus> {
@@ -42,7 +60,7 @@ pub async fn loading(
 
 // ── Stats ─────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct StatsResponse {
     pub doc_count: u64,
     pub segment_count: usize,
@@ -57,6 +75,15 @@ pub struct StatsResponse {
     pub degree_count: usize,
 }
 
+/// Aggregate statistics: document count, segments, graph nodes/edges, and compute results.
+#[utoipa::path(
+    get,
+    path = "/stats",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Aggregate statistics", body = StatsResponse)
+    )
+)]
 pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
     let graph = state.graph.read().await;
     let gs = graph.stats();
@@ -82,6 +109,16 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
 
 // ── Catalog endpoint ───────────────────────────────────────────────
 
+/// Return the entity/schema catalog (available after loading completes).
+#[utoipa::path(
+    get,
+    path = "/catalog",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Entity and schema catalog", body = Object),
+        (status = 503, description = "Service not ready", body = NotReadyResponse)
+    )
+)]
 pub async fn catalog(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<stupid_catalog::Catalog>, (axum::http::StatusCode, Json<NotReadyResponse>)> {
@@ -104,6 +141,15 @@ pub async fn catalog(
 
 // ── Queue status ──────────────────────────────────────────────
 
+/// Queue consumer metrics: message counts, latency, and connection state.
+#[utoipa::path(
+    get,
+    path = "/queue/status",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Queue consumer metrics", body = Object)
+    )
+)]
 pub async fn queue_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let is_empty = state.queue_metrics.read().unwrap().is_empty();
 
@@ -149,6 +195,15 @@ pub async fn queue_status(State(state): State<Arc<AppState>>) -> Json<serde_json
 
 // ── Scheduler metrics ─────────────────────────────────────────
 
+/// Compute scheduler metrics: run counts, durations, and next scheduled time.
+#[utoipa::path(
+    get,
+    path = "/scheduler/metrics",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Scheduler execution metrics", body = Object)
+    )
+)]
 pub async fn scheduler_metrics(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {

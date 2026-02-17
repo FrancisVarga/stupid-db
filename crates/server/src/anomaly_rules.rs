@@ -20,7 +20,7 @@ use stupid_rules::schema::AnomalyRule;
 use crate::state::AppState;
 
 /// Lightweight summary returned by the list endpoint.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RuleSummary {
     pub id: String,
     pub name: String,
@@ -67,7 +67,15 @@ impl RuleSummary {
 }
 
 /// List all anomaly rules as lightweight summaries.
-async fn list_anomaly_rules(
+#[utoipa::path(
+    get,
+    path = "/anomaly-rules",
+    tag = "Anomaly Rules",
+    responses(
+        (status = 200, description = "List of anomaly rule summaries", body = Vec<RuleSummary>)
+    )
+)]
+pub(crate) async fn list_anomaly_rules(
     State(state): State<Arc<AppState>>,
 ) -> Json<Vec<RuleSummary>> {
     let rules = state.rule_loader.rules();
@@ -85,7 +93,18 @@ async fn list_anomaly_rules(
 ///
 /// Returns 201 on success, 400 on parse/validation error, 409 if the rule ID
 /// already exists.
-async fn create_anomaly_rule(
+#[utoipa::path(
+    post,
+    path = "/anomaly-rules",
+    tag = "Anomaly Rules",
+    request_body(content = String, content_type = "application/yaml", description = "Anomaly rule definition in YAML format"),
+    responses(
+        (status = 201, description = "Anomaly rule created", body = Object),
+        (status = 400, description = "Invalid YAML", body = String),
+        (status = 409, description = "Rule already exists", body = String)
+    )
+)]
+pub(crate) async fn create_anomaly_rule(
     State(state): State<Arc<AppState>>,
     body: String,
 ) -> Result<(StatusCode, Json<AnomalyRule>), (StatusCode, String)> {
@@ -119,7 +138,19 @@ async fn create_anomaly_rule(
 }
 
 /// Get a single anomaly rule by ID.
-async fn get_anomaly_rule(
+#[utoipa::path(
+    get,
+    path = "/anomaly-rules/{id}",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    responses(
+        (status = 200, description = "Anomaly rule details", body = Object),
+        (status = 404, description = "Rule not found")
+    )
+)]
+pub(crate) async fn get_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<AnomalyRule>, StatusCode> {
@@ -136,7 +167,21 @@ async fn get_anomaly_rule(
 ///
 /// The rule ID in the path must match the `metadata.id` in the YAML body
 /// (or the body ID is overwritten to match the path).
-async fn update_anomaly_rule(
+#[utoipa::path(
+    put,
+    path = "/anomaly-rules/{id}",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    request_body(content = String, content_type = "application/yaml", description = "Updated anomaly rule definition in YAML format"),
+    responses(
+        (status = 200, description = "Anomaly rule updated", body = Object),
+        (status = 400, description = "Invalid YAML", body = String),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn update_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: String,
@@ -166,7 +211,20 @@ async fn update_anomaly_rule(
 }
 
 /// Delete an anomaly rule by ID.
-async fn delete_anomaly_rule(
+#[utoipa::path(
+    delete,
+    path = "/anomaly-rules/{id}",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    responses(
+        (status = 204, description = "Anomaly rule deleted"),
+        (status = 404, description = "Rule not found"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub(crate) async fn delete_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> StatusCode {
@@ -187,7 +245,7 @@ async fn delete_anomaly_rule(
 // ── Lifecycle types ───────────────────────────────────────────────────
 
 /// Result of an immediate rule evaluation via `POST /anomaly-rules/{id}/run`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RunResult {
     pub rule_id: String,
     pub matches_found: usize,
@@ -196,7 +254,7 @@ pub struct RunResult {
 }
 
 /// Result of a test notification dispatch via `POST /anomaly-rules/{id}/test-notify`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TestNotifyResult {
     pub channel: String,
     pub success: bool,
@@ -205,7 +263,7 @@ pub struct TestNotifyResult {
 }
 
 /// Compact match summary stored in trigger history.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct MatchSummary {
     pub entity_key: String,
     pub entity_type: String,
@@ -214,7 +272,7 @@ pub struct MatchSummary {
 }
 
 /// A single trigger history entry stored per rule.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct TriggerEntry {
     pub timestamp: String,
     pub matches_found: usize,
@@ -225,7 +283,7 @@ pub struct TriggerEntry {
 }
 
 /// Query parameters for the history endpoint.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct HistoryParams {
     pub limit: Option<u32>,
 }
@@ -238,7 +296,19 @@ pub type SharedTriggerHistory = Arc<RwLock<HashMap<String, VecDeque<TriggerEntry
 /// Start (enable) an anomaly rule.
 ///
 /// Sets `metadata.enabled = true` and persists the change to disk.
-async fn start_anomaly_rule(
+#[utoipa::path(
+    post,
+    path = "/anomaly-rules/{id}/start",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    responses(
+        (status = 200, description = "Anomaly rule started", body = Object),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn start_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<AnomalyRule>, (StatusCode, String)> {
@@ -248,7 +318,19 @@ async fn start_anomaly_rule(
 /// Pause (disable) an anomaly rule.
 ///
 /// Sets `metadata.enabled = false` and persists the change to disk.
-async fn pause_anomaly_rule(
+#[utoipa::path(
+    post,
+    path = "/anomaly-rules/{id}/pause",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    responses(
+        (status = 200, description = "Anomaly rule paused", body = Object),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn pause_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<AnomalyRule>, (StatusCode, String)> {
@@ -288,7 +370,19 @@ fn toggle_rule_enabled(
 /// Builds entity data and signal scores from the compute pipeline,
 /// evaluates the rule via `RuleEvaluator`, and records the trigger
 /// in history.
-async fn run_anomaly_rule(
+#[utoipa::path(
+    post,
+    path = "/anomaly-rules/{id}/run",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    responses(
+        (status = 200, description = "Rule evaluation result", body = RunResult),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn run_anomaly_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<RunResult>, (StatusCode, String)> {
@@ -378,7 +472,19 @@ async fn run_anomaly_rule(
 /// TODO: Full dispatch requires `Dispatcher` in `AppState`, which will be
 /// added when the notification subsystem is integrated. This stub returns
 /// a synthetic result for each configured channel.
-async fn test_notify_rule(
+#[utoipa::path(
+    post,
+    path = "/anomaly-rules/{id}/test-notify",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID")
+    ),
+    responses(
+        (status = 200, description = "Test notification results", body = Vec<TestNotifyResult>),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn test_notify_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TestNotifyResult>>, (StatusCode, String)> {
@@ -417,7 +523,20 @@ async fn test_notify_rule(
 ///
 /// Returns the most recent trigger entries (newest first), limited by
 /// the optional `limit` query parameter.
-async fn rule_history(
+#[utoipa::path(
+    get,
+    path = "/anomaly-rules/{id}/history",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID"),
+        HistoryParams
+    ),
+    responses(
+        (status = 200, description = "Trigger history entries", body = Vec<TriggerEntry>),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn rule_history(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Query(params): Query<HistoryParams>,
@@ -445,7 +564,23 @@ async fn rule_history(
 ///
 /// Returns filtered log entries (newest first), controlled by optional
 /// `level`, `phase`, `limit`, and `since` query parameters.
-async fn rule_logs(
+#[utoipa::path(
+    get,
+    path = "/anomaly-rules/{id}/logs",
+    tag = "Anomaly Rules",
+    params(
+        ("id" = String, Path, description = "Anomaly rule ID"),
+        ("level" = Option<String>, Query, description = "Minimum log level filter"),
+        ("phase" = Option<String>, Query, description = "Execution phase filter"),
+        ("limit" = Option<u32>, Query, description = "Maximum number of entries"),
+        ("since" = Option<String>, Query, description = "Only entries at or after this ISO 8601 timestamp")
+    ),
+    responses(
+        (status = 200, description = "Audit log entries", body = Vec<Object>),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn rule_logs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Query(params): Query<LogQueryParams>,

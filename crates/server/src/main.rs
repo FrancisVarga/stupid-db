@@ -27,6 +27,8 @@ use axum::Router;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
+use utoipa::OpenApi;
+use utoipa_scalar::{Scalar, Servable};
 
 use stupid_storage::StorageEngine;
 use stupid_tool_runtime::permission::{PermissionLevel, PermissionPolicy, PolicyChecker};
@@ -323,7 +325,8 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .merge(anomaly_rules::anomaly_rules_router())
         .merge(rules::rules_router())
         .layer(CorsLayer::permissive())
-        .with_state(state.clone());
+        .with_state(state.clone())
+        .merge(Scalar::with_url("/docs", api::doc::ApiDoc::openapi()));
 
     // Bind and start serving IMMEDIATELY.
     let addr = format!("{}:{}", config.server.host, config.server.port);

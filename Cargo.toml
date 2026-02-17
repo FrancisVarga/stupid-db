@@ -115,6 +115,11 @@ toml = "0.8"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 
+# OpenAPI documentation
+utoipa = { version = "5.4", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+utoipa-scalar = { version = "0.3", features = ["axum"] }
+
 # ── Dev build optimizations ────────────────────────────────────────
 # See issue #61: https://github.com/FrancisVarga/stupid-db/issues/61
 

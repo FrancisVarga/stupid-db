@@ -22,10 +22,11 @@ use crate::state::AppState;
 // ── Types ────────────────────────────────────────────────────────────
 
 /// A recent trigger entry enriched with rule metadata for the dashboard feed.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RecentTrigger {
     pub rule_id: String,
     pub rule_name: String,
+    #[schema(value_type = String)]
     pub kind: RuleKind,
     pub timestamp: String,
     pub matches_found: usize,
@@ -35,16 +36,17 @@ pub struct RecentTrigger {
 }
 
 /// Query parameters for GET /rules/recent-triggers.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RecentTriggersParams {
     pub limit: Option<u32>,
 }
 
 /// Lightweight summary returned by GET /rules.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GenericRuleSummary {
     pub id: String,
     pub name: String,
+    #[schema(value_type = String)]
     pub kind: RuleKind,
     pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,7 +56,7 @@ pub struct GenericRuleSummary {
 }
 
 /// Query parameters for GET /rules.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RulesQueryParams {
     pub kind: Option<String>,
 }
@@ -62,7 +64,16 @@ pub struct RulesQueryParams {
 // ── Endpoints ────────────────────────────────────────────────────────
 
 /// List all rule documents as lightweight summaries.
-async fn list_rules(
+#[utoipa::path(
+    get,
+    path = "/rules",
+    tag = "Rules",
+    params(RulesQueryParams),
+    responses(
+        (status = 200, description = "List of rule summaries", body = Vec<GenericRuleSummary>)
+    )
+)]
+pub(crate) async fn list_rules(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RulesQueryParams>,
 ) -> Json<Vec<GenericRuleSummary>> {
@@ -98,7 +109,19 @@ async fn list_rules(
 }
 
 /// Get a single rule document as JSON.
-async fn get_rule(
+#[utoipa::path(
+    get,
+    path = "/rules/{id}",
+    tag = "Rules",
+    params(
+        ("id" = String, Path, description = "Rule ID")
+    ),
+    responses(
+        (status = 200, description = "Rule document", body = Object),
+        (status = 404, description = "Rule not found")
+    )
+)]
+pub(crate) async fn get_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -110,7 +133,19 @@ async fn get_rule(
 }
 
 /// Get raw YAML for a rule (reads from disk for round-trip fidelity).
-async fn get_rule_yaml(
+#[utoipa::path(
+    get,
+    path = "/rules/{id}/yaml",
+    tag = "Rules",
+    params(
+        ("id" = String, Path, description = "Rule ID")
+    ),
+    responses(
+        (status = 200, description = "Rule YAML source", content_type = "text/plain", body = String),
+        (status = 404, description = "Rule not found")
+    )
+)]
+pub(crate) async fn get_rule_yaml(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
@@ -147,7 +182,18 @@ async fn get_rule_yaml(
 }
 
 /// Create a new rule from a YAML body. Supports all 6 rule kinds.
-async fn create_rule(
+#[utoipa::path(
+    post,
+    path = "/rules",
+    tag = "Rules",
+    request_body(content = String, content_type = "application/yaml", description = "Rule definition in YAML format"),
+    responses(
+        (status = 201, description = "Rule created", body = Object),
+        (status = 400, description = "Invalid YAML", body = String),
+        (status = 409, description = "Rule already exists", body = String)
+    )
+)]
+pub(crate) async fn create_rule(
     State(state): State<Arc<AppState>>,
     body: String,
 ) -> Result<(StatusCode, impl IntoResponse), (StatusCode, String)> {
@@ -190,7 +236,21 @@ async fn create_rule(
 }
 
 /// Update an existing rule by ID from a YAML body.
-async fn update_rule(
+#[utoipa::path(
+    put,
+    path = "/rules/{id}",
+    tag = "Rules",
+    params(
+        ("id" = String, Path, description = "Rule ID")
+    ),
+    request_body(content = String, content_type = "application/yaml", description = "Updated rule definition in YAML format"),
+    responses(
+        (status = 200, description = "Rule updated", body = Object),
+        (status = 400, description = "Invalid YAML", body = String),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn update_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: String,
@@ -228,7 +288,20 @@ async fn update_rule(
 }
 
 /// Delete a rule by ID. Works for any rule kind.
-async fn delete_rule(
+#[utoipa::path(
+    delete,
+    path = "/rules/{id}",
+    tag = "Rules",
+    params(
+        ("id" = String, Path, description = "Rule ID")
+    ),
+    responses(
+        (status = 204, description = "Rule deleted"),
+        (status = 404, description = "Rule not found"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+pub(crate) async fn delete_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> StatusCode {
@@ -246,7 +319,19 @@ async fn delete_rule(
 }
 
 /// Toggle a rule's `metadata.enabled` flag. Works for any rule kind.
-async fn toggle_rule(
+#[utoipa::path(
+    post,
+    path = "/rules/{id}/toggle",
+    tag = "Rules",
+    params(
+        ("id" = String, Path, description = "Rule ID")
+    ),
+    responses(
+        (status = 200, description = "Rule toggled", body = Object),
+        (status = 404, description = "Rule not found", body = String)
+    )
+)]
+pub(crate) async fn toggle_rule(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
@@ -278,7 +363,16 @@ async fn toggle_rule(
 ///
 /// Merges all per-rule trigger histories and enriches each entry with rule
 /// metadata (name, kind) for display in the dashboard feed.
-async fn recent_triggers(
+#[utoipa::path(
+    get,
+    path = "/rules/recent-triggers",
+    tag = "Rules",
+    params(RecentTriggersParams),
+    responses(
+        (status = 200, description = "Recent trigger events", body = Vec<RecentTrigger>)
+    )
+)]
+pub(crate) async fn recent_triggers(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RecentTriggersParams>,
 ) -> Json<Vec<RecentTrigger>> {

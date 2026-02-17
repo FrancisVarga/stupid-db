@@ -14,13 +14,24 @@ use super::NotReadyResponse;
 
 // ── Graph endpoints ───────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct NodeResponse {
     pub id: String,
     pub entity_type: String,
     pub key: String,
 }
 
+/// List graph nodes with optional entity type filter and limit.
+#[utoipa::path(
+    get,
+    path = "/graph/nodes",
+    tag = "Graph",
+    params(NodeQueryParams),
+    responses(
+        (status = 200, description = "List of graph nodes", body = Vec<NodeResponse>),
+        (status = 503, description = "Service not ready", body = NotReadyResponse)
+    )
+)]
 pub async fn graph_nodes(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<NodeQueryParams>,
@@ -50,13 +61,15 @@ pub async fn graph_nodes(
     Ok(Json(nodes))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
 pub struct NodeQueryParams {
+    /// Maximum number of nodes to return (default 100, max 1000).
     pub limit: Option<usize>,
+    /// Filter by entity type (case-insensitive).
     pub entity_type: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct NodeDetailResponse {
     pub id: String,
     pub entity_type: String,
@@ -64,7 +77,7 @@ pub struct NodeDetailResponse {
     pub neighbors: Vec<NeighborResponse>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct NeighborResponse {
     pub node_id: String,
     pub entity_type: String,
@@ -73,6 +86,21 @@ pub struct NeighborResponse {
     pub weight: f64,
 }
 
+/// Get a single node by UUID with its immediate neighbors.
+#[utoipa::path(
+    get,
+    path = "/graph/nodes/{id}",
+    tag = "Graph",
+    params(
+        ("id" = String, Path, description = "Node UUID")
+    ),
+    responses(
+        (status = 200, description = "Node detail with neighbors", body = NodeDetailResponse),
+        (status = 400, description = "Invalid UUID format"),
+        (status = 404, description = "Node not found"),
+        (status = 503, description = "Service not ready")
+    )
+)]
 pub async fn graph_node_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -113,20 +141,20 @@ pub async fn graph_node_by_id(
 }
 
 /// Return graph data for D3 force visualization (sampled to keep browser responsive).
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ForceGraphResponse {
     pub nodes: Vec<ForceNode>,
     pub links: Vec<ForceLink>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ForceNode {
     pub id: String,
     pub entity_type: String,
     pub key: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ForceLink {
     pub source: String,
     pub target: String,
@@ -134,6 +162,17 @@ pub struct ForceLink {
     pub weight: f64,
 }
 
+/// Sampled graph data for D3 force-directed layout visualization.
+#[utoipa::path(
+    get,
+    path = "/graph/force",
+    tag = "Graph",
+    params(ForceGraphParams),
+    responses(
+        (status = 200, description = "Force graph nodes and links", body = ForceGraphResponse),
+        (status = 503, description = "Service not ready", body = NotReadyResponse)
+    )
+)]
 pub async fn graph_force(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<ForceGraphParams>,
@@ -176,7 +215,8 @@ pub async fn graph_force(
     Ok(Json(ForceGraphResponse { nodes, links }))
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
 pub struct ForceGraphParams {
+    /// Maximum number of nodes to include (default 200, max 500).
     pub limit: Option<usize>,
 }

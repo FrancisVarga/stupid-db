@@ -7,6 +7,7 @@ mod agents;
 mod athena_query;
 mod compute;
 mod connections;
+pub(crate) mod doc;
 pub mod embedding;
 mod graph;
 mod health;
@@ -19,13 +20,14 @@ use crate::state::{AppState, LoadingStatus};
 
 // ── Shared types ─────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct NotReadyResponse {
     pub error: &'static str,
+    #[schema(value_type = Object)]
     pub loading: LoadingStatus,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct QueryErrorResponse {
     pub error: String,
 }

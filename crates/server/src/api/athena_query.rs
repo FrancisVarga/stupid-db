@@ -19,7 +19,7 @@ use super::QueryErrorResponse;
 
 // ── Request types ────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AthenaQueryRequest {
     pub sql: String,
     #[serde(default)]
@@ -28,17 +28,28 @@ pub struct AthenaQueryRequest {
 
 // ── SSE streaming query ──────────────────────────────────────────
 
-/// SSE streaming Athena query execution.
+/// SSE streaming Athena query execution
 ///
 /// Submits a SQL query to AWS Athena via the specified connection, polls for
 /// status updates, and streams results back as Server-Sent Events.
 ///
 /// Events emitted:
-/// - `status`  — query state transitions (QUEUED, RUNNING, SUCCEEDED) with stats
-/// - `columns` — column metadata (name + type) sent once before row data
-/// - `rows`    — batches of up to 100 result rows
-/// - `done`    — final summary (total_rows, data_scanned_bytes, execution_time_ms)
-/// - `error`   — terminal error with message
+/// - `status`  -- query state transitions (QUEUED, RUNNING, SUCCEEDED) with stats
+/// - `columns` -- column metadata (name + type) sent once before row data
+/// - `rows`    -- batches of up to 100 result rows
+/// - `done`    -- final summary (total_rows, data_scanned_bytes, execution_time_ms)
+/// - `error`   -- terminal error with message
+#[utoipa::path(
+    post,
+    path = "/athena-connections/{id}/query",
+    tag = "Athena Queries",
+    request_body = AthenaQueryRequest,
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 200, description = "SSE event stream", content_type = "text/event-stream"),
+        (status = 404, description = "Connection not found", body = QueryErrorResponse)
+    )
+)]
 pub async fn athena_query_sse(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -395,12 +406,23 @@ pub async fn athena_query_sse(
 
 // ── Parquet download ─────────────────────────────────────────────
 
-/// Execute an Athena query and return the results as a Parquet file download.
+/// Export Athena query results as Parquet
 ///
 /// Uses the same query execution flow as the SSE endpoint but collects all
 /// results into memory and returns a single Parquet file with proper types
 /// and Zstd compression. The response includes Content-Disposition header
 /// for browser download.
+#[utoipa::path(
+    post,
+    path = "/athena-connections/{id}/query/parquet",
+    tag = "Athena Queries",
+    request_body = AthenaQueryRequest,
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 200, description = "Parquet file", content_type = "application/octet-stream"),
+        (status = 500, description = "Query error", body = QueryErrorResponse)
+    )
+)]
 pub async fn athena_query_parquet(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -526,7 +548,19 @@ pub async fn athena_query_parquet(
 
 // ── Schema endpoints ─────────────────────────────────────────────
 
-/// Get cached schema for an Athena connection.
+/// Get cached schema for an Athena connection
+///
+/// Returns the cached database/table/column schema and its fetch status.
+#[utoipa::path(
+    get,
+    path = "/athena-connections/{id}/schema",
+    tag = "Athena Queries",
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 200, description = "Schema and status", body = Object),
+        (status = 404, description = "Connection not found")
+    )
+)]
 pub async fn athena_connections_schema(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -544,7 +578,20 @@ pub async fn athena_connections_schema(
     }
 }
 
-/// Trigger background schema refresh for an Athena connection.
+/// Trigger background schema refresh for an Athena connection
+///
+/// Sets the schema status to "fetching" and spawns a background task to
+/// introspect Athena catalogs, databases, tables, and columns.
+#[utoipa::path(
+    post,
+    path = "/athena-connections/{id}/schema/refresh",
+    tag = "Athena Queries",
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 200, description = "Refresh started", body = Object),
+        (status = 404, description = "Connection not found", body = QueryErrorResponse)
+    )
+)]
 pub async fn athena_connections_schema_refresh(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -668,11 +715,29 @@ async fn rebuild_catalog_external_sources(state: &Arc<AppState>) {
 
 // ── Query log ────────────────────────────────────────────────────
 
-/// Get query audit log for an Athena connection.
+/// Get query audit log for an Athena connection
 ///
 /// Returns matching log entries (newest first) with cumulative and daily cost
 /// summaries. Supports filtering by source, outcome, time range, SQL text,
 /// and result limit.
+#[utoipa::path(
+    get,
+    path = "/athena-connections/{id}/query-log",
+    tag = "Athena Queries",
+    params(
+        ("id" = String, Path, description = "Athena connection ID"),
+        ("source" = Option<String>, Query, description = "Filter by query source"),
+        ("outcome" = Option<String>, Query, description = "Filter by outcome"),
+        ("since" = Option<String>, Query, description = "ISO 8601 lower bound (inclusive)"),
+        ("until" = Option<String>, Query, description = "ISO 8601 upper bound (exclusive)"),
+        ("limit" = Option<u32>, Query, description = "Maximum entries to return (default 100)"),
+        ("sql_contains" = Option<String>, Query, description = "Case-insensitive SQL substring match"),
+    ),
+    responses(
+        (status = 200, description = "Query log entries with cost summary", body = Object),
+        (status = 404, description = "Connection not found")
+    )
+)]
 pub async fn athena_connections_query_log(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

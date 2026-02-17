@@ -14,18 +14,34 @@ use super::QueryErrorResponse;
 
 // ── Query endpoint ─────────────────────────────────────────────
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct QueryRequest {
     pub question: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct QueryResponse {
     pub question: String,
+    #[schema(value_type = Object)]
     pub plan: stupid_catalog::QueryPlan,
+    #[schema(value_type = Vec<Object>)]
     pub results: Vec<serde_json::Value>,
 }
 
+/// Execute a natural-language query
+///
+/// Sends the question to the LLM query generator which produces a query plan,
+/// executes it against the in-memory graph and catalog, and returns results.
+#[utoipa::path(
+    post,
+    path = "/query",
+    tag = "Query",
+    request_body = QueryRequest,
+    responses(
+        (status = 200, description = "Query results with execution plan", body = QueryResponse),
+        (status = 503, description = "Service not ready", body = QueryErrorResponse)
+    )
+)]
 pub async fn query(
     State(state): State<Arc<AppState>>,
     Json(req): Json<QueryRequest>,

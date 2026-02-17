@@ -77,7 +77,7 @@ pub struct QueueConnectionConfig {
 }
 
 /// JSON-safe version with masked credentials (returned by list/get endpoints).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct QueueConnectionSafe {
     pub id: String,
     pub name: String,
@@ -86,8 +86,11 @@ pub struct QueueConnectionSafe {
     pub provider: String,
     pub enabled: bool,
     pub region: String,
+    #[schema(value_type = String)]
     pub access_key_id: &'static str,
+    #[schema(value_type = String)]
     pub secret_access_key: &'static str,
+    #[schema(value_type = String)]
     pub session_token: &'static str,
     pub endpoint_url: Option<String>,
     pub poll_interval_ms: u64,
@@ -101,7 +104,7 @@ pub struct QueueConnectionSafe {
 }
 
 /// Decrypted credentials for SqsConsumer creation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct QueueConnectionCredentials {
     pub id: String,
     pub name: String,
@@ -159,7 +162,7 @@ impl QueueConnectionConfig {
 }
 
 /// User input for creating/updating a queue connection.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct QueueConnectionInput {
     pub name: String,
     pub queue_url: String,

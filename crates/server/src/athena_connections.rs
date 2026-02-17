@@ -42,28 +42,28 @@ fn default_schema_status() -> String {
 // ── Schema types ─────────────────────────────────────────────────────
 
 /// Cached Athena schema metadata (databases, tables, columns).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AthenaSchema {
     pub databases: Vec<AthenaDatabase>,
     pub fetched_at: String,
 }
 
 /// A single Athena/Glue database with its tables.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AthenaDatabase {
     pub name: String,
     pub tables: Vec<AthenaTable>,
 }
 
 /// A single Athena table with its columns.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AthenaTable {
     pub name: String,
     pub columns: Vec<AthenaColumn>,
 }
 
 /// A single column in an Athena table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AthenaColumn {
     pub name: String,
     pub data_type: String,
@@ -95,7 +95,7 @@ pub struct AthenaConnectionConfig {
 }
 
 /// JSON-safe version with masked credentials (returned by list/get endpoints).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AthenaConnectionSafe {
     pub id: String,
     pub name: String,
@@ -104,8 +104,11 @@ pub struct AthenaConnectionSafe {
     pub database: String,
     pub workgroup: String,
     pub output_location: String,
+    #[schema(value_type = String)]
     pub access_key_id: &'static str,
+    #[schema(value_type = String)]
     pub secret_access_key: &'static str,
+    #[schema(value_type = String)]
     pub session_token: &'static str,
     pub endpoint_url: Option<String>,
     pub enabled: bool,
@@ -117,7 +120,7 @@ pub struct AthenaConnectionSafe {
 }
 
 /// Decrypted credentials for Athena client creation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AthenaConnectionCredentials {
     pub id: String,
     pub name: String,
@@ -133,7 +136,7 @@ pub struct AthenaConnectionCredentials {
 }
 
 /// User input for creating/updating an Athena connection.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct AthenaConnectionInput {
     pub name: String,
     #[serde(default = "default_region")]

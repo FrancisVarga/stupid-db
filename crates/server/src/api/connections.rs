@@ -22,6 +22,15 @@ use super::QueryErrorResponse;
 // ── DB Connection CRUD ───────────────────────────────────────────
 
 /// List all connections (passwords masked).
+#[utoipa::path(
+    get,
+    path = "/connections",
+    tag = "DB Connections",
+    responses(
+        (status = 200, description = "List of connections", body = Vec<ConnectionSafe>),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn connections_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<ConnectionSafe>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
@@ -37,6 +46,17 @@ pub async fn connections_list(
 }
 
 /// Add a new connection.
+#[utoipa::path(
+    post,
+    path = "/connections",
+    tag = "DB Connections",
+    request_body = ConnectionInput,
+    responses(
+        (status = 201, description = "Connection created", body = ConnectionSafe),
+        (status = 409, description = "Connection already exists", body = QueryErrorResponse),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn connections_add(
     State(state): State<Arc<AppState>>,
     Json(input): Json<ConnectionInput>,
@@ -53,6 +73,17 @@ pub async fn connections_add(
 }
 
 /// Get a single connection (password masked).
+#[utoipa::path(
+    get,
+    path = "/connections/{id}",
+    tag = "DB Connections",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 200, description = "Connection details", body = ConnectionSafe),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn connections_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -66,6 +97,18 @@ pub async fn connections_get(
 }
 
 /// Update an existing connection.
+#[utoipa::path(
+    put,
+    path = "/connections/{id}",
+    tag = "DB Connections",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = ConnectionInput,
+    responses(
+        (status = 200, description = "Connection updated", body = ConnectionSafe),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn connections_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -80,6 +123,17 @@ pub async fn connections_update(
 }
 
 /// Delete a connection.
+#[utoipa::path(
+    delete,
+    path = "/connections/{id}",
+    tag = "DB Connections",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 204, description = "Connection deleted"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn connections_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -93,6 +147,17 @@ pub async fn connections_delete(
 }
 
 /// Get decrypted credentials for a connection (used by dashboard pool manager).
+#[utoipa::path(
+    get,
+    path = "/connections/{id}/credentials",
+    tag = "DB Connections",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 200, description = "Decrypted credentials", body = ConnectionCredentials),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn connections_credentials(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -108,6 +173,15 @@ pub async fn connections_credentials(
 // ── Queue Connection CRUD ────────────────────────────────────────
 
 /// List all queue connections (credentials masked).
+#[utoipa::path(
+    get,
+    path = "/queue-connections",
+    tag = "Queue Connections",
+    responses(
+        (status = 200, description = "List of queue connections", body = Vec<QueueConnectionSafe>),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn queue_connections_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<QueueConnectionSafe>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
@@ -123,6 +197,17 @@ pub async fn queue_connections_list(
 }
 
 /// Add a new queue connection.
+#[utoipa::path(
+    post,
+    path = "/queue-connections",
+    tag = "Queue Connections",
+    request_body = QueueConnectionInput,
+    responses(
+        (status = 201, description = "Queue connection created", body = QueueConnectionSafe),
+        (status = 409, description = "Queue connection already exists", body = QueryErrorResponse),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn queue_connections_add(
     State(state): State<Arc<AppState>>,
     Json(input): Json<QueueConnectionInput>,
@@ -139,6 +224,17 @@ pub async fn queue_connections_add(
 }
 
 /// Get a single queue connection (credentials masked).
+#[utoipa::path(
+    get,
+    path = "/queue-connections/{id}",
+    tag = "Queue Connections",
+    params(("id" = String, Path, description = "Queue connection ID")),
+    responses(
+        (status = 200, description = "Queue connection details", body = QueueConnectionSafe),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn queue_connections_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -152,6 +248,18 @@ pub async fn queue_connections_get(
 }
 
 /// Update an existing queue connection.
+#[utoipa::path(
+    put,
+    path = "/queue-connections/{id}",
+    tag = "Queue Connections",
+    params(("id" = String, Path, description = "Queue connection ID")),
+    request_body = QueueConnectionInput,
+    responses(
+        (status = 200, description = "Queue connection updated", body = QueueConnectionSafe),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn queue_connections_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -166,6 +274,17 @@ pub async fn queue_connections_update(
 }
 
 /// Delete a queue connection.
+#[utoipa::path(
+    delete,
+    path = "/queue-connections/{id}",
+    tag = "Queue Connections",
+    params(("id" = String, Path, description = "Queue connection ID")),
+    responses(
+        (status = 204, description = "Queue connection deleted"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn queue_connections_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -179,6 +298,17 @@ pub async fn queue_connections_delete(
 }
 
 /// Get decrypted credentials for a queue connection (used by SQS consumer).
+#[utoipa::path(
+    get,
+    path = "/queue-connections/{id}/credentials",
+    tag = "Queue Connections",
+    params(("id" = String, Path, description = "Queue connection ID")),
+    responses(
+        (status = 200, description = "Decrypted queue credentials", body = QueueConnectionCredentials),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn queue_connections_credentials(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -194,6 +324,15 @@ pub async fn queue_connections_credentials(
 // ── Athena Connection CRUD ───────────────────────────────────────
 
 /// List all Athena connections (credentials masked).
+#[utoipa::path(
+    get,
+    path = "/athena-connections",
+    tag = "Athena Connections",
+    responses(
+        (status = 200, description = "List of Athena connections", body = Vec<AthenaConnectionSafe>),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn athena_connections_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<AthenaConnectionSafe>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
@@ -212,6 +351,17 @@ pub async fn athena_connections_list(
 ///
 /// After persisting the connection, spawns a background task to fetch the
 /// Athena schema (databases/tables/columns) so it is available for queries.
+#[utoipa::path(
+    post,
+    path = "/athena-connections",
+    tag = "Athena Connections",
+    request_body = AthenaConnectionInput,
+    responses(
+        (status = 201, description = "Athena connection created", body = AthenaConnectionSafe),
+        (status = 409, description = "Athena connection already exists", body = QueryErrorResponse),
+        (status = 500, description = "Internal error", body = QueryErrorResponse)
+    )
+)]
 pub async fn athena_connections_add(
     State(state): State<Arc<AppState>>,
     Json(input): Json<AthenaConnectionInput>,
@@ -269,6 +419,17 @@ pub async fn athena_connections_add(
 }
 
 /// Get a single Athena connection (credentials masked).
+#[utoipa::path(
+    get,
+    path = "/athena-connections/{id}",
+    tag = "Athena Connections",
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 200, description = "Athena connection details", body = AthenaConnectionSafe),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn athena_connections_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -282,6 +443,18 @@ pub async fn athena_connections_get(
 }
 
 /// Update an existing Athena connection.
+#[utoipa::path(
+    put,
+    path = "/athena-connections/{id}",
+    tag = "Athena Connections",
+    params(("id" = String, Path, description = "Athena connection ID")),
+    request_body = AthenaConnectionInput,
+    responses(
+        (status = 200, description = "Athena connection updated", body = AthenaConnectionSafe),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn athena_connections_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -296,6 +469,17 @@ pub async fn athena_connections_update(
 }
 
 /// Delete an Athena connection.
+#[utoipa::path(
+    delete,
+    path = "/athena-connections/{id}",
+    tag = "Athena Connections",
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 204, description = "Athena connection deleted"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn athena_connections_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -313,6 +497,17 @@ pub async fn athena_connections_delete(
 }
 
 /// Get decrypted credentials for an Athena connection.
+#[utoipa::path(
+    get,
+    path = "/athena-connections/{id}/credentials",
+    tag = "Athena Connections",
+    params(("id" = String, Path, description = "Athena connection ID")),
+    responses(
+        (status = 200, description = "Decrypted Athena credentials", body = AthenaConnectionCredentials),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
 pub async fn athena_connections_credentials(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
