@@ -1,5 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
-import { claudeCode } from "ai-sdk-provider-claude-code";
+import { createClaudeCode } from "ai-sdk-provider-claude-code";
+import path from "path";
 import {
   convertToModelMessages,
   streamText,
@@ -61,16 +62,25 @@ export async function POST(req: Request): Promise<Response> {
   const provider: ProviderType = requestedProvider ?? DEFAULT_PROVIDER;
 
   // Select model and provider instance
-  let modelInstance: ReturnType<typeof anthropic> | ReturnType<typeof claudeCode>;
+  let modelInstance: ReturnType<typeof anthropic> | ReturnType<ReturnType<typeof createClaudeCode>>;
   let modelLabel: string;
 
   if (provider === "claude-code") {
-    // Claude Code provider
+    // Claude Code provider with custom project root
     const ccModelId =
       requestedModel && requestedModel in CLAUDE_CODE_MODELS
         ? CLAUDE_CODE_MODELS[requestedModel]
         : "sonnet";
-    modelInstance = claudeCode(ccModelId);
+
+    // Set project root to agents/stupid-db-claude-code
+    const projectRoot = path.resolve(process.cwd(), "..", "agents", "stupid-db-claude-code");
+    const claudeCodeProvider = createClaudeCode({
+      defaultSettings: {
+        cwd: projectRoot,
+      },
+    });
+
+    modelInstance = claudeCodeProvider(ccModelId);
     modelLabel = `claude-code:${ccModelId}`;
   } else {
     // Anthropic provider (default)
