@@ -37,6 +37,8 @@ impl OpenAiEmbedder {
 struct EmbedRequest {
     model: String,
     input: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +58,7 @@ impl Embedder for OpenAiEmbedder {
         let request = EmbedRequest {
             model: self.model.clone(),
             input: texts.iter().map(|t| t.to_string()).collect(),
+            dimensions: Some(self.dimensions),
         };
 
         let response = self

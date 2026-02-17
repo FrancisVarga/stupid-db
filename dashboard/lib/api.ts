@@ -2,12 +2,28 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:56415";
 export const WS_URL = API_BASE.replace(/^http/, "ws") + "/ws";
 
 async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(url, init);
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Request failed (${res.status})`);
+  const controller = new AbortController();
+  const timeoutMs = 60_000; // 60s timeout for all API calls
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(text || `Request failed (${res.status})`);
+    }
+    return res;
+  } catch (e: unknown) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs / 1000}s — is the backend running at ${API_BASE}?`);
+    }
+    if (e instanceof TypeError && (e.message.includes("fetch") || e.message.includes("Failed"))) {
+      throw new Error(`Cannot connect to backend at ${API_BASE} — is the server running?`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return res;
 }
 
 export interface Stats {

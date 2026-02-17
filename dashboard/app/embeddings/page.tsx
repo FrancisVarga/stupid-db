@@ -85,6 +85,7 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState<string | null>(null);
   const [result, setResult] = useState<{
     filename: string;
     chunk_count: number;
@@ -100,15 +101,21 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
       }
       setError(null);
       setResult(null);
+      setUploadingFile(file.name);
       setUploading(true);
+      console.log(`[embeddings] Uploading "${file.name}" (${(file.size / 1024).toFixed(1)} KB) to backend...`);
       try {
         const res = await uploadDocument(file);
+        console.log(`[embeddings] Upload complete: ${res.chunk_count} chunks created for "${res.filename}"`);
         setResult({ filename: res.filename, chunk_count: res.chunk_count });
         onUploaded();
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Upload failed");
+        const msg = e instanceof Error ? e.message : "Upload failed";
+        console.error(`[embeddings] Upload failed for "${file.name}":`, msg);
+        setError(msg);
       } finally {
         setUploading(false);
+        setUploadingFile(null);
       }
     },
     [onUploaded]
@@ -166,9 +173,16 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
           onChange={onFileChange}
         />
         {uploading ? (
-          <div className="flex items-center justify-center gap-3">
-            <span className="w-4 h-4 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
-            <span className="text-sm text-slate-400">Uploading...</span>
+          <div className="flex flex-col items-center justify-center gap-2">
+            <div className="flex items-center gap-3">
+              <span className="w-4 h-4 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
+              <span className="text-sm text-slate-400">
+                Uploading{uploadingFile ? ` "${uploadingFile}"` : ""}...
+              </span>
+            </div>
+            <span className="text-[10px] text-slate-600">
+              Extracting text, chunking, and embedding — large files may take a minute
+            </span>
           </div>
         ) : (
           <div>
@@ -225,11 +239,22 @@ function DocumentList({
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
 
+  const [listError, setListError] = useState<string | null>(null);
+
   useEffect(() => {
     setLoading(true);
+    setListError(null);
     listEmbeddingDocuments()
-      .then((d) => setDocs(d.documents))
-      .catch(() => setDocs([]))
+      .then((d) => {
+        setDocs(d.documents);
+        console.log(`[embeddings] Loaded ${d.documents.length} documents`);
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : "Failed to load documents";
+        console.error("[embeddings] Document list error:", msg);
+        setListError(msg);
+        setDocs([]);
+      })
       .finally(() => setLoading(false));
   }, [refreshKey]);
 
@@ -251,12 +276,25 @@ function DocumentList({
         Documents{!loading && ` (${docs.length})`}
       </h2>
 
+      {listError && (
+        <div
+          className="mb-3 px-4 py-2 rounded-lg text-xs"
+          style={{
+            background: "rgba(255, 71, 87, 0.06)",
+            border: "1px solid rgba(255, 71, 87, 0.15)",
+            color: "#ff4757",
+          }}
+        >
+          {listError}
+        </div>
+      )}
+
       {loading ? (
         <div className="flex items-center gap-2 py-4">
           <span className="w-3 h-3 border-2 border-cyan-400/40 border-t-cyan-400 rounded-full animate-spin" />
           <span className="text-xs text-slate-500">Loading...</span>
         </div>
-      ) : docs.length === 0 ? (
+      ) : docs.length === 0 && !listError ? (
         <div className="text-[10px] text-slate-600 font-mono py-2">
           No documents uploaded yet
         </div>
