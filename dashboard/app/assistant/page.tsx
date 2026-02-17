@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
@@ -61,14 +61,23 @@ export default function AssistantPage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   // ── useChat with AI SDK v6 ──────────────────────────────────────────
+  // Memoize transport per session so useChat gets a stable reference.
+  // The `id` param gives each session its own message store.
+
+  const chatTransport = useMemo(
+    () =>
+      activeSessionId
+        ? new DefaultChatTransport({
+            api: "/api/assistant/chat",
+            headers: { "X-Session-Id": activeSessionId },
+          })
+        : null,
+    [activeSessionId],
+  );
 
   const { messages, sendMessage, status } = useChat({
-    transport: new DefaultChatTransport({
-      api: "/api/assistant/chat",
-      headers: activeSessionId
-        ? { "X-Session-Id": activeSessionId }
-        : undefined,
-    }),
+    id: activeSessionId ?? undefined,
+    transport: chatTransport ?? new DefaultChatTransport({ api: "/api/assistant/chat" }),
   });
 
   const isLoading = status === "submitted" || status === "streaming";
