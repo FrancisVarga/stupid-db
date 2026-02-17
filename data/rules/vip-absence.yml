@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: AnomalyRule
+metadata:
+  id: vip-absence
+  name: VIP Absence Alert
+  description: |
+    Detect VIP members (vip_group_numeric >= 4) with zero logins over the last 7 days, indicating possible churn risk.
+  tags:
+  - vip
+  - retention
+  - absence
+  enabled: true
+  extends: null
+schedule:
+  cron: 0 9 * * *
+  timezone: Asia/Manila
+  cooldown: null
+detection:
+  template: absence
+  params:
+    feature: login_count
+    threshold: 0
+    lookback_days: 7
+  compose: null
+  enrich: null
+filters:
+  entity_types:
+  - Member
+  classifications: null
+  min_score: null
+  exclude_keys: null
+  where:
+    vip_group_numeric:
+      gt: null
+      gte: 4.0
+      lt: null
+      lte: null
+      eq: null
+      neq: null
+notifications:
+- channel: email
+  on:
+  - trigger
+  template: |
+    Member {{ entity_key }} (VIP group {{ vip_group }}) has not
+    logged in for 7+ days. Last seen: {{ last_seen }}.
+  url: null
+  method: null
+  headers: null
+  body_template: null
+  smtp_host: ${SMTP_HOST}
+  smtp_port: 587
+  tls: true
+  from: ${SMTP_FROM}
+  to:
+  - ${ALERT_EMAIL}
+  subject: '[VIP Alert] Inactive VIP member detected'
+  bot_token: null
+  chat_id: null
+  parse_mode: null
+- channel: telegram
+  on:
+  - trigger
+  - resolve
+  template: null
+  url: null
+  method: null
+  headers: null
+  body_template: null
+  smtp_host: null
+  smtp_port: null
+  tls: null
+  from: null
+  to: null
+  subject: null
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  chat_id: ${TELEGRAM_CHAT_ID}
+  parse_mode: MarkdownV2

@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: AnomalyRule
+metadata:
+  id: multi-signal-fraud
+  name: Multi-Signal Fraud Detection
+  description: |
+    Composite detection combining z-score outliers with cluster noise or graph anomalies for high-confidence fraud signals.
+  tags:
+  - fraud
+  - composite
+  - multi-signal
+  enabled: true
+  extends: null
+schedule:
+  cron: '*/30 * * * *'
+  timezone: UTC
+  cooldown: 30m
+detection:
+  template: null
+  params: null
+  compose:
+    operator: and
+    conditions:
+    - signal: z_score
+      feature: null
+      threshold: 3.0
+    - operator: or
+      conditions:
+      - signal: dbscan_noise
+        feature: null
+        threshold: 0.6
+      - signal: graph_anomaly
+        feature: null
+        threshold: 0.5
+  enrich:
+    opensearch:
+      query:
+        bool:
+          filter:
+          - term:
+              action: login
+          must:
+          - range:
+              '@timestamp':
+                gte: now-1h
+      min_hits: 20
+      max_hits: null
+      rate_limit: 30
+      timeout_ms: null
+filters:
+  entity_types: null
+  classifications: null
+  min_score: 0.7
+  exclude_keys: null
+  where: null
+notifications:
+- channel: webhook
+  on:
+  - trigger
+  template: null
+  url: ${WEBHOOK_URL}
+  method: POST
+  headers:
+    Content-Type: application/json
+  body_template: |
+    {
+      "rule": "{{ rule_id }}",
+      "entity": "{{ entity_key }}",
+      "score": {{ score }},
+      "signals": {
+        "z_score": {{ z_score }},
+        "dbscan_noise": {{ dbscan_noise }},
+        "graph_anomaly": {{ graph_anomaly }}
+      }
+    }
+  smtp_host: null
+  smtp_port: null
+  tls: null
+  from: null
+  to: null
+  subject: null
+  bot_token: null
+  chat_id: null
+  parse_mode: null
+- channel: telegram
+  on:
+  - trigger
+  - resolve
+  template: null
+  url: null
+  method: null
+  headers: null
+  body_template: null
+  smtp_host: null
+  smtp_port: null
+  tls: null
+  from: null
+  to: null
+  subject: null
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  chat_id: ${TELEGRAM_CHAT_ID}
+  parse_mode: MarkdownV2

@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: AnomalyRule
+metadata:
+  id: login-spike
+  name: Login Spike Detection
+  description: |
+    Alert when a member's login_count exceeds 3x the cluster centroid baseline within the current evaluation window.
+  tags:
+  - security
+  - login
+  - spike
+  enabled: true
+  extends: null
+schedule:
+  cron: '*/15 * * * *'
+  timezone: UTC
+  cooldown: null
+detection:
+  template: spike
+  params:
+    feature: login_count
+    multiplier: 3.0
+    baseline: cluster_centroid
+    min_samples: 5
+  compose: null
+  enrich: null
+filters:
+  entity_types:
+  - Member
+  classifications: null
+  min_score: 0.5
+  exclude_keys: null
+  where: null
+notifications:
+- channel: webhook
+  on:
+  - trigger
+  template: null
+  url: ${WEBHOOK_URL}
+  method: POST
+  headers:
+    Content-Type: application/json
+  body_template: |
+    {
+      "rule": "{{ rule_id }}",
+      "entity": "{{ entity_key }}",
+      "score": {{ score }},
+      "message": "{{ summary }}"
+    }
+  smtp_host: null
+  smtp_port: null
+  tls: null
+  from: null
+  to: null
+  subject: null
+  bot_token: null
+  chat_id: null
+  parse_mode: null
