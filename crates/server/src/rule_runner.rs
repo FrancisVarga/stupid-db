@@ -13,6 +13,8 @@ use tracing::{debug, info, warn};
 use stupid_rules::audit_log::{ExecutionPhase, LogLevel};
 use stupid_rules::evaluator::{RuleEvaluator, SignalScores};
 use stupid_rules::scheduler::RuleScheduler;
+
+use crate::anomaly_rules::MatchSummary;
 use stupid_rules::templates::{ClusterStats, EntityData};
 
 use crate::anomaly_rules::TriggerEntry;
@@ -204,9 +206,24 @@ pub async fn run_rule_loop(state: Arc<AppState>) {
 
                 let start = std::time::Instant::now();
                 match RuleEvaluator::evaluate(rule, &entities, &cluster_stats, &signal_scores) {
-                    Ok(matches) => {
+                    Ok(mut matches) => {
                         let evaluation_ms = start.elapsed().as_millis() as u64;
                         let matches_found = matches.len();
+
+                        // Sort by score descending and keep top 50 for history.
+                        matches.sort_by(|a, b| {
+                            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        let summaries: Vec<MatchSummary> = matches
+                            .iter()
+                            .take(50)
+                            .map(|m| MatchSummary {
+                                entity_key: m.entity_key.clone(),
+                                entity_type: m.entity_type.clone(),
+                                score: m.score,
+                                reason: m.matched_reason.clone(),
+                            })
+                            .collect();
 
                         state_clone.audit_log.log(
                             rule_id,
@@ -218,7 +235,7 @@ pub async fn run_rule_loop(state: Arc<AppState>) {
                             ),
                         );
 
-                        results.push((rule_id.clone(), matches_found, evaluation_ms));
+                        results.push((rule_id.clone(), matches_found, evaluation_ms, summaries));
                     }
                     Err(e) => {
                         state_clone.audit_log.log(
@@ -238,11 +255,12 @@ pub async fn run_rule_loop(state: Arc<AppState>) {
                     .trigger_history
                     .write()
                     .expect("trigger_history lock");
-                for (rule_id, matches_found, evaluation_ms) in &results {
+                for (rule_id, matches_found, evaluation_ms, match_summaries) in &results {
                     let entry = TriggerEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         matches_found: *matches_found,
                         evaluation_ms: *evaluation_ms,
+                        matches: match_summaries.clone(),
                     };
                     let deque = history
                         .entry(rule_id.clone())
@@ -260,7 +278,7 @@ pub async fn run_rule_loop(state: Arc<AppState>) {
 
         match eval_result {
             Ok(results) => {
-                for (rule_id, matches_found, evaluation_ms) in &results {
+                for (rule_id, matches_found, evaluation_ms, _) in &results {
                     scheduler.record_trigger(rule_id);
                     info!(
                         rule_id = %rule_id,

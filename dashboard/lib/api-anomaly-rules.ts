@@ -129,11 +129,21 @@ export interface TestNotifyResult {
   response_ms: number;
 }
 
+/** Compact match summary within a trigger entry. */
+export interface MatchSummary {
+  entity_key: string;
+  entity_type: string;
+  score: number;
+  reason: string;
+}
+
 /** Single trigger history entry from GET /anomaly-rules/{id}/history */
 export interface TriggerEntry {
   timestamp: string;
   matches_found: number;
   evaluation_ms: number;
+  /** Top matches (up to 50) sorted by score descending. May be empty for older entries. */
+  matches?: MatchSummary[];
 }
 
 // ── CRUD Operations ──────────────────────────────────────────────────

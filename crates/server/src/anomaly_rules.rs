@@ -204,12 +204,24 @@ pub struct TestNotifyResult {
     pub response_ms: u64,
 }
 
+/// Compact match summary stored in trigger history.
+#[derive(Debug, Clone, Serialize)]
+pub struct MatchSummary {
+    pub entity_key: String,
+    pub entity_type: String,
+    pub score: f64,
+    pub reason: String,
+}
+
 /// A single trigger history entry stored per rule.
 #[derive(Debug, Clone, Serialize)]
 pub struct TriggerEntry {
     pub timestamp: String,
     pub matches_found: usize,
     pub evaluation_ms: u64,
+    /// Top matches (capped at 50) sorted by score descending.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<MatchSummary>,
 }
 
 /// Query parameters for the history endpoint.
@@ -297,23 +309,41 @@ async fn run_anomaly_rule(
     let (entities, cluster_stats, signal_scores) =
         crate::rule_runner::build_evaluation_context(&state);
 
-    let matches_found = match stupid_rules::evaluator::RuleEvaluator::evaluate(
-        &rule,
-        &entities,
-        &cluster_stats,
-        &signal_scores,
-    ) {
-        Ok(matches) => matches.len(),
-        Err(e) => {
-            let evaluation_ms = start.elapsed().as_millis() as u64;
-            return Ok(Json(RunResult {
-                rule_id: id,
-                matches_found: 0,
-                evaluation_ms,
-                message: format!("Evaluation error: {}", e),
-            }));
-        }
-    };
+    let (matches_found, match_summaries) =
+        match stupid_rules::evaluator::RuleEvaluator::evaluate(
+            &rule,
+            &entities,
+            &cluster_stats,
+            &signal_scores,
+        ) {
+            Ok(mut matches) => {
+                let count = matches.len();
+                // Sort by score descending and keep top 50 for history.
+                matches.sort_by(|a, b| {
+                    b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let summaries: Vec<MatchSummary> = matches
+                    .iter()
+                    .take(50)
+                    .map(|m| MatchSummary {
+                        entity_key: m.entity_key.clone(),
+                        entity_type: m.entity_type.clone(),
+                        score: m.score,
+                        reason: m.matched_reason.clone(),
+                    })
+                    .collect();
+                (count, summaries)
+            }
+            Err(e) => {
+                let evaluation_ms = start.elapsed().as_millis() as u64;
+                return Ok(Json(RunResult {
+                    rule_id: id,
+                    matches_found: 0,
+                    evaluation_ms,
+                    message: format!("Evaluation error: {}", e),
+                }));
+            }
+        };
 
     let evaluation_ms = start.elapsed().as_millis() as u64;
 
@@ -324,6 +354,7 @@ async fn run_anomaly_rule(
             timestamp: chrono::Utc::now().to_rfc3339(),
             matches_found,
             evaluation_ms,
+            matches: match_summaries,
         };
         let deque = history
             .entry(id.clone())

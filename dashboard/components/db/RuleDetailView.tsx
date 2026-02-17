@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { RULE_KIND_META, type RuleDocument, type RuleKind } from "@/lib/api-rules";
 import {
   runRuleNow,
@@ -9,6 +9,7 @@ import {
   type RunResult,
   type TestNotifyResult,
   type TriggerEntry,
+  type MatchSummary,
 } from "@/lib/api-anomaly-rules";
 import AuditLogViewer from "@/components/db/AuditLogViewer";
 
@@ -397,56 +398,7 @@ function AnomalyRuleDetail({ rule, refreshKey }: { rule: RuleDocument; refreshKe
       </div>
 
       {/* Trigger history */}
-      <div>
-        <h3 className="text-[10px] font-bold tracking-[0.15em] uppercase text-slate-500 mb-3">
-          Recent Triggers
-        </h3>
-        {historyLoading && (
-          <span className="text-[10px] text-slate-600 font-mono animate-pulse">Loading history...</span>
-        )}
-        {!historyLoading && history.length === 0 && (
-          <div
-            className="rounded-lg px-4 py-6 text-center"
-            style={{
-              background: "rgba(15, 23, 42, 0.5)",
-              border: "1px solid rgba(51, 65, 85, 0.2)",
-            }}
-          >
-            <span className="text-[10px] text-slate-600 font-mono">No trigger history yet</span>
-          </div>
-        )}
-        {!historyLoading && history.length > 0 && (
-          <div
-            className="rounded-lg overflow-hidden"
-            style={{ border: "1px solid rgba(51, 65, 85, 0.2)" }}
-          >
-            <table className="w-full">
-              <thead>
-                <tr style={{ background: "rgba(15, 23, 42, 0.8)" }}>
-                  <th className="text-left px-4 py-2 text-[9px] text-slate-500 uppercase tracking-wider font-bold">Timestamp</th>
-                  <th className="text-right px-4 py-2 text-[9px] text-slate-500 uppercase tracking-wider font-bold">Matches</th>
-                  <th className="text-right px-4 py-2 text-[9px] text-slate-500 uppercase tracking-wider font-bold">Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((entry, i) => (
-                  <tr
-                    key={i}
-                    style={{
-                      background: i % 2 === 0 ? "rgba(15, 23, 42, 0.4)" : "rgba(15, 23, 42, 0.6)",
-                      borderTop: "1px solid rgba(51, 65, 85, 0.1)",
-                    }}
-                  >
-                    <td className="px-4 py-2 text-[10px] text-slate-400 font-mono">{entry.timestamp}</td>
-                    <td className="px-4 py-2 text-[10px] text-right font-mono" style={{ color: "#00f0ff" }}>{entry.matches_found}</td>
-                    <td className="px-4 py-2 text-[10px] text-right text-slate-500 font-mono">{entry.evaluation_ms}ms</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <TriggerHistory history={history} loading={historyLoading} />
 
       {/* Audit logs */}
       <div className="mt-6">
@@ -670,6 +622,180 @@ function PatternConfigDetail({ rule }: { rule: RuleDocument }) {
       </DetailCard>
 
       <SpecYamlCard spec={spec} color="#eab308" />
+    </div>
+  );
+}
+
+// ── Trigger history with expandable match rows ──────────────────────
+
+function TriggerHistory({ history, loading }: { history: TriggerEntry[]; loading: boolean }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+
+  const toggleRow = useCallback((idx: number) => {
+    setExpandedIdx((prev) => (prev === idx ? null : idx));
+  }, []);
+
+  return (
+    <div>
+      <h3 className="text-[10px] font-bold tracking-[0.15em] uppercase text-slate-500 mb-3">
+        Recent Triggers
+      </h3>
+      {loading && (
+        <span className="text-[10px] text-slate-600 font-mono animate-pulse">Loading history...</span>
+      )}
+      {!loading && history.length === 0 && (
+        <div
+          className="rounded-lg px-4 py-6 text-center"
+          style={{
+            background: "rgba(15, 23, 42, 0.5)",
+            border: "1px solid rgba(51, 65, 85, 0.2)",
+          }}
+        >
+          <span className="text-[10px] text-slate-600 font-mono">No trigger history yet</span>
+        </div>
+      )}
+      {!loading && history.length > 0 && (
+        <div
+          className="rounded-lg overflow-hidden"
+          style={{ border: "1px solid rgba(51, 65, 85, 0.2)" }}
+        >
+          <table className="w-full">
+            <thead>
+              <tr style={{ background: "rgba(15, 23, 42, 0.8)" }}>
+                <th className="w-6 px-2 py-2" />
+                <th className="text-left px-4 py-2 text-[9px] text-slate-500 uppercase tracking-wider font-bold">Timestamp</th>
+                <th className="text-right px-4 py-2 text-[9px] text-slate-500 uppercase tracking-wider font-bold">Matches</th>
+                <th className="text-right px-4 py-2 text-[9px] text-slate-500 uppercase tracking-wider font-bold">Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((entry, i) => {
+                const hasMatches = entry.matches && entry.matches.length > 0;
+                const isExpanded = expandedIdx === i;
+
+                return (
+                  <TriggerRow
+                    key={i}
+                    entry={entry}
+                    index={i}
+                    hasMatches={!!hasMatches}
+                    isExpanded={isExpanded}
+                    onToggle={() => toggleRow(i)}
+                  />
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TriggerRow({
+  entry,
+  index,
+  hasMatches,
+  isExpanded,
+  onToggle,
+}: {
+  entry: TriggerEntry;
+  index: number;
+  hasMatches: boolean;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const bgColor = index % 2 === 0 ? "rgba(15, 23, 42, 0.4)" : "rgba(15, 23, 42, 0.6)";
+
+  return (
+    <>
+      <tr
+        onClick={hasMatches ? onToggle : undefined}
+        className={hasMatches ? "cursor-pointer hover:bg-white/[0.03] transition-colors" : ""}
+        style={{
+          background: isExpanded ? "rgba(0, 240, 255, 0.03)" : bgColor,
+          borderTop: "1px solid rgba(51, 65, 85, 0.1)",
+        }}
+      >
+        <td className="px-2 py-2 text-center">
+          {hasMatches ? (
+            <svg
+              width="10" height="10" viewBox="0 0 10 10"
+              className="inline-block transition-transform"
+              style={{ transform: isExpanded ? "rotate(90deg)" : "rotate(0)" }}
+            >
+              <path d="M3 1L7 5L3 9" fill="none" stroke="#475569" strokeWidth="1.5" />
+            </svg>
+          ) : (
+            <span className="text-[8px] text-slate-700">--</span>
+          )}
+        </td>
+        <td className="px-4 py-2 text-[10px] text-slate-400 font-mono">{entry.timestamp}</td>
+        <td className="px-4 py-2 text-[10px] text-right font-mono" style={{ color: entry.matches_found > 0 ? "#00f0ff" : "#475569" }}>
+          {entry.matches_found}
+        </td>
+        <td className="px-4 py-2 text-[10px] text-right text-slate-500 font-mono">{entry.evaluation_ms}ms</td>
+      </tr>
+      {isExpanded && entry.matches && entry.matches.length > 0 && (
+        <tr>
+          <td colSpan={4} style={{ padding: 0 }}>
+            <MatchTable matches={entry.matches} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function MatchTable({ matches }: { matches: MatchSummary[] }) {
+  return (
+    <div
+      className="mx-4 my-2 rounded-lg overflow-hidden"
+      style={{
+        border: "1px solid rgba(0, 240, 255, 0.1)",
+        background: "rgba(0, 240, 255, 0.02)",
+      }}
+    >
+      <table className="w-full">
+        <thead>
+          <tr style={{ background: "rgba(0, 240, 255, 0.04)" }}>
+            <th className="text-left px-3 py-1.5 text-[8px] text-cyan-600 uppercase tracking-wider font-bold">Entity</th>
+            <th className="text-left px-3 py-1.5 text-[8px] text-cyan-600 uppercase tracking-wider font-bold">Type</th>
+            <th className="text-right px-3 py-1.5 text-[8px] text-cyan-600 uppercase tracking-wider font-bold">Score</th>
+            <th className="text-left px-3 py-1.5 text-[8px] text-cyan-600 uppercase tracking-wider font-bold">Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {matches.map((m, j) => (
+            <tr
+              key={j}
+              style={{
+                borderTop: j > 0 ? "1px solid rgba(0, 240, 255, 0.05)" : undefined,
+              }}
+            >
+              <td className="px-3 py-1.5 text-[10px] text-slate-300 font-mono">{m.entity_key}</td>
+              <td className="px-3 py-1.5">
+                <span
+                  className="px-1.5 py-0.5 rounded text-[8px] font-mono font-bold uppercase"
+                  style={{
+                    background: "rgba(6, 182, 212, 0.08)",
+                    border: "1px solid rgba(6, 182, 212, 0.15)",
+                    color: "#06b6d4",
+                  }}
+                >
+                  {m.entity_type}
+                </span>
+              </td>
+              <td className="px-3 py-1.5 text-[10px] text-right font-mono font-bold" style={{ color: "#f97316" }}>
+                {m.score.toFixed(2)}
+              </td>
+              <td className="px-3 py-1.5 text-[9px] text-slate-500 font-mono truncate max-w-[300px]" title={m.reason}>
+                {m.reason}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

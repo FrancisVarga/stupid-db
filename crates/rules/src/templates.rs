@@ -90,7 +90,7 @@ pub struct ClusterStats {
 }
 
 /// A single detection match produced by a template evaluator.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RuleMatch {
     /// Node ID as string.
     pub entity_id: String,
