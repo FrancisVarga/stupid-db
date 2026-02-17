@@ -195,6 +195,17 @@ export default function DashboardPage() {
             Assistant
           </Link>
           <Link
+            href="/ai-sdk"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(139, 92, 246, 0.08)",
+              border: "1px solid rgba(139, 92, 246, 0.2)",
+              color: "#8b5cf6",
+            }}
+          >
+            AI SDK
+          </Link>
+          <Link
             href="/explore"
             className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
             style={{
