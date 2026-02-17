@@ -25,5 +25,9 @@ uuid = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Parquet/Arrow
+parquet = { workspace = true }
+arrow = { workspace = true }
+
 # Logging
 tracing = { workspace = true }
