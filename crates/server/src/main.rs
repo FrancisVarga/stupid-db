@@ -565,6 +565,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/athena-connections/{id}", get(api::athena_connections_get).put(api::athena_connections_update).delete(api::athena_connections_delete))
         .route("/athena-connections/{id}/credentials", get(api::athena_connections_credentials))
         .route("/athena-connections/{id}/query", post(api::athena_query_sse))
+        .route("/athena-connections/{id}/query/parquet", post(api::athena_query_parquet))
         .route("/athena-connections/{id}/schema", get(api::athena_connections_schema))
         .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh))
         .route("/athena-connections/{id}/query-log", get(api::athena_connections_query_log));
@@ -1116,7 +1117,7 @@ async fn load_segments_and_compute(
             build_and_persist_catalog(&shared_graph, segments, catalog_store).await
         };
 
-        // Merge Athena schemas into the catalog as external SQL sources (AWS feature).
+        // Build and persist external sources from Athena connections (AWS feature).
         #[cfg(feature = "aws")]
         {
             let athena_store = app_state.athena_connections.read().await;
@@ -1157,11 +1158,24 @@ async fn load_segments_and_compute(
                     .collect();
 
                 if !sources.is_empty() {
-                    info!("Adding {} Athena source(s) to catalog", sources.len());
-                    cat = cat.with_external_sources(sources);
+                    info!("Persisting {} Athena source(s) to catalog/external/", sources.len());
+                    // Persist each external source to catalog/external/{kind}-{id}.json
+                    for source in &sources {
+                        if let Err(e) = catalog_store.save_external_source(source) {
+                            tracing::warn!("Failed to persist external source '{}': {}", source.connection_id, e);
+                        }
+                    }
                 }
             }
             drop(athena_store);
+        }
+
+        // Load all persisted external sources from catalog/external/*.json and merge into catalog
+        if let Ok(persisted_sources) = catalog_store.list_external_sources() {
+            if !persisted_sources.is_empty() {
+                info!("Loaded {} external source(s) from catalog/external/", persisted_sources.len());
+                cat = cat.with_external_sources(persisted_sources);
+            }
         }
 
         let mut catalog_lock = catalog.write().await;

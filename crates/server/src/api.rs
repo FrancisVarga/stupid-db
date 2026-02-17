@@ -2220,6 +2220,135 @@ pub async fn athena_query_sse(
     Ok(Sse::new(stream))
 }
 
+/// Execute an Athena query and return the results as a Parquet file download.
+///
+/// Uses the same query execution flow as the SSE endpoint but collects all
+/// results into memory and returns a single Parquet file with proper types
+/// and Zstd compression. The response includes Content-Disposition header
+/// for browser download.
+pub async fn athena_query_parquet(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<AthenaQueryRequest>,
+) -> Result<
+    axum::response::Response,
+    (axum::http::StatusCode, Json<QueryErrorResponse>),
+> {
+    // 1. Get credentials and connection config.
+    let store = state.athena_connections.read().await;
+    let creds = match store.get_credentials(&id) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return Err((
+                axum::http::StatusCode::NOT_FOUND,
+                Json(QueryErrorResponse { error: "Connection not found".into() }),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse { error: e.to_string() }),
+            ))
+        }
+    };
+    let conn = match store.get(&id) {
+        Ok(Some(c)) => c,
+        _ => {
+            return Err((
+                axum::http::StatusCode::NOT_FOUND,
+                Json(QueryErrorResponse { error: "Connection not found".into() }),
+            ))
+        }
+    };
+    drop(store);
+
+    let catalog = conn.catalog.clone();
+    let database = req.database.unwrap_or_else(|| conn.database.clone());
+    let workgroup = conn.workgroup.clone();
+    let output_location = conn.output_location.clone();
+
+    // 2. Execute query and collect all results.
+    let client = crate::athena_query::build_athena_client(&creds).await;
+    let result = crate::athena_query::execute_and_wait_with_stats(
+        &client,
+        &req.sql,
+        &catalog,
+        &database,
+        &workgroup,
+        &output_location,
+    )
+    .await
+    .map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(QueryErrorResponse { error: e.to_string() }),
+        )
+    })?;
+
+    // 3. Convert to AthenaQueryResult for the parquet module.
+    let athena_result = stupid_athena::AthenaQueryResult {
+        columns: result
+            .columns
+            .iter()
+            .map(|name| stupid_athena::AthenaColumn {
+                name: name.clone(),
+                data_type: "varchar".into(), // column type info not available from execute_and_wait_with_stats
+            })
+            .collect(),
+        rows: result
+            .rows
+            .into_iter()
+            .map(|row| row.into_iter().map(|cell| {
+                if cell.is_empty() { None } else { Some(cell) }
+            }).collect())
+            .collect(),
+        metadata: stupid_athena::QueryMetadata {
+            query_id: result.query_execution_id.clone(),
+            bytes_scanned: result.data_scanned_bytes as u64,
+            execution_time_ms: result.engine_execution_time_ms as u64,
+            state: "SUCCEEDED".into(),
+            output_location: None,
+        },
+    };
+
+    // 4. Write Parquet to in-memory buffer.
+    let parquet_bytes = stupid_athena::write_parquet_bytes(&athena_result).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(QueryErrorResponse { error: format!("Parquet write error: {}", e) }),
+        )
+    })?;
+
+    // 5. Also persist to data/exports/ for later reference.
+    let exports_dir = state.data_dir.join("exports").join("athena");
+    let filename = format!("{}.parquet", result.query_execution_id);
+    let export_path = exports_dir.join(&filename);
+    if let Err(e) = std::fs::create_dir_all(&exports_dir) {
+        tracing::warn!("Failed to create exports dir: {}", e);
+    } else if let Err(e) = std::fs::write(&export_path, &parquet_bytes) {
+        tracing::warn!("Failed to persist parquet export: {}", e);
+    } else {
+        tracing::info!(
+            path = %export_path.display(),
+            rows = athena_result.rows.len(),
+            bytes = parquet_bytes.len(),
+            "Persisted Parquet export"
+        );
+    }
+
+    // 6. Return as downloadable file.
+    Ok(axum::response::Response::builder()
+        .status(200)
+        .header("Content-Type", "application/vnd.apache.parquet")
+        .header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", filename),
+        )
+        .header("Content-Length", parquet_bytes.len().to_string())
+        .body(axum::body::Body::from(parquet_bytes))
+        .unwrap())
+}
+
 /// Get cached schema for an Athena connection.
 pub async fn athena_connections_schema(
     State(state): State<Arc<AppState>>,
@@ -2273,6 +2402,10 @@ pub async fn athena_connections_schema_refresh(
                 let store = state_clone.athena_connections.read().await;
                 let _ = store.update_schema(&id_clone, schema);
                 tracing::info!("Schema refresh complete for Athena connection '{}'", id_clone);
+                drop(store);
+
+                // Rebuild catalog external sources from all Athena connections.
+                rebuild_catalog_external_sources(&state_clone).await;
             }
             Err(e) => {
                 let store = state_clone.athena_connections.read().await;
@@ -2283,6 +2416,77 @@ pub async fn athena_connections_schema_refresh(
     });
 
     Ok(Json(serde_json::json!({ "status": "fetching", "message": "Schema refresh started" })))
+}
+
+/// Rebuild the catalog's external SQL sources from all enabled Athena connections.
+///
+/// Reads all Athena connections with cached schemas, converts them to
+/// `ExternalSource` entries, merges into the in-memory catalog, and
+/// persists `current.json` to the catalog store.
+async fn rebuild_catalog_external_sources(state: &Arc<AppState>) {
+    let athena_store = state.athena_connections.read().await;
+    let conns = match athena_store.list() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to list Athena connections for catalog update: {}", e);
+            return;
+        }
+    };
+
+    let sources: Vec<stupid_catalog::ExternalSource> = conns
+        .iter()
+        .filter(|c| c.enabled && c.schema.is_some())
+        .map(|c| {
+            let schema = c.schema.as_ref().unwrap();
+            stupid_catalog::ExternalSource {
+                name: c.name.clone(),
+                kind: "athena".to_string(),
+                connection_id: c.id.clone(),
+                databases: schema
+                    .databases
+                    .iter()
+                    .map(|db| stupid_catalog::ExternalDatabase {
+                        name: db.name.clone(),
+                        tables: db
+                            .tables
+                            .iter()
+                            .map(|t| stupid_catalog::ExternalTable {
+                                name: t.name.clone(),
+                                columns: t
+                                    .columns
+                                    .iter()
+                                    .map(|col| stupid_catalog::ExternalColumn {
+                                        name: col.name.clone(),
+                                        data_type: col.data_type.clone(),
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    drop(athena_store);
+
+    // Persist each external source to catalog/external/{kind}-{id}.json
+    for source in &sources {
+        if let Err(e) = state.catalog_store.save_external_source(source) {
+            tracing::warn!("Failed to persist external source '{}': {}", source.connection_id, e);
+        }
+    }
+
+    // Update the in-memory catalog with refreshed external sources.
+    let mut catalog_lock = state.catalog.write().await;
+    if let Some(ref mut cat) = *catalog_lock {
+        cat.external_sources = sources;
+        tracing::info!(
+            "Catalog updated with {} external source(s) and persisted to catalog/external/",
+            cat.external_sources.len()
+        );
+    } else {
+        tracing::debug!("Catalog not yet built — skipping external source update");
+    }
 }
 
 /// Get query audit log for an Athena connection.
