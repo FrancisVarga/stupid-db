@@ -127,7 +127,7 @@ pub async fn upload(
             StatusCode::BAD_REQUEST,
             format!(
                 "Document '{}' ({}) contains no extractable text. \
-                 For PDFs, ensure the file contains a text layer (scanned/image PDFs are not supported).",
+                 The PDF appears to be blank, corrupted, or OCR failed to extract text from scanned pages.",
                 filename, doc.file_type
             ),
         ));
