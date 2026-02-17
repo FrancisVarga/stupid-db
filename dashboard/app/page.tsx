@@ -184,6 +184,17 @@ export default function DashboardPage() {
             Catalog
           </Link>
           <Link
+            href="/assistant"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(99, 102, 241, 0.08)",
+              border: "1px solid rgba(99, 102, 241, 0.2)",
+              color: "#6366f1",
+            }}
+          >
+            Assistant
+          </Link>
+          <Link
             href="/explore"
             className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase hover:opacity-90 transition-opacity"
             style={{
