@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, use } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import DatabaseSidebar from "@/components/db/DatabaseSidebar";
 import DataGrid from "@/components/db/DataGrid";
 import RecordForm from "@/components/db/RecordForm";
@@ -37,6 +38,8 @@ export default function TableViewPage({
   params: Promise<{ db: string; table: string }>;
 }) {
   const { db, table } = use(params);
+  const searchParams = useSearchParams();
+  const schema = searchParams.get("schema") || "public";
 
   // Schema
   const [columns, setColumns] = useState<Column[]>([]);
@@ -72,7 +75,7 @@ export default function TableViewPage({
   // Load schema on mount
   useEffect(() => {
     setSchemaLoading(true);
-    fetchTableSchema(db, table)
+    fetchTableSchema(db, table, schema)
       .then((cols) => {
         setColumns(cols);
         setSchemaLoading(false);
@@ -81,7 +84,7 @@ export default function TableViewPage({
         setError((e as Error).message);
         setSchemaLoading(false);
       });
-  }, [db, table]);
+  }, [db, table, schema]);
 
   // Load data when page/sort/limit changes
   const loadData = useCallback(async () => {
@@ -93,6 +96,7 @@ export default function TableViewPage({
         limit,
         sort: sortCol ?? undefined,
         order: sortCol ? sortOrder : undefined,
+        schema,
       });
       setRows(res.rows);
       setTotal(res.total);
@@ -101,7 +105,7 @@ export default function TableViewPage({
     } finally {
       setDataLoading(false);
     }
-  }, [db, table, page, limit, sortCol, sortOrder]);
+  }, [db, table, page, limit, sortCol, sortOrder, schema]);
 
   useEffect(() => {
     if (!schemaLoading) loadData();
@@ -139,34 +143,34 @@ export default function TableViewPage({
 
   const handleCreate = useCallback(
     async (data: Record<string, unknown>) => {
-      await createRow(db, table, data);
+      await createRow(db, table, data, schema);
       setShowForm(false);
       loadData();
     },
-    [db, table, loadData]
+    [db, table, schema, loadData]
   );
 
   const handleUpdate = useCallback(
     async (data: Record<string, unknown>) => {
       if (!pkColumn || !editRow) return;
       const id = String(editRow[pkColumn]);
-      await updateRow(db, table, id, data);
+      await updateRow(db, table, id, data, schema);
       setShowForm(false);
       setEditRow(null);
       loadData();
     },
-    [db, table, pkColumn, editRow, loadData]
+    [db, table, schema, pkColumn, editRow, loadData]
   );
 
   const handleDelete = useCallback(
     async (id: string) => {
       if (!confirm("Delete this record?")) return;
-      await deleteRow(db, table, id);
+      await deleteRow(db, table, id, schema);
       setShowForm(false);
       setEditRow(null);
       loadData();
     },
-    [db, table, loadData]
+    [db, table, schema, loadData]
   );
 
   const handleBatchDelete = useCallback(async () => {
@@ -176,13 +180,13 @@ export default function TableViewPage({
     )
       return;
     try {
-      await batchDelete(db, table, selectedIds);
+      await batchDelete(db, table, selectedIds, schema);
       setSelectedIds([]);
       loadData();
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [db, table, selectedIds, loadData]);
+  }, [db, table, schema, selectedIds, loadData]);
 
   const tabs: { key: ViewTab; label: string }[] = [
     { key: "data", label: "Data" },

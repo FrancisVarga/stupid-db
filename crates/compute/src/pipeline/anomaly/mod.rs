@@ -1,8 +1,29 @@
+//! Anomaly detection pipeline — orchestration and scoring.
+//!
+//! Combines cluster-based z-score anomaly detection with a multi-signal
+//! approach (statistical, DBSCAN noise, behavioral, graph) to produce
+//! composite anomaly results.
+//!
+//! Sub-modules:
+//! - [`signals`] — individual signal scorer functions
+//! - [`population`] — population-level statistics (mean, variance, std-dev)
+
+pub mod population;
+pub mod signals;
+
 use stupid_core::NodeId;
 
 use crate::algorithms::dbscan::DbscanResult;
 use crate::scheduler::types::{AnomalyClassification, AnomalyResult, AnomalyScore, ClusterId};
 use super::features::MemberFeatures;
+
+// ── Re-exports ────────────────────────────────────────────────────────
+// Preserve existing `pipeline::anomaly::*` import paths.
+pub use signals::{
+    behavioral_deviation_score, dbscan_noise_score, graph_anomaly_score,
+    statistical_outlier_score,
+};
+pub use population::compute_population_stats;
 
 /// Default threshold above which a member is considered anomalous.
 const DEFAULT_ANOMALY_THRESHOLD: f64 = 2.0;
@@ -29,6 +50,12 @@ impl ClusterProvider for crate::algorithms::streaming_kmeans::StreamingKMeans {
         self.centroids()
     }
 }
+
+/// Default detector weights: statistical=0.2, dbscan_noise=0.3, behavioral=0.3, graph=0.2.
+pub const WEIGHT_STATISTICAL: f64 = 0.2;
+pub const WEIGHT_DBSCAN_NOISE: f64 = 0.3;
+pub const WEIGHT_BEHAVIORAL: f64 = 0.3;
+pub const WEIGHT_GRAPH: f64 = 0.2;
 
 /// Compute an anomaly score for a single member based on z-score deviation
 /// from its cluster centroid.
@@ -128,7 +155,7 @@ pub fn score_all_members<C: ClusterProvider>(
         .iter()
         .map(|(&cid, vecs)| {
             let centroid = &centroids[cid as usize];
-            let std_dev = compute_std_dev(vecs, centroid, dim);
+            let std_dev = population::compute_std_dev(vecs, centroid, dim);
             (cid, std_dev)
         })
         .collect();
@@ -150,182 +177,6 @@ pub fn score_all_members<C: ClusterProvider>(
     }
 
     results
-}
-
-/// Compute per-dimension standard deviation from a set of vectors around a centroid.
-fn compute_std_dev(vectors: &[Vec<f64>], centroid: &[f64], dim: usize) -> Vec<f64> {
-    if vectors.len() < 2 {
-        return vec![1.0; dim]; // Avoid division by zero; treat as unit std.
-    }
-
-    let n = vectors.len() as f64;
-    let mut variance = vec![0.0; dim];
-
-    for v in vectors {
-        for i in 0..dim {
-            let diff = v[i] - centroid[i];
-            variance[i] += diff * diff;
-        }
-    }
-
-    variance
-        .iter()
-        .map(|v| (v / n).sqrt().max(f64::EPSILON))
-        .collect()
-}
-
-// ── Multi-Signal Anomaly Detection ────────────────────────────────────
-//
-// Four detectors with weighted combination per docs/compute/algorithms/anomaly-detection.md.
-
-/// Default detector weights: statistical=0.2, dbscan_noise=0.3, behavioral=0.3, graph=0.2.
-pub const WEIGHT_STATISTICAL: f64 = 0.2;
-pub const WEIGHT_DBSCAN_NOISE: f64 = 0.3;
-pub const WEIGHT_BEHAVIORAL: f64 = 0.3;
-pub const WEIGHT_GRAPH: f64 = 0.2;
-
-/// Signal 1: Population-level statistical outlier score.
-///
-/// For each feature dimension, compute |z| = |val - mean| / stddev.
-/// Return max(|z|) / 5.0 clamped to [0, 1].
-pub fn statistical_outlier_score(
-    features: &[f64],
-    pop_means: &[f64],
-    pop_stddevs: &[f64],
-) -> f64 {
-    let dim = features.len().min(pop_means.len()).min(pop_stddevs.len());
-    if dim == 0 {
-        return 0.0;
-    }
-
-    let max_z: f64 = (0..dim)
-        .filter_map(|i| {
-            let std = pop_stddevs[i];
-            if std <= f64::EPSILON {
-                None
-            } else {
-                Some(((features[i] - pop_means[i]) / std).abs())
-            }
-        })
-        .fold(0.0, f64::max);
-
-    (max_z / 5.0).min(1.0)
-}
-
-/// Signal 2: DBSCAN noise ratio for a member.
-///
-/// Counts how many of the member's points were classified as noise
-/// and returns noise_count / total_count. If no points found, returns 0.
-pub fn dbscan_noise_score(
-    member_point_ids: &[NodeId],
-    dbscan_result: &DbscanResult,
-) -> f64 {
-    if member_point_ids.is_empty() {
-        return 0.0;
-    }
-
-    let noise_count = member_point_ids
-        .iter()
-        .filter(|id| dbscan_result.noise.contains(id))
-        .count();
-
-    noise_count as f64 / member_point_ids.len() as f64
-}
-
-/// Signal 3: Behavioral deviation score.
-///
-/// Compares recent behavior to historical baseline using cosine distance.
-/// Returns 1.0 - cosine_similarity(recent, baseline). High = more deviation.
-pub fn behavioral_deviation_score(recent: &[f64], baseline: &[f64]) -> f64 {
-    let sim = cosine_similarity(recent, baseline);
-    (1.0 - sim).clamp(0.0, 1.0)
-}
-
-/// Signal 4: Graph anomaly score.
-///
-/// Detects unusual graph patterns:
-/// - Sudden neighbor growth (>3x average)
-/// - Cross-community connections (>3 communities)
-pub fn graph_anomaly_score(
-    neighbor_count: usize,
-    avg_neighbor_count: f64,
-    neighbor_community_count: usize,
-) -> f64 {
-    let mut score: f64 = 0.0;
-
-    // Sudden device/connection proliferation.
-    if avg_neighbor_count > 0.0 && (neighbor_count as f64) > avg_neighbor_count * 3.0 {
-        score += 0.5;
-    }
-
-    // Cross-community connections.
-    if neighbor_community_count > 3 {
-        score += 0.3;
-    }
-
-    score.min(1.0)
-}
-
-/// Cosine similarity between two vectors. Returns 0.0 for zero-length or zero-norm vectors.
-fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-    let dim = a.len().min(b.len());
-    if dim == 0 {
-        return 0.0;
-    }
-
-    let mut dot = 0.0;
-    let mut norm_a = 0.0;
-    let mut norm_b = 0.0;
-
-    for i in 0..dim {
-        dot += a[i] * b[i];
-        norm_a += a[i] * a[i];
-        norm_b += b[i] * b[i];
-    }
-
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom <= f64::EPSILON {
-        return 0.0;
-    }
-
-    (dot / denom).clamp(-1.0, 1.0)
-}
-
-/// Compute population-level mean and stddev per feature dimension.
-///
-/// Returns (means, stddevs). Stddevs are floored at EPSILON to avoid division by zero.
-pub fn compute_population_stats(all_features: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>) {
-    if all_features.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let dim = all_features[0].len();
-    let n = all_features.len() as f64;
-
-    let mut means = vec![0.0; dim];
-    for fv in all_features {
-        for i in 0..dim.min(fv.len()) {
-            means[i] += fv[i];
-        }
-    }
-    for m in &mut means {
-        *m /= n;
-    }
-
-    let mut variance = vec![0.0; dim];
-    for fv in all_features {
-        for i in 0..dim.min(fv.len()) {
-            let diff = fv[i] - means[i];
-            variance[i] += diff * diff;
-        }
-    }
-
-    let stddevs: Vec<f64> = variance
-        .iter()
-        .map(|v| (v / n).sqrt().max(f64::EPSILON))
-        .collect();
-
-    (means, stddevs)
 }
 
 /// Combine four detector signals into a weighted anomaly result.
@@ -476,153 +327,6 @@ mod tests {
         let score = compute_anomaly_score(&[], &[], &[]);
         assert_eq!(score.score, 0.0);
         assert!(!score.is_anomalous);
-    }
-
-    // ── Multi-signal detector tests ──────────────────────────────────
-
-    #[test]
-    fn statistical_outlier_normal() {
-        let features = vec![1.0, 2.0, 3.0];
-        let means = vec![1.0, 2.0, 3.0];
-        let stddevs = vec![1.0, 1.0, 1.0];
-        let score = statistical_outlier_score(&features, &means, &stddevs);
-        assert_eq!(score, 0.0);
-    }
-
-    #[test]
-    fn statistical_outlier_extreme() {
-        let features = vec![11.0]; // 10 stddevs away
-        let means = vec![1.0];
-        let stddevs = vec![1.0];
-        let score = statistical_outlier_score(&features, &means, &stddevs);
-        assert_eq!(score, 1.0); // clamped: 10/5 = 2.0 -> min(2.0, 1.0)
-    }
-
-    #[test]
-    fn statistical_outlier_moderate() {
-        let features = vec![3.5]; // 2.5 stddevs away
-        let means = vec![1.0];
-        let stddevs = vec![1.0];
-        let score = statistical_outlier_score(&features, &means, &stddevs);
-        assert!((score - 0.5).abs() < 0.01); // 2.5/5 = 0.5
-    }
-
-    #[test]
-    fn dbscan_noise_all_noise() {
-        let id1 = uuid::Uuid::from_u128(1);
-        let id2 = uuid::Uuid::from_u128(2);
-        let result = DbscanResult {
-            clusters: std::collections::HashMap::new(),
-            noise: vec![id1, id2],
-            num_clusters: 0,
-        };
-        let score = dbscan_noise_score(&[id1, id2], &result);
-        assert_eq!(score, 1.0);
-    }
-
-    #[test]
-    fn dbscan_noise_none() {
-        let id1 = uuid::Uuid::from_u128(1);
-        let result = DbscanResult {
-            clusters: [(id1, 0)].into_iter().collect(),
-            noise: vec![],
-            num_clusters: 1,
-        };
-        let score = dbscan_noise_score(&[id1], &result);
-        assert_eq!(score, 0.0);
-    }
-
-    #[test]
-    fn dbscan_noise_partial() {
-        let id1 = uuid::Uuid::from_u128(1);
-        let id2 = uuid::Uuid::from_u128(2);
-        let result = DbscanResult {
-            clusters: [(id1, 0)].into_iter().collect(),
-            noise: vec![id2],
-            num_clusters: 1,
-        };
-        let score = dbscan_noise_score(&[id1, id2], &result);
-        assert_eq!(score, 0.5);
-    }
-
-    #[test]
-    fn behavioral_identical() {
-        let a = vec![1.0, 2.0, 3.0];
-        let score = behavioral_deviation_score(&a, &a);
-        assert!(score < 0.01);
-    }
-
-    #[test]
-    fn behavioral_opposite() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0]; // orthogonal
-        let score = behavioral_deviation_score(&a, &b);
-        assert_eq!(score, 1.0);
-    }
-
-    #[test]
-    fn behavioral_empty() {
-        let score = behavioral_deviation_score(&[], &[]);
-        assert!(score <= 1.0);
-    }
-
-    #[test]
-    fn graph_anomaly_normal() {
-        let score = graph_anomaly_score(5, 5.0, 1);
-        assert_eq!(score, 0.0);
-    }
-
-    #[test]
-    fn graph_anomaly_device_proliferation() {
-        let score = graph_anomaly_score(20, 5.0, 1);
-        assert_eq!(score, 0.5);
-    }
-
-    #[test]
-    fn graph_anomaly_cross_community() {
-        let score = graph_anomaly_score(5, 5.0, 5);
-        assert_eq!(score, 0.3);
-    }
-
-    #[test]
-    fn graph_anomaly_both() {
-        let score = graph_anomaly_score(20, 5.0, 5);
-        assert_eq!(score, 0.8);
-    }
-
-    #[test]
-    fn cosine_similarity_identical() {
-        let a = vec![1.0, 2.0, 3.0];
-        let sim = cosine_similarity(&a, &a);
-        assert!((sim - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-10);
-    }
-
-    #[test]
-    fn population_stats_basic() {
-        let data = vec![
-            vec![1.0, 2.0],
-            vec![3.0, 4.0],
-        ];
-        let (means, stddevs) = compute_population_stats(&data);
-        assert_eq!(means.len(), 2);
-        assert!((means[0] - 2.0).abs() < 1e-10);
-        assert!((means[1] - 3.0).abs() < 1e-10);
-        assert!(stddevs[0] > 0.0);
-    }
-
-    #[test]
-    fn population_stats_empty() {
-        let (means, stddevs) = compute_population_stats(&[]);
-        assert!(means.is_empty());
-        assert!(stddevs.is_empty());
     }
 
     #[test]

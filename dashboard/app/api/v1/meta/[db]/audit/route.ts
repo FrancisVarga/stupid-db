@@ -25,11 +25,10 @@ export async function GET(
     const limit = Number(sp.get("limit")) || 50;
 
     return NextResponse.json({
-      data: result.rows,
+      rows: result.rows,
       total: result.total,
       page,
       limit,
-      total_pages: Math.ceil(result.total / limit),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -9,19 +9,19 @@ export const dynamic = "force-dynamic";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-async function getTableMeta(db: string, table: string) {
+async function getTableMeta(db: string, table: string, schema = "public") {
   const sql = await getPool(db);
-  const columns = await getColumns(sql, table);
+  const columns = await getColumns(sql, table, schema);
   if (columns.length === 0) {
-    throw new Error(`Table "${table}" not found`);
+    throw new Error(`Table "${schema}"."${table}" not found`);
   }
-  const pkCols = await getPrimaryKeys(sql, table);
+  const pkCols = await getPrimaryKeys(sql, table, schema);
   if (pkCols.length === 0) {
-    throw new Error(`Table "${table}" has no primary key`);
+    throw new Error(`Table "${schema}"."${table}" has no primary key`);
   }
   const validColumns = new Set(columns.map((c) => c.name));
   const columnTypes = new Map(columns.map((c) => [c.name, c.udt_name]));
-  return { sql, columns, pkCols, validColumns, columnTypes };
+  return { sql, columns, pkCols, validColumns, columnTypes, schema };
 }
 
 function parsePkValues(id: string, pkCols: string[]): unknown[] {
@@ -48,17 +48,19 @@ export async function GET(
 ): Promise<Response> {
   const { db, table, id } = await params;
 
+  const schemaParam = req.nextUrl.searchParams.get("schema") || "public";
+
   return withAudit(db, req, async (ctx) => {
     ctx.operation = "get";
     ctx.table = table;
     ctx.recordId = id;
 
-    const { sql, pkCols, columnTypes } = await getTableMeta(db, table);
+    const { sql, pkCols, columnTypes, schema } = await getTableMeta(db, table, schemaParam);
     const pkValues = parsePkValues(id, pkCols);
     const pk = buildPkWhere(pkCols, pkValues);
 
     const rows = await sql.unsafe(
-      `SELECT * FROM "public"."${table}" ${pk.clause}`,
+      `SELECT * FROM "${schema}"."${table}" ${pk.clause}`,
       pk.values as never[],
     );
 
@@ -80,16 +82,18 @@ export async function PUT(
 ): Promise<Response> {
   const { db, table, id } = await params;
 
+  const schemaParam = req.nextUrl.searchParams.get("schema") || "public";
+
   return withAudit(db, req, async (ctx) => {
     ctx.operation = "update";
     ctx.table = table;
     ctx.recordId = id;
 
-    const { sql, pkCols, validColumns, columnTypes } = await getTableMeta(db, table);
+    const { sql, pkCols, validColumns, columnTypes, schema } = await getTableMeta(db, table, schemaParam);
     const pkValues = parsePkValues(id, pkCols);
     const body = await req.json();
 
-    const upd = buildUpdate(table, "public", pkCols, pkValues, body, validColumns);
+    const upd = buildUpdate(table, schema, pkCols, pkValues, body, validColumns);
     const rows = await sql.unsafe(upd.sql, upd.values as never[]);
 
     if (rows.length === 0) {
@@ -110,15 +114,17 @@ export async function DELETE(
 ): Promise<Response> {
   const { db, table, id } = await params;
 
+  const schemaParam = req.nextUrl.searchParams.get("schema") || "public";
+
   return withAudit(db, req, async (ctx) => {
     ctx.operation = "delete";
     ctx.table = table;
     ctx.recordId = id;
 
-    const { sql, pkCols, columnTypes } = await getTableMeta(db, table);
+    const { sql, pkCols, columnTypes, schema } = await getTableMeta(db, table, schemaParam);
     const pkValues = parsePkValues(id, pkCols);
 
-    const del = buildDelete(table, "public", pkCols, pkValues);
+    const del = buildDelete(table, schema, pkCols, pkValues);
     const rows = await sql.unsafe(del.sql, del.values as never[]);
 
     if (rows.length === 0) {

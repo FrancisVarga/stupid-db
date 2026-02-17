@@ -1,15 +1,16 @@
 //! SQS queue connection storage with AES-256-GCM encryption at rest.
 //!
 //! Stores queue connection configs in `{DATA_DIR}/queue-connections.json` with
-//! credentials encrypted using AES-256-GCM. Reuses encryption primitives from
-//! [`crate::connections`].
+//! credentials encrypted using AES-256-GCM. Implements [`CredentialStore`] for
+//! shared CRUD logic.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
 
-use crate::connections::{decrypt_password, encrypt_password, load_or_generate_key, slugify};
+use crate::credential_store::{
+    decrypt_password, encrypt_password, load_or_generate_key, slugify, CredentialStore,
+};
 
 // ── Default value functions ──────────────────────────────────────────
 
@@ -99,32 +100,6 @@ pub struct QueueConnectionSafe {
     pub updated_at: String,
 }
 
-impl From<&QueueConnectionConfig> for QueueConnectionSafe {
-    fn from(c: &QueueConnectionConfig) -> Self {
-        Self {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            queue_url: c.queue_url.clone(),
-            dlq_url: c.dlq_url.clone(),
-            provider: c.provider.clone(),
-            enabled: c.enabled,
-            region: c.region.clone(),
-            access_key_id: "********",
-            secret_access_key: "********",
-            session_token: "********",
-            endpoint_url: c.endpoint_url.clone(),
-            poll_interval_ms: c.poll_interval_ms,
-            max_batch_size: c.max_batch_size,
-            visibility_timeout_secs: c.visibility_timeout_secs,
-            micro_batch_size: c.micro_batch_size,
-            micro_batch_timeout_ms: c.micro_batch_timeout_ms,
-            color: c.color.clone(),
-            created_at: c.created_at.clone(),
-            updated_at: c.updated_at.clone(),
-        }
-    }
-}
-
 /// Decrypted credentials for SqsConsumer creation.
 #[derive(Debug, Clone, Serialize)]
 pub struct QueueConnectionCredentials {
@@ -140,31 +115,26 @@ pub struct QueueConnectionCredentials {
     pub endpoint_url: Option<String>,
 }
 
-impl From<&QueueConnectionConfig> for QueueConnectionCredentials {
-    fn from(c: &QueueConnectionConfig) -> Self {
-        Self {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            queue_url: c.queue_url.clone(),
-            dlq_url: c.dlq_url.clone(),
-            provider: c.provider.clone(),
-            region: c.region.clone(),
-            access_key_id: c.access_key_id.clone(),
-            secret_access_key: c.secret_access_key.clone(),
-            session_token: c.session_token.clone(),
-            endpoint_url: c.endpoint_url.clone(),
-        }
-    }
-}
-
 impl QueueConnectionConfig {
     /// Build an `AwsConfig` suitable for `SqsConsumer::new()`.
     pub fn to_aws_config(&self) -> stupid_core::config::AwsConfig {
         stupid_core::config::AwsConfig {
             region: self.region.clone(),
-            access_key_id: if self.access_key_id.is_empty() { None } else { Some(self.access_key_id.clone()) },
-            secret_access_key: if self.secret_access_key.is_empty() { None } else { Some(self.secret_access_key.clone()) },
-            session_token: if self.session_token.is_empty() { None } else { Some(self.session_token.clone()) },
+            access_key_id: if self.access_key_id.is_empty() {
+                None
+            } else {
+                Some(self.access_key_id.clone())
+            },
+            secret_access_key: if self.secret_access_key.is_empty() {
+                None
+            } else {
+                Some(self.secret_access_key.clone())
+            },
+            session_token: if self.session_token.is_empty() {
+                None
+            } else {
+                Some(self.session_token.clone())
+            },
             s3_bucket: None,
             s3_prefix: None,
             endpoint_url: self.endpoint_url.clone(),
@@ -227,7 +197,7 @@ pub struct QueueConnectionInput {
 
 /// On-disk format: credentials stored as encrypted hex strings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredQueueConnection {
+pub(crate) struct StoredQueueConnection {
     id: String,
     name: String,
     queue_url: String,
@@ -267,36 +237,131 @@ impl QueueConnectionStore {
         })
     }
 
-    fn queue_connections_path(&self) -> PathBuf {
+    /// List all queue connections with full decrypted configs (for consumer spawning).
+    pub fn list_configs(&self) -> anyhow::Result<Vec<QueueConnectionConfig>> {
+        let stored = self.load_stored()?;
+        let mut result = Vec::with_capacity(stored.len());
+        for s in &stored {
+            result.push(self.decrypt_record(s)?);
+        }
+        Ok(result)
+    }
+}
+
+impl CredentialStore for QueueConnectionStore {
+    type Config = QueueConnectionConfig;
+    type Safe = QueueConnectionSafe;
+    type Credentials = QueueConnectionCredentials;
+    type Input = QueueConnectionInput;
+    type Stored = StoredQueueConnection;
+
+    fn store_path(&self) -> PathBuf {
         self.data_dir.join("queue-connections.json")
     }
 
-    fn load_stored(&self) -> anyhow::Result<Vec<StoredQueueConnection>> {
-        let path = self.queue_connections_path();
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let data = std::fs::read_to_string(&path)?;
-        let connections: Vec<StoredQueueConnection> = serde_json::from_str(&data)?;
-        Ok(connections)
+    fn type_name() -> &'static str {
+        "queue connection"
     }
 
-    fn save_stored(&self, connections: &[StoredQueueConnection]) -> anyhow::Result<()> {
-        let path = self.queue_connections_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let data = serde_json::to_string_pretty(connections)?;
-        std::fs::write(&path, data)?;
-        Ok(())
+    fn generate_id(input: &Self::Input) -> String {
+        slugify(&input.name)
     }
 
-    fn decrypt_connection(
+    fn stored_id(stored: &Self::Stored) -> &str {
+        &stored.id
+    }
+
+    fn stored_created_at(stored: &Self::Stored) -> &str {
+        &stored.created_at
+    }
+
+    fn encrypt_record(
         &self,
-        stored: &StoredQueueConnection,
-    ) -> anyhow::Result<QueueConnectionConfig> {
+        id: &str,
+        input: &Self::Input,
+        created_at: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<Self::Stored> {
+        let encrypted_access_key_id = encrypt_password(&self.key, &input.access_key_id)?;
+        let encrypted_secret_access_key =
+            encrypt_password(&self.key, &input.secret_access_key)?;
+        let encrypted_session_token = encrypt_password(&self.key, &input.session_token)?;
+
+        Ok(StoredQueueConnection {
+            id: id.to_string(),
+            name: input.name.clone(),
+            queue_url: input.queue_url.clone(),
+            dlq_url: input.dlq_url.clone(),
+            provider: input.provider.clone(),
+            enabled: input.enabled,
+            region: input.region.clone(),
+            encrypted_access_key_id,
+            encrypted_secret_access_key,
+            encrypted_session_token,
+            endpoint_url: input.endpoint_url.clone(),
+            poll_interval_ms: input.poll_interval_ms,
+            max_batch_size: input.max_batch_size,
+            visibility_timeout_secs: input.visibility_timeout_secs,
+            micro_batch_size: input.micro_batch_size,
+            micro_batch_timeout_ms: input.micro_batch_timeout_ms,
+            color: input.color.clone(),
+            created_at: created_at.to_string(),
+            updated_at: updated_at.to_string(),
+        })
+    }
+
+    fn encrypt_record_update(
+        &self,
+        id: &str,
+        input: &Self::Input,
+        existing: &Self::Stored,
+        created_at: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<Self::Stored> {
+        // Preserve existing encrypted credentials when input is empty.
+        let encrypted_access_key_id = if input.access_key_id.is_empty() {
+            existing.encrypted_access_key_id.clone()
+        } else {
+            encrypt_password(&self.key, &input.access_key_id)?
+        };
+        let encrypted_secret_access_key = if input.secret_access_key.is_empty() {
+            existing.encrypted_secret_access_key.clone()
+        } else {
+            encrypt_password(&self.key, &input.secret_access_key)?
+        };
+        let encrypted_session_token = if input.session_token.is_empty() {
+            existing.encrypted_session_token.clone()
+        } else {
+            encrypt_password(&self.key, &input.session_token)?
+        };
+
+        Ok(StoredQueueConnection {
+            id: id.to_string(),
+            name: input.name.clone(),
+            queue_url: input.queue_url.clone(),
+            dlq_url: input.dlq_url.clone(),
+            provider: input.provider.clone(),
+            enabled: input.enabled,
+            region: input.region.clone(),
+            encrypted_access_key_id,
+            encrypted_secret_access_key,
+            encrypted_session_token,
+            endpoint_url: input.endpoint_url.clone(),
+            poll_interval_ms: input.poll_interval_ms,
+            max_batch_size: input.max_batch_size,
+            visibility_timeout_secs: input.visibility_timeout_secs,
+            micro_batch_size: input.micro_batch_size,
+            micro_batch_timeout_ms: input.micro_batch_timeout_ms,
+            color: input.color.clone(),
+            created_at: created_at.to_string(),
+            updated_at: updated_at.to_string(),
+        })
+    }
+
+    fn decrypt_record(&self, stored: &Self::Stored) -> anyhow::Result<Self::Config> {
         let access_key_id = decrypt_password(&self.key, &stored.encrypted_access_key_id)?;
-        let secret_access_key = decrypt_password(&self.key, &stored.encrypted_secret_access_key)?;
+        let secret_access_key =
+            decrypt_password(&self.key, &stored.encrypted_secret_access_key)?;
         let session_token = decrypt_password(&self.key, &stored.encrypted_session_token)?;
         Ok(QueueConnectionConfig {
             id: stored.id.clone(),
@@ -321,259 +386,67 @@ impl QueueConnectionStore {
         })
     }
 
-    /// List all queue connections with full decrypted configs (for consumer spawning).
-    pub fn list_configs(&self) -> anyhow::Result<Vec<QueueConnectionConfig>> {
-        let stored = self.load_stored()?;
-        let mut result = Vec::with_capacity(stored.len());
-        for s in &stored {
-            result.push(self.decrypt_connection(s)?);
-        }
-        Ok(result)
-    }
-
-    /// List all queue connections with masked credentials.
-    pub fn list(&self) -> anyhow::Result<Vec<QueueConnectionSafe>> {
-        let stored = self.load_stored()?;
-        let mut result = Vec::with_capacity(stored.len());
-        for s in &stored {
-            match self.decrypt_connection(s) {
-                Ok(c) => result.push(QueueConnectionSafe::from(&c)),
-                Err(e) => {
-                    warn!("Failed to decrypt queue connection '{}': {}", s.id, e);
-                    result.push(QueueConnectionSafe {
-                        id: s.id.clone(),
-                        name: s.name.clone(),
-                        queue_url: s.queue_url.clone(),
-                        dlq_url: s.dlq_url.clone(),
-                        provider: s.provider.clone(),
-                        enabled: s.enabled,
-                        region: s.region.clone(),
-                        access_key_id: "********",
-                        secret_access_key: "********",
-                        session_token: "********",
-                        endpoint_url: s.endpoint_url.clone(),
-                        poll_interval_ms: s.poll_interval_ms,
-                        max_batch_size: s.max_batch_size,
-                        visibility_timeout_secs: s.visibility_timeout_secs,
-                        micro_batch_size: s.micro_batch_size,
-                        micro_batch_timeout_ms: s.micro_batch_timeout_ms,
-                        color: s.color.clone(),
-                        created_at: s.created_at.clone(),
-                        updated_at: s.updated_at.clone(),
-                    });
-                }
-            }
-        }
-        Ok(result)
-    }
-
-    /// Get a single queue connection by ID with masked credentials.
-    pub fn get_safe(&self, id: &str) -> anyhow::Result<Option<QueueConnectionSafe>> {
-        let stored = self.load_stored()?;
-        match stored.iter().find(|s| s.id == id) {
-            Some(s) => {
-                let c = self.decrypt_connection(s)?;
-                Ok(Some(QueueConnectionSafe::from(&c)))
-            }
-            None => Ok(None),
+    fn config_to_safe(config: &Self::Config) -> Self::Safe {
+        QueueConnectionSafe {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            queue_url: config.queue_url.clone(),
+            dlq_url: config.dlq_url.clone(),
+            provider: config.provider.clone(),
+            enabled: config.enabled,
+            region: config.region.clone(),
+            access_key_id: "********",
+            secret_access_key: "********",
+            session_token: "********",
+            endpoint_url: config.endpoint_url.clone(),
+            poll_interval_ms: config.poll_interval_ms,
+            max_batch_size: config.max_batch_size,
+            visibility_timeout_secs: config.visibility_timeout_secs,
+            micro_batch_size: config.micro_batch_size,
+            micro_batch_timeout_ms: config.micro_batch_timeout_ms,
+            color: config.color.clone(),
+            created_at: config.created_at.clone(),
+            updated_at: config.updated_at.clone(),
         }
     }
 
-    /// Get a single queue connection by ID with decrypted credentials (internal use).
-    pub fn get(&self, id: &str) -> anyhow::Result<Option<QueueConnectionConfig>> {
-        let stored = self.load_stored()?;
-        match stored.iter().find(|s| s.id == id) {
-            Some(s) => Ok(Some(self.decrypt_connection(s)?)),
-            None => Ok(None),
+    fn config_to_credentials(config: &Self::Config) -> Self::Credentials {
+        QueueConnectionCredentials {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            queue_url: config.queue_url.clone(),
+            dlq_url: config.dlq_url.clone(),
+            provider: config.provider.clone(),
+            region: config.region.clone(),
+            access_key_id: config.access_key_id.clone(),
+            secret_access_key: config.secret_access_key.clone(),
+            session_token: config.session_token.clone(),
+            endpoint_url: config.endpoint_url.clone(),
         }
     }
 
-    /// Get decrypted credentials for SqsConsumer creation.
-    pub fn get_credentials(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<Option<QueueConnectionCredentials>> {
-        self.get(id)
-            .map(|opt| opt.map(|c| QueueConnectionCredentials::from(&c)))
-    }
-
-    /// Add a new queue connection. Returns the created connection (safe).
-    pub fn add(&self, input: &QueueConnectionInput) -> anyhow::Result<QueueConnectionSafe> {
-        let mut stored = self.load_stored()?;
-        let id = slugify(&input.name);
-
-        // Check for duplicate ID.
-        if stored.iter().any(|s| s.id == id) {
-            anyhow::bail!("Queue connection with id '{}' already exists", id);
+    fn stored_to_fallback_safe(stored: &Self::Stored) -> Self::Safe {
+        QueueConnectionSafe {
+            id: stored.id.clone(),
+            name: stored.name.clone(),
+            queue_url: stored.queue_url.clone(),
+            dlq_url: stored.dlq_url.clone(),
+            provider: stored.provider.clone(),
+            enabled: stored.enabled,
+            region: stored.region.clone(),
+            access_key_id: "********",
+            secret_access_key: "********",
+            session_token: "********",
+            endpoint_url: stored.endpoint_url.clone(),
+            poll_interval_ms: stored.poll_interval_ms,
+            max_batch_size: stored.max_batch_size,
+            visibility_timeout_secs: stored.visibility_timeout_secs,
+            micro_batch_size: stored.micro_batch_size,
+            micro_batch_timeout_ms: stored.micro_batch_timeout_ms,
+            color: stored.color.clone(),
+            created_at: stored.created_at.clone(),
+            updated_at: stored.updated_at.clone(),
         }
-
-        let now = chrono::Utc::now().to_rfc3339();
-        let encrypted_access_key_id = encrypt_password(&self.key, &input.access_key_id)?;
-        let encrypted_secret_access_key = encrypt_password(&self.key, &input.secret_access_key)?;
-        let encrypted_session_token = encrypt_password(&self.key, &input.session_token)?;
-
-        stored.push(StoredQueueConnection {
-            id: id.clone(),
-            name: input.name.clone(),
-            queue_url: input.queue_url.clone(),
-            dlq_url: input.dlq_url.clone(),
-            provider: input.provider.clone(),
-            enabled: input.enabled,
-            region: input.region.clone(),
-            encrypted_access_key_id,
-            encrypted_secret_access_key,
-            encrypted_session_token,
-            endpoint_url: input.endpoint_url.clone(),
-            poll_interval_ms: input.poll_interval_ms,
-            max_batch_size: input.max_batch_size,
-            visibility_timeout_secs: input.visibility_timeout_secs,
-            micro_batch_size: input.micro_batch_size,
-            micro_batch_timeout_ms: input.micro_batch_timeout_ms,
-            color: input.color.clone(),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        });
-        self.save_stored(&stored)?;
-
-        info!(
-            "Added queue connection '{}' (queue_url: {})",
-            id, input.queue_url
-        );
-        let config = QueueConnectionConfig {
-            id,
-            name: input.name.clone(),
-            queue_url: input.queue_url.clone(),
-            dlq_url: input.dlq_url.clone(),
-            provider: input.provider.clone(),
-            enabled: input.enabled,
-            region: input.region.clone(),
-            access_key_id: input.access_key_id.clone(),
-            secret_access_key: input.secret_access_key.clone(),
-            session_token: input.session_token.clone(),
-            endpoint_url: input.endpoint_url.clone(),
-            poll_interval_ms: input.poll_interval_ms,
-            max_batch_size: input.max_batch_size,
-            visibility_timeout_secs: input.visibility_timeout_secs,
-            micro_batch_size: input.micro_batch_size,
-            micro_batch_timeout_ms: input.micro_batch_timeout_ms,
-            color: input.color.clone(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        Ok(QueueConnectionSafe::from(&config))
-    }
-
-    /// Update an existing queue connection. Returns the updated connection (safe).
-    ///
-    /// If a credential field (access_key_id, secret_access_key, session_token) is
-    /// empty, the existing encrypted value is preserved.
-    pub fn update(
-        &self,
-        id: &str,
-        input: &QueueConnectionInput,
-    ) -> anyhow::Result<Option<QueueConnectionSafe>> {
-        let mut stored = self.load_stored()?;
-        let idx = match stored.iter().position(|s| s.id == id) {
-            Some(i) => i,
-            None => return Ok(None),
-        };
-
-        let created_at = stored[idx].created_at.clone();
-        let now = chrono::Utc::now().to_rfc3339();
-
-        // Preserve existing encrypted credentials when input is empty.
-        let encrypted_access_key_id = if input.access_key_id.is_empty() {
-            stored[idx].encrypted_access_key_id.clone()
-        } else {
-            encrypt_password(&self.key, &input.access_key_id)?
-        };
-        let encrypted_secret_access_key = if input.secret_access_key.is_empty() {
-            stored[idx].encrypted_secret_access_key.clone()
-        } else {
-            encrypt_password(&self.key, &input.secret_access_key)?
-        };
-        let encrypted_session_token = if input.session_token.is_empty() {
-            stored[idx].encrypted_session_token.clone()
-        } else {
-            encrypt_password(&self.key, &input.session_token)?
-        };
-
-        // Resolve the actual credential values for the return type.
-        let actual_access_key_id = if input.access_key_id.is_empty() {
-            decrypt_password(&self.key, &stored[idx].encrypted_access_key_id)?
-        } else {
-            input.access_key_id.clone()
-        };
-        let actual_secret_access_key = if input.secret_access_key.is_empty() {
-            decrypt_password(&self.key, &stored[idx].encrypted_secret_access_key)?
-        } else {
-            input.secret_access_key.clone()
-        };
-        let actual_session_token = if input.session_token.is_empty() {
-            decrypt_password(&self.key, &stored[idx].encrypted_session_token)?
-        } else {
-            input.session_token.clone()
-        };
-
-        stored[idx] = StoredQueueConnection {
-            id: id.to_string(),
-            name: input.name.clone(),
-            queue_url: input.queue_url.clone(),
-            dlq_url: input.dlq_url.clone(),
-            provider: input.provider.clone(),
-            enabled: input.enabled,
-            region: input.region.clone(),
-            encrypted_access_key_id,
-            encrypted_secret_access_key,
-            encrypted_session_token,
-            endpoint_url: input.endpoint_url.clone(),
-            poll_interval_ms: input.poll_interval_ms,
-            max_batch_size: input.max_batch_size,
-            visibility_timeout_secs: input.visibility_timeout_secs,
-            micro_batch_size: input.micro_batch_size,
-            micro_batch_timeout_ms: input.micro_batch_timeout_ms,
-            color: input.color.clone(),
-            created_at: created_at.clone(),
-            updated_at: now.clone(),
-        };
-        self.save_stored(&stored)?;
-
-        info!("Updated queue connection '{}'", id);
-        let config = QueueConnectionConfig {
-            id: id.to_string(),
-            name: input.name.clone(),
-            queue_url: input.queue_url.clone(),
-            dlq_url: input.dlq_url.clone(),
-            provider: input.provider.clone(),
-            enabled: input.enabled,
-            region: input.region.clone(),
-            access_key_id: actual_access_key_id,
-            secret_access_key: actual_secret_access_key,
-            session_token: actual_session_token,
-            endpoint_url: input.endpoint_url.clone(),
-            poll_interval_ms: input.poll_interval_ms,
-            max_batch_size: input.max_batch_size,
-            visibility_timeout_secs: input.visibility_timeout_secs,
-            micro_batch_size: input.micro_batch_size,
-            micro_batch_timeout_ms: input.micro_batch_timeout_ms,
-            color: input.color.clone(),
-            created_at,
-            updated_at: now,
-        };
-        Ok(Some(QueueConnectionSafe::from(&config)))
-    }
-
-    /// Delete a queue connection by ID. Returns true if it existed.
-    pub fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        let mut stored = self.load_stored()?;
-        let len_before = stored.len();
-        stored.retain(|s| s.id != id);
-        if stored.len() == len_before {
-            return Ok(false);
-        }
-        self.save_stored(&stored)?;
-        info!("Deleted queue connection '{}'", id);
-        Ok(true)
     }
 }
 
@@ -655,7 +528,10 @@ mod tests {
             "https://sqs.us-east-1.amazonaws.com/123456789/new-queue".to_string();
         updated_input.access_key_id = "NEWKEY123".to_string();
 
-        let updated = store.update("update-queue", &updated_input).unwrap().unwrap();
+        let updated = store
+            .update("update-queue", &updated_input)
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.queue_url, updated_input.queue_url);
 
         let full = store.get("update-queue").unwrap().unwrap();

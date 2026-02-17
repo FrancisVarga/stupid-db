@@ -75,6 +75,194 @@ export async function countTables(sql: postgres.Sql): Promise<number> {
   return (row?.cnt as number) ?? 0;
 }
 
+export interface DatabaseStats {
+  version: string;
+  uptime_seconds: number;
+  size: string;
+  size_bytes: number;
+  active_connections: number;
+  max_connections: number;
+  cache_hit_ratio: number; // 0–1
+  total_commits: number;
+  total_rollbacks: number;
+  dead_tuples: number;
+  schema_count: number;
+}
+
+/**
+ * Get system-level stats for the connected database.
+ */
+export async function getDatabaseStats(sql: postgres.Sql): Promise<DatabaseStats> {
+  const [versionRows, connRows, dbStatRows, deadRows, schemaRows] = await Promise.all([
+    sql`SELECT
+          version() AS version,
+          extract(epoch FROM (now() - pg_postmaster_start_time()))::bigint AS uptime`,
+    sql`SELECT
+          (SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database()) AS active,
+          current_setting('max_connections')::int AS max_conn`,
+    sql`SELECT
+          pg_database_size(current_database()) AS size_bytes,
+          pg_size_pretty(pg_database_size(current_database())) AS size,
+          xact_commit::bigint AS commits,
+          xact_rollback::bigint AS rollbacks,
+          CASE WHEN blks_hit + blks_read > 0
+            THEN round(blks_hit::numeric / (blks_hit + blks_read), 4)
+            ELSE 1
+          END AS cache_hit
+        FROM pg_stat_database WHERE datname = current_database()`,
+    sql`SELECT coalesce(sum(n_dead_tup), 0)::bigint AS dead FROM pg_stat_user_tables`,
+    sql`SELECT count(*)::int AS cnt FROM information_schema.schemata
+        WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+          AND schema_name NOT LIKE 'pg_temp_%' AND schema_name NOT LIKE 'pg_toast_temp_%'`,
+  ]);
+
+  const versionRow = versionRows[0];
+  const connRow = connRows[0];
+  const dbStatRow = dbStatRows[0];
+  const deadRow = deadRows[0];
+  const schemaRow = schemaRows[0];
+
+  return {
+    version: versionRow ? (versionRow.version as string).split(",")[0] : "unknown",
+    uptime_seconds: versionRow ? Number(versionRow.uptime) : 0,
+    size: dbStatRow?.size as string ?? "0 bytes",
+    size_bytes: Number(dbStatRow?.size_bytes ?? 0),
+    active_connections: (connRow?.active as number) ?? 0,
+    max_connections: (connRow?.max_conn as number) ?? 100,
+    cache_hit_ratio: Number(dbStatRow?.cache_hit ?? 1),
+    total_commits: Number(dbStatRow?.commits ?? 0),
+    total_rollbacks: Number(dbStatRow?.rollbacks ?? 0),
+    dead_tuples: Number(deadRow?.dead ?? 0),
+    schema_count: (schemaRow?.cnt as number) ?? 0,
+  };
+}
+
+export interface RealtimeStats {
+  ts: number; // epoch ms
+  // CPU proxy: active backends and transaction rates
+  active_backends: number;
+  idle_backends: number;
+  waiting_backends: number;
+  tps: number; // transactions committed since last reset (cumulative)
+  // Memory proxy: shared buffer usage
+  blks_hit: number; // cumulative
+  blks_read: number; // cumulative
+  shared_buffers_mb: number;
+  temp_bytes: number; // cumulative temp file bytes
+  // I/O: bgwriter + checkpointer
+  buffers_checkpoint: number; // cumulative
+  buffers_backend: number; // cumulative
+  buffers_alloc: number; // cumulative
+  // Throughput: tuples in/out
+  tup_fetched: number; // cumulative
+  tup_inserted: number; // cumulative
+  tup_updated: number; // cumulative
+  tup_deleted: number; // cumulative
+}
+
+/**
+ * Lightweight realtime stats for polling (< 5ms query time).
+ * Returns cumulative counters — the frontend computes deltas.
+ */
+export async function getRealtimeStats(sql: postgres.Sql): Promise<RealtimeStats> {
+  // Detect PG version for bgwriter compatibility (PG 17 split the view)
+  const [{ v }] = await sql`SELECT current_setting('server_version_num')::int AS v`;
+  const pgMajor = Math.floor(v / 10000);
+
+  // PG 17+ moved buffers_checkpoint to pg_stat_checkpointer
+  const bgWriterQuery =
+    pgMajor >= 17
+      ? sql`SELECT
+              0::bigint AS buf_ckpt,
+              0::bigint AS buf_backend,
+              buffers_alloc::bigint   AS buf_alloc
+            FROM pg_stat_bgwriter`
+      : sql`SELECT
+              buffers_checkpoint::bigint AS buf_ckpt,
+              buffers_backend::bigint    AS buf_backend,
+              buffers_alloc::bigint      AS buf_alloc
+            FROM pg_stat_bgwriter`;
+
+  const [activityRows, dbStatRows, bgWriterRows, bufRows] = await Promise.all([
+    sql`SELECT
+          count(*) FILTER (WHERE state = 'active')::int   AS active,
+          count(*) FILTER (WHERE state = 'idle')::int      AS idle,
+          count(*) FILTER (WHERE wait_event_type IS NOT NULL AND state = 'active')::int AS waiting
+        FROM pg_stat_activity
+        WHERE datname = current_database()`,
+    sql`SELECT
+          xact_commit::bigint    AS commits,
+          blks_hit::bigint       AS blks_hit,
+          blks_read::bigint      AS blks_read,
+          temp_bytes::bigint     AS temp_bytes,
+          tup_fetched::bigint    AS tup_fetched,
+          tup_inserted::bigint   AS tup_inserted,
+          tup_updated::bigint    AS tup_updated,
+          tup_deleted::bigint    AS tup_deleted
+        FROM pg_stat_database
+        WHERE datname = current_database()`,
+    bgWriterQuery,
+    sql`SELECT current_setting('shared_buffers') AS val`,
+  ]);
+
+  const activity = activityRows[0];
+  const dbStat = dbStatRows[0];
+  const bgWriter = bgWriterRows[0];
+  const bufSetting = bufRows[0];
+
+  if (!activity || !dbStat || !bgWriter || !bufSetting) {
+    throw new Error("Missing rows from PG system views — check permissions");
+  }
+
+  return {
+    ts: Date.now(),
+    active_backends: activity.active as number,
+    idle_backends: activity.idle as number,
+    waiting_backends: activity.waiting as number,
+    tps: Number(dbStat.commits),
+    blks_hit: Number(dbStat.blks_hit),
+    blks_read: Number(dbStat.blks_read),
+    shared_buffers_mb: parseSharedBuffers(bufSetting.val as string),
+    temp_bytes: Number(dbStat.temp_bytes),
+    buffers_checkpoint: Number(bgWriter.buf_ckpt),
+    buffers_backend: Number(bgWriter.buf_backend),
+    buffers_alloc: Number(bgWriter.buf_alloc),
+    tup_fetched: Number(dbStat.tup_fetched),
+    tup_inserted: Number(dbStat.tup_inserted),
+    tup_updated: Number(dbStat.tup_updated),
+    tup_deleted: Number(dbStat.tup_deleted),
+  };
+}
+
+/** Parse shared_buffers setting (e.g. "128MB", "1GB", "16384") into MB. */
+function parseSharedBuffers(val: string): number {
+  const num = parseInt(val, 10);
+  if (val.endsWith("GB")) return num * 1024;
+  if (val.endsWith("MB")) return num;
+  if (val.endsWith("kB")) return Math.round(num / 1024);
+  // Raw 8kB pages
+  return Math.round((num * 8) / 1024);
+}
+
+/**
+ * List non-system schemas in a database.
+ */
+export async function listSchemas(sql: postgres.Sql): Promise<string[]> {
+  const rows = await sql`
+    SELECT schema_name
+    FROM information_schema.schemata
+    WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+      AND schema_name NOT LIKE 'pg_temp_%'
+      AND schema_name NOT LIKE 'pg_toast_temp_%'
+      AND schema_name NOT LIKE '_timescaledb_%'
+      AND schema_name NOT LIKE 'timescaledb_%'
+    ORDER BY
+      CASE WHEN schema_name = 'public' THEN 0 ELSE 1 END,
+      schema_name
+  `;
+  return rows.map((r) => r.schema_name as string);
+}
+
 /**
  * List tables and views in a database (default schema: public).
  */
@@ -87,7 +275,11 @@ export async function listTables(
       t.table_schema                                                   AS schema,
       t.table_name                                                     AS name,
       CASE WHEN t.table_type = 'BASE TABLE' THEN 'table' ELSE 'view' END AS type,
-      COALESCE(s.n_live_tup, 0)::bigint                                AS estimated_rows,
+      COALESCE(
+        NULLIF(s.n_live_tup, 0),
+        c.reltuples::bigint,
+        0
+      )::bigint                                                        AS estimated_rows,
       COALESCE(pg_total_relation_size(quote_ident(t.table_schema) || '.' || quote_ident(t.table_name)), 0) AS size_bytes,
       pg_size_pretty(
         COALESCE(pg_total_relation_size(quote_ident(t.table_schema) || '.' || quote_ident(t.table_name)), 0)
@@ -101,8 +293,15 @@ export async function listTables(
     FROM information_schema.tables t
     LEFT JOIN pg_stat_user_tables s
       ON s.schemaname = t.table_schema AND s.relname = t.table_name
+    LEFT JOIN pg_namespace n
+      ON n.nspname = t.table_schema
+    LEFT JOIN pg_class c
+      ON c.relname = t.table_name AND c.relnamespace = n.oid
     WHERE t.table_schema = ${schema}
       AND t.table_type IN ('BASE TABLE', 'VIEW')
+      AND t.table_name NOT LIKE '_hyper_%_chunk'
+      AND t.table_name NOT LIKE '_compressed_hypertable_%'
+      AND t.table_name NOT LIKE '_materialized_hypertable_%'
     ORDER BY t.table_name
   `;
 

@@ -61,7 +61,6 @@ pub struct AppState {
     /// Audit log for anomaly rule evaluation.
     pub audit_log: stupid_rules::audit_log::AuditLog,
     /// Per-connection Athena query audit log with cost tracking.
-    #[cfg(feature = "aws")]
     pub athena_query_log: crate::athena_query_log::AthenaQueryLog,
 }
 

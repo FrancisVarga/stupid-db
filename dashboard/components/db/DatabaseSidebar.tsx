@@ -2,19 +2,25 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams, useRouter } from "next/navigation";
 import {
   fetchDatabases,
-  fetchTables,
+  fetchTablesBySchema,
   type Database,
   type Table,
 } from "@/lib/api-db";
 
+// Schema → Table[] per connection
+type SchemaMap = Record<string, Table[]>;
+
 export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: number }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [databases, setDatabases] = useState<Database[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [tables, setTables] = useState<Record<string, Table[]>>({});
+  const [expandedSchemas, setExpandedSchemas] = useState<Record<string, boolean>>({});
+  const [schemaMap, setSchemaMap] = useState<Record<string, SchemaMap>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +31,32 @@ export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: numbe
   const activeTable =
     pathParts.length >= 3 && pathParts[0] === "db" ? pathParts[2] : null;
 
+  const loadSchemas = useCallback(
+    (connId: string) => {
+      if (schemaMap[connId]) return;
+      fetchTablesBySchema(connId)
+        .then((grouped) => {
+          setSchemaMap((prev) => ({ ...prev, [connId]: grouped }));
+          // Auto-expand if only one schema
+          const schemas = Object.keys(grouped);
+          if (schemas.length === 1) {
+            setExpandedSchemas((prev) => ({ ...prev, [`${connId}:${schemas[0]}`]: true }));
+          }
+          // Auto-expand schema containing the active table
+          if (activeTable) {
+            for (const [schema, tables] of Object.entries(grouped)) {
+              if (tables.some((t) => t.name === activeTable)) {
+                setExpandedSchemas((prev) => ({ ...prev, [`${connId}:${schema}`]: true }));
+                break;
+              }
+            }
+          }
+        })
+        .catch(() => {});
+    },
+    [schemaMap, activeTable],
+  );
+
   useEffect(() => {
     fetchDatabases()
       .then((dbs) => {
@@ -33,9 +65,7 @@ export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: numbe
         // Auto-expand the active connection
         if (activeDb) {
           setExpanded((prev) => ({ ...prev, [activeDb]: true }));
-          fetchTables(activeDb)
-            .then((t) => setTables((prev) => ({ ...prev, [activeDb]: t })))
-            .catch(() => {});
+          loadSchemas(activeDb);
         }
       })
       .catch((e) => {
@@ -48,16 +78,23 @@ export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: numbe
     (connId: string) => {
       setExpanded((prev) => {
         const next = { ...prev, [connId]: !prev[connId] };
-        if (next[connId] && !tables[connId]) {
-          fetchTables(connId)
-            .then((t) => setTables((p) => ({ ...p, [connId]: t })))
-            .catch(() => {});
-        }
+        if (next[connId]) loadSchemas(connId);
         return next;
       });
     },
-    [tables],
+    [loadSchemas],
   );
+
+  const toggleSchema = useCallback((key: string) => {
+    setExpandedSchemas((prev) => ({ ...prev, [key]: !prev[key] }));
+    // Update URL with selected schema so the main page can filter tables
+    const [connId, schema] = key.split(":");
+    if (connId && schema) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("schema", schema);
+      router.push(`${pathname}?${params.toString()}`, { scroll: false });
+    }
+  }, [searchParams, pathname, router]);
 
   return (
     <div
@@ -100,7 +137,8 @@ export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: numbe
         {databases.map((db) => {
           const isExpanded = expanded[db.id];
           const isActive = activeDb === db.id;
-          const dbTables = tables[db.id] || [];
+          const dbSchemas = schemaMap[db.id];
+          const schemaNames = dbSchemas ? Object.keys(dbSchemas) : [];
 
           return (
             <div key={db.id}>
@@ -150,7 +188,7 @@ export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: numbe
                 </span>
               </button>
 
-              {/* Tables list */}
+              {/* Schema + Tables tree */}
               {isExpanded && (
                 <div className="ml-4">
                   {db.status === "error" && (
@@ -159,42 +197,97 @@ export default function DatabaseSidebar({ refreshKey = 0 }: { refreshKey?: numbe
                     </div>
                   )}
 
-                  {db.status === "connected" && dbTables.length === 0 && (
+                  {db.status === "connected" && !dbSchemas && (
                     <div className="px-4 py-1.5 text-[9px] text-slate-600 font-mono animate-pulse">
-                      Loading tables...
+                      Loading schemas...
                     </div>
                   )}
 
-                  {dbTables.map((t) => {
-                    const isTableActive = isActive && activeTable === t.name;
+                  {schemaNames.map((schema) => {
+                    const schemaKey = `${db.id}:${schema}`;
+                    const isSchemaExpanded = expandedSchemas[schemaKey];
+                    const schemaTables = dbSchemas![schema];
+                    const tableCount = schemaTables.length;
+                    const activeSchema = searchParams.get("schema") || "public";
+                    const isSchemaActive = isActive && activeSchema === schema;
+
                     return (
-                      <Link
-                        key={t.name}
-                        href={`/db/${encodeURIComponent(db.id)}/${encodeURIComponent(t.name)}`}
-                        className="flex items-center gap-2 px-4 py-1.5 transition-all hover:bg-white/[0.02]"
-                        style={{
-                          background: isTableActive ? "rgba(0, 240, 255, 0.05)" : "transparent",
-                          borderLeft: isTableActive ? `2px solid ${db.color}` : "2px solid transparent",
-                        }}
-                      >
-                        <svg
-                          width="10" height="10" viewBox="0 0 24 24" fill="none"
-                          stroke={isTableActive ? db.color : "#334155"} strokeWidth="2" className="shrink-0"
+                      <div key={schema}>
+                        {/* Schema row */}
+                        <button
+                          onClick={() => toggleSchema(schemaKey)}
+                          className="w-full flex items-center gap-2 px-4 py-1.5 text-left transition-all hover:bg-white/[0.02]"
+                          style={{ background: isSchemaActive ? "rgba(99, 102, 241, 0.06)" : "transparent" }}
                         >
-                          <rect x="3" y="3" width="18" height="18" rx="2" />
-                          <line x1="3" y1="9" x2="21" y2="9" />
-                          <line x1="9" y1="3" x2="9" y2="21" />
-                        </svg>
-                        <span
-                          className="text-[10px] font-mono truncate"
-                          style={{ color: isTableActive ? db.color : "#64748b" }}
-                        >
-                          {t.name}
-                        </span>
-                        <span className="ml-auto text-[8px] text-slate-700 font-mono shrink-0">
-                          ~{formatRowCount(t.estimated_rows)}
-                        </span>
-                      </Link>
+                          <svg
+                            width="8" height="8" viewBox="0 0 10 10"
+                            className="shrink-0 transition-transform"
+                            style={{
+                              transform: isSchemaExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                              fill: "#475569",
+                            }}
+                          >
+                            <path d="M3 1l4 4-4 4z" />
+                          </svg>
+
+                          {/* Schema icon */}
+                          <svg
+                            width="10" height="10" viewBox="0 0 24 24" fill="none"
+                            stroke="#6366f1" strokeWidth="2" className="shrink-0"
+                          >
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                          </svg>
+
+                          <span
+                            className="text-[10px] font-mono font-semibold truncate"
+                            style={{ color: isSchemaActive ? "#818cf8" : "rgba(129, 140, 248, 0.6)" }}
+                          >
+                            {schema}
+                          </span>
+
+                          <span className="ml-auto text-[8px] text-slate-700 font-mono shrink-0">
+                            {tableCount}
+                          </span>
+                        </button>
+
+                        {/* Tables under schema */}
+                        {isSchemaExpanded && (
+                          <div className="ml-3">
+                            {schemaTables.map((t) => {
+                              const isTableActive = isActive && activeTable === t.name;
+                              return (
+                                <Link
+                                  key={t.name}
+                                  href={`/db/${encodeURIComponent(db.id)}/${encodeURIComponent(t.name)}?schema=${encodeURIComponent(schema)}`}
+                                  className="flex items-center gap-2 px-4 py-1.5 transition-all hover:bg-white/[0.02]"
+                                  style={{
+                                    background: isTableActive ? "rgba(0, 240, 255, 0.05)" : "transparent",
+                                    borderLeft: isTableActive ? `2px solid ${db.color}` : "2px solid transparent",
+                                  }}
+                                >
+                                  <svg
+                                    width="10" height="10" viewBox="0 0 24 24" fill="none"
+                                    stroke={isTableActive ? db.color : "#334155"} strokeWidth="2" className="shrink-0"
+                                  >
+                                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                                    <line x1="3" y1="9" x2="21" y2="9" />
+                                    <line x1="9" y1="3" x2="9" y2="21" />
+                                  </svg>
+                                  <span
+                                    className="text-[10px] font-mono truncate"
+                                    style={{ color: isTableActive ? db.color : "#64748b" }}
+                                  >
+                                    {t.name}
+                                  </span>
+                                  <span className="ml-auto text-[8px] text-slate-700 font-mono shrink-0">
+                                    ~{formatRowCount(t.estimated_rows)}
+                                  </span>
+                                </Link>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
 

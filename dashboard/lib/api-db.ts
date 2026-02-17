@@ -109,9 +109,43 @@ export async function testConnection(
 export interface Table {
   schema: string;
   name: string;
+  type?: "table" | "view";
   estimated_rows: number;
   size: string;
   has_pk: boolean;
+}
+
+export interface DatabaseStats {
+  version: string;
+  uptime_seconds: number;
+  size: string;
+  size_bytes: number;
+  active_connections: number;
+  max_connections: number;
+  cache_hit_ratio: number;
+  total_commits: number;
+  total_rollbacks: number;
+  dead_tuples: number;
+  schema_count: number;
+}
+
+export interface RealtimeStats {
+  ts: number;
+  active_backends: number;
+  idle_backends: number;
+  waiting_backends: number;
+  tps: number;
+  blks_hit: number;
+  blks_read: number;
+  shared_buffers_mb: number;
+  temp_bytes: number;
+  buffers_checkpoint: number;
+  buffers_backend: number;
+  buffers_alloc: number;
+  tup_fetched: number;
+  tup_inserted: number;
+  tup_updated: number;
+  tup_deleted: number;
 }
 
 export interface Column {
@@ -178,9 +212,26 @@ export async function fetchDatabases(): Promise<Database[]> {
   return res.json();
 }
 
-export async function fetchTables(db: string): Promise<Table[]> {
+export async function fetchTables(db: string, schema?: string): Promise<Table[]> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/meta/${encodeURIComponent(db)}/tables`,
+    `/api/v1/meta/${encodeURIComponent(db)}/tables${qs}`,
+    { cache: "no-store" }
+  );
+  return res.json();
+}
+
+export async function fetchTablesBySchema(db: string): Promise<Record<string, Table[]>> {
+  const res = await checkedFetch(
+    `/api/v1/meta/${encodeURIComponent(db)}/tables?schema=*`,
+    { cache: "no-store" }
+  );
+  return res.json();
+}
+
+export async function fetchDatabaseStats(db: string): Promise<DatabaseStats> {
+  const res = await checkedFetch(
+    `/api/v1/meta/${encodeURIComponent(db)}/stats`,
     { cache: "no-store" }
   );
   return res.json();
@@ -188,10 +239,12 @@ export async function fetchTables(db: string): Promise<Table[]> {
 
 export async function fetchTableSchema(
   db: string,
-  table: string
+  table: string,
+  schema?: string
 ): Promise<Column[]> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/meta/${encodeURIComponent(db)}/${encodeURIComponent(table)}/schema`,
+    `/api/v1/meta/${encodeURIComponent(db)}/${encodeURIComponent(table)}/schema${qs}`,
     { cache: "no-store" }
   );
   return res.json();
@@ -205,6 +258,7 @@ export interface FetchRowsParams {
   sort?: string;
   order?: "asc" | "desc";
   filter?: Record<string, unknown>;
+  schema?: string;
 }
 
 export async function fetchRows(
@@ -217,6 +271,7 @@ export async function fetchRows(
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.sort) qs.set("sort", params.sort);
   if (params.order) qs.set("order", params.order);
+  if (params.schema) qs.set("schema", params.schema);
   if (params.filter && Object.keys(params.filter).length > 0) {
     qs.set("filter", JSON.stringify(params.filter));
   }
@@ -231,10 +286,12 @@ export async function fetchRows(
 export async function fetchRow(
   db: string,
   table: string,
-  id: string
+  id: string,
+  schema?: string
 ): Promise<Record<string, unknown>> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${encodeURIComponent(id)}`,
+    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${encodeURIComponent(id)}${qs}`,
     { cache: "no-store" }
   );
   return res.json();
@@ -243,10 +300,12 @@ export async function fetchRow(
 export async function createRow(
   db: string,
   table: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  schema?: string
 ): Promise<Record<string, unknown>> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}`,
+    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}${qs}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -260,10 +319,12 @@ export async function updateRow(
   db: string,
   table: string,
   id: string,
-  data: Record<string, unknown>
+  data: Record<string, unknown>,
+  schema?: string
 ): Promise<Record<string, unknown>> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${encodeURIComponent(id)}`,
+    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${encodeURIComponent(id)}${qs}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -276,10 +337,12 @@ export async function updateRow(
 export async function deleteRow(
   db: string,
   table: string,
-  id: string
+  id: string,
+  schema?: string
 ): Promise<void> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   await checkedFetch(
-    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${encodeURIComponent(id)}`,
+    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}/${encodeURIComponent(id)}${qs}`,
     { method: "DELETE" }
   );
 }
@@ -290,10 +353,12 @@ export async function batchUpdate(
   db: string,
   table: string,
   ids: string[],
-  updates: Record<string, unknown>
+  updates: Record<string, unknown>,
+  schema?: string
 ): Promise<{ updated: number }> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}`,
+    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}${qs}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -306,10 +371,12 @@ export async function batchUpdate(
 export async function batchDelete(
   db: string,
   table: string,
-  ids: string[]
+  ids: string[],
+  schema?: string
 ): Promise<{ deleted: number }> {
+  const qs = schema ? `?schema=${encodeURIComponent(schema)}` : "";
   const res = await checkedFetch(
-    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}`,
+    `/api/v1/${encodeURIComponent(db)}/${encodeURIComponent(table)}${qs}`,
     {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },

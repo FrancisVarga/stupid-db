@@ -1,15 +1,17 @@
 //! AWS Athena connection storage with AES-256-GCM encryption at rest.
 //!
 //! Stores Athena connection configs in `{DATA_DIR}/athena-connections.json` with
-//! credentials encrypted using AES-256-GCM. Reuses encryption primitives from
-//! [`crate::connections`].
+//! credentials encrypted using AES-256-GCM. Implements [`CredentialStore`] for
+//! shared CRUD logic, with extension methods for schema management.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::info;
 
-use crate::connections::{decrypt_password, encrypt_password, load_or_generate_key, slugify};
+use crate::credential_store::{
+    decrypt_password, encrypt_password, load_or_generate_key, slugify, CredentialStore,
+};
 
 // ── Default value functions ──────────────────────────────────────────
 
@@ -114,30 +116,6 @@ pub struct AthenaConnectionSafe {
     pub updated_at: String,
 }
 
-impl From<&AthenaConnectionConfig> for AthenaConnectionSafe {
-    fn from(c: &AthenaConnectionConfig) -> Self {
-        Self {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            region: c.region.clone(),
-            catalog: c.catalog.clone(),
-            database: c.database.clone(),
-            workgroup: c.workgroup.clone(),
-            output_location: c.output_location.clone(),
-            access_key_id: "********",
-            secret_access_key: "********",
-            session_token: "********",
-            endpoint_url: c.endpoint_url.clone(),
-            enabled: c.enabled,
-            color: c.color.clone(),
-            schema: c.schema.clone(),
-            schema_status: c.schema_status.clone(),
-            created_at: c.created_at.clone(),
-            updated_at: c.updated_at.clone(),
-        }
-    }
-}
-
 /// Decrypted credentials for Athena client creation.
 #[derive(Debug, Clone, Serialize)]
 pub struct AthenaConnectionCredentials {
@@ -152,24 +130,6 @@ pub struct AthenaConnectionCredentials {
     pub secret_access_key: String,
     pub session_token: String,
     pub endpoint_url: Option<String>,
-}
-
-impl From<&AthenaConnectionConfig> for AthenaConnectionCredentials {
-    fn from(c: &AthenaConnectionConfig) -> Self {
-        Self {
-            id: c.id.clone(),
-            name: c.name.clone(),
-            region: c.region.clone(),
-            catalog: c.catalog.clone(),
-            database: c.database.clone(),
-            workgroup: c.workgroup.clone(),
-            output_location: c.output_location.clone(),
-            access_key_id: c.access_key_id.clone(),
-            secret_access_key: c.secret_access_key.clone(),
-            session_token: c.session_token.clone(),
-            endpoint_url: c.endpoint_url.clone(),
-        }
-    }
 }
 
 /// User input for creating/updating an Athena connection.
@@ -202,7 +162,7 @@ pub struct AthenaConnectionInput {
 
 /// On-disk format: credentials stored as encrypted hex strings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredAthenaConnection {
+pub(crate) struct StoredAthenaConnection {
     id: String,
     name: String,
     region: String,
@@ -240,298 +200,7 @@ impl AthenaConnectionStore {
         })
     }
 
-    fn athena_connections_path(&self) -> PathBuf {
-        self.data_dir.join("athena-connections.json")
-    }
-
-    fn load_stored(&self) -> anyhow::Result<Vec<StoredAthenaConnection>> {
-        let path = self.athena_connections_path();
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let data = std::fs::read_to_string(&path)?;
-        let connections: Vec<StoredAthenaConnection> = serde_json::from_str(&data)?;
-        Ok(connections)
-    }
-
-    fn save_stored(&self, connections: &[StoredAthenaConnection]) -> anyhow::Result<()> {
-        let path = self.athena_connections_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let data = serde_json::to_string_pretty(connections)?;
-        std::fs::write(&path, data)?;
-        Ok(())
-    }
-
-    fn decrypt_connection(
-        &self,
-        stored: &StoredAthenaConnection,
-    ) -> anyhow::Result<AthenaConnectionConfig> {
-        let access_key_id = decrypt_password(&self.key, &stored.encrypted_access_key_id)?;
-        let secret_access_key = decrypt_password(&self.key, &stored.encrypted_secret_access_key)?;
-        let session_token = decrypt_password(&self.key, &stored.encrypted_session_token)?;
-        Ok(AthenaConnectionConfig {
-            id: stored.id.clone(),
-            name: stored.name.clone(),
-            region: stored.region.clone(),
-            catalog: stored.catalog.clone(),
-            database: stored.database.clone(),
-            workgroup: stored.workgroup.clone(),
-            output_location: stored.output_location.clone(),
-            access_key_id,
-            secret_access_key,
-            session_token,
-            endpoint_url: stored.endpoint_url.clone(),
-            enabled: stored.enabled,
-            color: stored.color.clone(),
-            schema: stored.schema.clone(),
-            schema_status: stored.schema_status.clone(),
-            created_at: stored.created_at.clone(),
-            updated_at: stored.updated_at.clone(),
-        })
-    }
-
-    /// List all Athena connections with masked credentials.
-    pub fn list(&self) -> anyhow::Result<Vec<AthenaConnectionSafe>> {
-        let stored = self.load_stored()?;
-        let mut result = Vec::with_capacity(stored.len());
-        for s in &stored {
-            match self.decrypt_connection(s) {
-                Ok(c) => result.push(AthenaConnectionSafe::from(&c)),
-                Err(e) => {
-                    warn!("Failed to decrypt Athena connection '{}': {}", s.id, e);
-                    result.push(AthenaConnectionSafe {
-                        id: s.id.clone(),
-                        name: s.name.clone(),
-                        region: s.region.clone(),
-                        catalog: s.catalog.clone(),
-                        database: s.database.clone(),
-                        workgroup: s.workgroup.clone(),
-                        output_location: s.output_location.clone(),
-                        access_key_id: "********",
-                        secret_access_key: "********",
-                        session_token: "********",
-                        endpoint_url: s.endpoint_url.clone(),
-                        enabled: s.enabled,
-                        color: s.color.clone(),
-                        schema: s.schema.clone(),
-                        schema_status: s.schema_status.clone(),
-                        created_at: s.created_at.clone(),
-                        updated_at: s.updated_at.clone(),
-                    });
-                }
-            }
-        }
-        Ok(result)
-    }
-
-    /// Get a single Athena connection by ID with masked credentials.
-    pub fn get_safe(&self, id: &str) -> anyhow::Result<Option<AthenaConnectionSafe>> {
-        let stored = self.load_stored()?;
-        match stored.iter().find(|s| s.id == id) {
-            Some(s) => {
-                let c = self.decrypt_connection(s)?;
-                Ok(Some(AthenaConnectionSafe::from(&c)))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Get a single Athena connection by ID with decrypted credentials (internal use).
-    pub fn get(&self, id: &str) -> anyhow::Result<Option<AthenaConnectionConfig>> {
-        let stored = self.load_stored()?;
-        match stored.iter().find(|s| s.id == id) {
-            Some(s) => Ok(Some(self.decrypt_connection(s)?)),
-            None => Ok(None),
-        }
-    }
-
-    /// Get decrypted credentials for Athena client creation.
-    pub fn get_credentials(
-        &self,
-        id: &str,
-    ) -> anyhow::Result<Option<AthenaConnectionCredentials>> {
-        self.get(id)
-            .map(|opt| opt.map(|c| AthenaConnectionCredentials::from(&c)))
-    }
-
-    /// Add a new Athena connection. Returns the created connection (safe).
-    ///
-    /// The `schema_status` starts as `"pending"`.
-    pub fn add(&self, input: &AthenaConnectionInput) -> anyhow::Result<AthenaConnectionSafe> {
-        let mut stored = self.load_stored()?;
-        let id = slugify(&input.name);
-
-        // Check for duplicate ID.
-        if stored.iter().any(|s| s.id == id) {
-            anyhow::bail!("Athena connection with id '{}' already exists", id);
-        }
-
-        let now = chrono::Utc::now().to_rfc3339();
-        let encrypted_access_key_id = encrypt_password(&self.key, &input.access_key_id)?;
-        let encrypted_secret_access_key = encrypt_password(&self.key, &input.secret_access_key)?;
-        let encrypted_session_token = encrypt_password(&self.key, &input.session_token)?;
-
-        stored.push(StoredAthenaConnection {
-            id: id.clone(),
-            name: input.name.clone(),
-            region: input.region.clone(),
-            catalog: input.catalog.clone(),
-            database: input.database.clone(),
-            workgroup: input.workgroup.clone(),
-            output_location: input.output_location.clone(),
-            encrypted_access_key_id,
-            encrypted_secret_access_key,
-            encrypted_session_token,
-            endpoint_url: input.endpoint_url.clone(),
-            enabled: input.enabled,
-            color: input.color.clone(),
-            schema: None,
-            schema_status: default_schema_status(),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        });
-        self.save_stored(&stored)?;
-
-        info!(
-            "Added Athena connection '{}' (database: {}, region: {})",
-            id, input.database, input.region
-        );
-        let config = AthenaConnectionConfig {
-            id,
-            name: input.name.clone(),
-            region: input.region.clone(),
-            catalog: input.catalog.clone(),
-            database: input.database.clone(),
-            workgroup: input.workgroup.clone(),
-            output_location: input.output_location.clone(),
-            access_key_id: input.access_key_id.clone(),
-            secret_access_key: input.secret_access_key.clone(),
-            session_token: input.session_token.clone(),
-            endpoint_url: input.endpoint_url.clone(),
-            enabled: input.enabled,
-            color: input.color.clone(),
-            schema: None,
-            schema_status: default_schema_status(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-        Ok(AthenaConnectionSafe::from(&config))
-    }
-
-    /// Update an existing Athena connection. Returns the updated connection (safe).
-    ///
-    /// If a credential field (access_key_id, secret_access_key, session_token) is
-    /// empty, the existing encrypted value is preserved.
-    pub fn update(
-        &self,
-        id: &str,
-        input: &AthenaConnectionInput,
-    ) -> anyhow::Result<Option<AthenaConnectionSafe>> {
-        let mut stored = self.load_stored()?;
-        let idx = match stored.iter().position(|s| s.id == id) {
-            Some(i) => i,
-            None => return Ok(None),
-        };
-
-        let created_at = stored[idx].created_at.clone();
-        let now = chrono::Utc::now().to_rfc3339();
-
-        // Preserve existing schema data across updates.
-        let schema = stored[idx].schema.clone();
-        let schema_status = stored[idx].schema_status.clone();
-
-        // Preserve existing encrypted credentials when input is empty.
-        let encrypted_access_key_id = if input.access_key_id.is_empty() {
-            stored[idx].encrypted_access_key_id.clone()
-        } else {
-            encrypt_password(&self.key, &input.access_key_id)?
-        };
-        let encrypted_secret_access_key = if input.secret_access_key.is_empty() {
-            stored[idx].encrypted_secret_access_key.clone()
-        } else {
-            encrypt_password(&self.key, &input.secret_access_key)?
-        };
-        let encrypted_session_token = if input.session_token.is_empty() {
-            stored[idx].encrypted_session_token.clone()
-        } else {
-            encrypt_password(&self.key, &input.session_token)?
-        };
-
-        // Resolve the actual credential values for the return type.
-        let actual_access_key_id = if input.access_key_id.is_empty() {
-            decrypt_password(&self.key, &stored[idx].encrypted_access_key_id)?
-        } else {
-            input.access_key_id.clone()
-        };
-        let actual_secret_access_key = if input.secret_access_key.is_empty() {
-            decrypt_password(&self.key, &stored[idx].encrypted_secret_access_key)?
-        } else {
-            input.secret_access_key.clone()
-        };
-        let actual_session_token = if input.session_token.is_empty() {
-            decrypt_password(&self.key, &stored[idx].encrypted_session_token)?
-        } else {
-            input.session_token.clone()
-        };
-
-        stored[idx] = StoredAthenaConnection {
-            id: id.to_string(),
-            name: input.name.clone(),
-            region: input.region.clone(),
-            catalog: input.catalog.clone(),
-            database: input.database.clone(),
-            workgroup: input.workgroup.clone(),
-            output_location: input.output_location.clone(),
-            encrypted_access_key_id,
-            encrypted_secret_access_key,
-            encrypted_session_token,
-            endpoint_url: input.endpoint_url.clone(),
-            enabled: input.enabled,
-            color: input.color.clone(),
-            schema,
-            schema_status,
-            created_at: created_at.clone(),
-            updated_at: now.clone(),
-        };
-        self.save_stored(&stored)?;
-
-        info!("Updated Athena connection '{}'", id);
-        let config = AthenaConnectionConfig {
-            id: id.to_string(),
-            name: input.name.clone(),
-            region: input.region.clone(),
-            catalog: input.catalog.clone(),
-            database: input.database.clone(),
-            workgroup: input.workgroup.clone(),
-            output_location: input.output_location.clone(),
-            access_key_id: actual_access_key_id,
-            secret_access_key: actual_secret_access_key,
-            session_token: actual_session_token,
-            endpoint_url: input.endpoint_url.clone(),
-            enabled: input.enabled,
-            color: input.color.clone(),
-            schema: stored[stored.iter().position(|s| s.id == id).unwrap()].schema.clone(),
-            schema_status: stored[stored.iter().position(|s| s.id == id).unwrap()].schema_status.clone(),
-            created_at,
-            updated_at: now,
-        };
-        Ok(Some(AthenaConnectionSafe::from(&config)))
-    }
-
-    /// Delete an Athena connection by ID. Returns true if it existed.
-    pub fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        let mut stored = self.load_stored()?;
-        let len_before = stored.len();
-        stored.retain(|s| s.id != id);
-        if stored.len() == len_before {
-            return Ok(false);
-        }
-        self.save_stored(&stored)?;
-        info!("Deleted Athena connection '{}'", id);
-        Ok(true)
-    }
+    // ── Athena-specific extension methods ─────────────────────────
 
     /// Update the cached schema for a connection, setting status to "ready".
     pub fn update_schema(&self, id: &str, schema: AthenaSchema) -> anyhow::Result<bool> {
@@ -567,6 +236,200 @@ impl AthenaConnectionStore {
             id, status
         );
         Ok(true)
+    }
+}
+
+impl CredentialStore for AthenaConnectionStore {
+    type Config = AthenaConnectionConfig;
+    type Safe = AthenaConnectionSafe;
+    type Credentials = AthenaConnectionCredentials;
+    type Input = AthenaConnectionInput;
+    type Stored = StoredAthenaConnection;
+
+    fn store_path(&self) -> PathBuf {
+        self.data_dir.join("athena-connections.json")
+    }
+
+    fn type_name() -> &'static str {
+        "Athena connection"
+    }
+
+    fn generate_id(input: &Self::Input) -> String {
+        slugify(&input.name)
+    }
+
+    fn stored_id(stored: &Self::Stored) -> &str {
+        &stored.id
+    }
+
+    fn stored_created_at(stored: &Self::Stored) -> &str {
+        &stored.created_at
+    }
+
+    fn encrypt_record(
+        &self,
+        id: &str,
+        input: &Self::Input,
+        created_at: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<Self::Stored> {
+        let encrypted_access_key_id = encrypt_password(&self.key, &input.access_key_id)?;
+        let encrypted_secret_access_key =
+            encrypt_password(&self.key, &input.secret_access_key)?;
+        let encrypted_session_token = encrypt_password(&self.key, &input.session_token)?;
+
+        Ok(StoredAthenaConnection {
+            id: id.to_string(),
+            name: input.name.clone(),
+            region: input.region.clone(),
+            catalog: input.catalog.clone(),
+            database: input.database.clone(),
+            workgroup: input.workgroup.clone(),
+            output_location: input.output_location.clone(),
+            encrypted_access_key_id,
+            encrypted_secret_access_key,
+            encrypted_session_token,
+            endpoint_url: input.endpoint_url.clone(),
+            enabled: input.enabled,
+            color: input.color.clone(),
+            schema: None,
+            schema_status: default_schema_status(),
+            created_at: created_at.to_string(),
+            updated_at: updated_at.to_string(),
+        })
+    }
+
+    fn encrypt_record_update(
+        &self,
+        id: &str,
+        input: &Self::Input,
+        existing: &Self::Stored,
+        created_at: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<Self::Stored> {
+        // Preserve existing encrypted credentials when input is empty.
+        let encrypted_access_key_id = if input.access_key_id.is_empty() {
+            existing.encrypted_access_key_id.clone()
+        } else {
+            encrypt_password(&self.key, &input.access_key_id)?
+        };
+        let encrypted_secret_access_key = if input.secret_access_key.is_empty() {
+            existing.encrypted_secret_access_key.clone()
+        } else {
+            encrypt_password(&self.key, &input.secret_access_key)?
+        };
+        let encrypted_session_token = if input.session_token.is_empty() {
+            existing.encrypted_session_token.clone()
+        } else {
+            encrypt_password(&self.key, &input.session_token)?
+        };
+
+        // Preserve existing schema data across updates.
+        Ok(StoredAthenaConnection {
+            id: id.to_string(),
+            name: input.name.clone(),
+            region: input.region.clone(),
+            catalog: input.catalog.clone(),
+            database: input.database.clone(),
+            workgroup: input.workgroup.clone(),
+            output_location: input.output_location.clone(),
+            encrypted_access_key_id,
+            encrypted_secret_access_key,
+            encrypted_session_token,
+            endpoint_url: input.endpoint_url.clone(),
+            enabled: input.enabled,
+            color: input.color.clone(),
+            schema: existing.schema.clone(),
+            schema_status: existing.schema_status.clone(),
+            created_at: created_at.to_string(),
+            updated_at: updated_at.to_string(),
+        })
+    }
+
+    fn decrypt_record(&self, stored: &Self::Stored) -> anyhow::Result<Self::Config> {
+        let access_key_id = decrypt_password(&self.key, &stored.encrypted_access_key_id)?;
+        let secret_access_key =
+            decrypt_password(&self.key, &stored.encrypted_secret_access_key)?;
+        let session_token = decrypt_password(&self.key, &stored.encrypted_session_token)?;
+        Ok(AthenaConnectionConfig {
+            id: stored.id.clone(),
+            name: stored.name.clone(),
+            region: stored.region.clone(),
+            catalog: stored.catalog.clone(),
+            database: stored.database.clone(),
+            workgroup: stored.workgroup.clone(),
+            output_location: stored.output_location.clone(),
+            access_key_id,
+            secret_access_key,
+            session_token,
+            endpoint_url: stored.endpoint_url.clone(),
+            enabled: stored.enabled,
+            color: stored.color.clone(),
+            schema: stored.schema.clone(),
+            schema_status: stored.schema_status.clone(),
+            created_at: stored.created_at.clone(),
+            updated_at: stored.updated_at.clone(),
+        })
+    }
+
+    fn config_to_safe(config: &Self::Config) -> Self::Safe {
+        AthenaConnectionSafe {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            region: config.region.clone(),
+            catalog: config.catalog.clone(),
+            database: config.database.clone(),
+            workgroup: config.workgroup.clone(),
+            output_location: config.output_location.clone(),
+            access_key_id: "********",
+            secret_access_key: "********",
+            session_token: "********",
+            endpoint_url: config.endpoint_url.clone(),
+            enabled: config.enabled,
+            color: config.color.clone(),
+            schema: config.schema.clone(),
+            schema_status: config.schema_status.clone(),
+            created_at: config.created_at.clone(),
+            updated_at: config.updated_at.clone(),
+        }
+    }
+
+    fn config_to_credentials(config: &Self::Config) -> Self::Credentials {
+        AthenaConnectionCredentials {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            region: config.region.clone(),
+            catalog: config.catalog.clone(),
+            database: config.database.clone(),
+            workgroup: config.workgroup.clone(),
+            output_location: config.output_location.clone(),
+            access_key_id: config.access_key_id.clone(),
+            secret_access_key: config.secret_access_key.clone(),
+            session_token: config.session_token.clone(),
+            endpoint_url: config.endpoint_url.clone(),
+        }
+    }
+
+    fn stored_to_fallback_safe(stored: &Self::Stored) -> Self::Safe {
+        AthenaConnectionSafe {
+            id: stored.id.clone(),
+            name: stored.name.clone(),
+            region: stored.region.clone(),
+            catalog: stored.catalog.clone(),
+            database: stored.database.clone(),
+            workgroup: stored.workgroup.clone(),
+            output_location: stored.output_location.clone(),
+            access_key_id: "********",
+            secret_access_key: "********",
+            session_token: "********",
+            endpoint_url: stored.endpoint_url.clone(),
+            enabled: stored.enabled,
+            color: stored.color.clone(),
+            schema: stored.schema.clone(),
+            schema_status: stored.schema_status.clone(),
+            created_at: stored.created_at.clone(),
+            updated_at: stored.updated_at.clone(),
+        }
     }
 }
 
@@ -716,7 +579,9 @@ mod tests {
         assert!(config.schema.is_none());
 
         // Update status to "fetching".
-        assert!(store.update_schema_status("schema-athena", "fetching").unwrap());
+        assert!(store
+            .update_schema_status("schema-athena", "fetching")
+            .unwrap());
         let config = store.get("schema-athena").unwrap().unwrap();
         assert_eq!(config.schema_status, "fetching");
 
@@ -755,6 +620,8 @@ mod tests {
         assert_eq!(schema.databases[0].tables[0].columns.len(), 2);
 
         // Non-existent ID returns false.
-        assert!(!store.update_schema_status("nonexistent", "failed").unwrap());
+        assert!(!store
+            .update_schema_status("nonexistent", "failed")
+            .unwrap());
     }
 }

@@ -5,11 +5,9 @@ linker = "rust-lld"
 
 # ── Build parallelism ────────────────────────────────────────────
 [build]
-jobs = 16 # match logical CPU count (16 cores)
-rustc-wrapper = "sccache"  # Use sccache for compilation caching
+jobs = 16                 # match logical CPU count (16 cores)
+rustc-wrapper = "sccache" # Use sccache for compilation caching
 
 # ── Compilation cache ────────────────────────────────────────────
 # sccache caches compiled crates across builds — massive speedup on clean builds
-# Cache location: C:\Users\franc\.cargo\sccache (NVMe drive for speed)
-[env]
-SCCACHE_DIR = "C:\\Users\\franc\\.cargo\\sccache"
+# Cache env vars set globally in ~/.bashrc
