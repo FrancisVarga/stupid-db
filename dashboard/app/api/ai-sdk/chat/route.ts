@@ -10,12 +10,14 @@ export const maxDuration = 60;
 
 // Models allowed via the `model` body field
 const ALLOWED_MODELS: Record<string, string> = {
+  "claude-sonnet-4-6": "claude-sonnet-4-6",
+  "claude-opus-4-6": "claude-opus-4-6",
   "claude-sonnet-4-5": "claude-sonnet-4-5",
   "claude-opus-4-5": "claude-opus-4-5",
   "claude-haiku-4-5": "claude-haiku-4-5",
 };
 
-const DEFAULT_MODEL = "claude-sonnet-4-5";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 const SYSTEM_PROMPT = `You are a helpful AI assistant integrated into the stupid-db dashboard.
 You have expertise in data analysis, SQL queries, anomaly detection, and graph databases.
