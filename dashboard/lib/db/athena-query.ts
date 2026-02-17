@@ -84,11 +84,19 @@ export function executeAthenaQuery(
                   parsed.message || "",
                 );
                 break;
-              case "columns":
-                callbacks.onColumns?.(parsed);
+              case "columns": {
+                // Backend sends {"columns": [{name, type}, ...]} — extract names
+                const cols = parsed.columns ?? parsed;
+                const names = Array.isArray(cols)
+                  ? cols.map((c: string | { name: string }) =>
+                      typeof c === "string" ? c : c.name,
+                    )
+                  : cols;
+                callbacks.onColumns?.(names);
                 break;
+              }
               case "rows":
-                callbacks.onRows?.(parsed);
+                callbacks.onRows?.(parsed.rows ?? parsed);
                 break;
               case "done":
                 callbacks.onDone?.(parsed.total_rows, parsed.query_id);
@@ -110,4 +118,48 @@ export function executeAthenaQuery(
     });
 
   return controller;
+}
+
+// ── Parquet export ──────────────────────────────────────────────────
+
+/**
+ * Execute an Athena query and download the result as a Parquet file.
+ *
+ * The backend runs the query, converts to typed Parquet (Zstd compressed),
+ * persists a copy to data/exports/athena/, and streams the file back.
+ */
+export async function downloadAthenaParquet(
+  connectionId: string,
+  sql: string,
+  database: string | undefined,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/athena-connections/${encodeURIComponent(connectionId)}/query/parquet`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql, database }),
+    },
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `HTTP ${response.status}`);
+  }
+
+  // Extract filename from Content-Disposition header or generate one.
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match?.[1] || `athena-export-${Date.now()}.parquet`;
+
+  // Trigger browser download.
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

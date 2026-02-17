@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { executeAthenaQuery } from "@/lib/db/athena-query";
+import { executeAthenaQuery, downloadAthenaParquet } from "@/lib/db/athena-query";
 
 interface AthenaQueryPanelProps {
   connectionId: string;
@@ -22,6 +22,8 @@ export default function AthenaQueryPanel({
   const [executing, setExecuting] = useState(false);
   const [totalRows, setTotalRows] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState<number>(0);
+
+  const [exporting, setExporting] = useState(false);
 
   const controllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -98,6 +100,22 @@ export default function AthenaQueryPanel({
     },
     [handleExecute],
   );
+
+  const handleExportParquet = useCallback(async () => {
+    if (!sql.trim()) return;
+    setExporting(true);
+    try {
+      await downloadAthenaParquet(
+        connectionId,
+        sql.trim(),
+        dbOverride || defaultDatabase || undefined,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }, [connectionId, sql, dbOverride, defaultDatabase]);
 
   const hasResults = columns.length > 0;
   const showEmpty = !hasResults && !error && !executing && !status;
@@ -230,12 +248,26 @@ export default function AthenaQueryPanel({
                 ? `${totalRows.toLocaleString()} row${totalRows !== 1 ? "s" : ""}`
                 : `${rows.length.toLocaleString()} row${rows.length !== 1 ? "s" : ""} (streaming...)`}
             </span>
-            <span
-              className="text-[10px] font-mono font-bold"
-              style={{ color: "#10b981" }}
-            >
-              {formatDuration(elapsed)}
-            </span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleExportParquet}
+                disabled={exporting || executing}
+                className="px-3 py-1 text-[9px] font-bold tracking-wider uppercase rounded transition-all hover:opacity-90 disabled:opacity-40"
+                style={{
+                  color: "#a78bfa",
+                  background: "rgba(167, 139, 250, 0.08)",
+                  border: "1px solid rgba(167, 139, 250, 0.2)",
+                }}
+              >
+                {exporting ? "Exporting..." : "Parquet"}
+              </button>
+              <span
+                className="text-[10px] font-mono font-bold"
+                style={{ color: "#10b981" }}
+              >
+                {formatDuration(elapsed)}
+              </span>
+            </div>
           </div>
 
           {/* Scrollable table */}
