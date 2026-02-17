@@ -30,6 +30,17 @@ pub enum StreamEvent {
     Error {
         message: String,
     },
+    /// A tool is about to be executed
+    ToolExecutionStart {
+        id: String,
+        name: String,
+    },
+    /// A tool has finished executing
+    ToolExecutionResult {
+        id: String,
+        content: String,
+        is_error: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

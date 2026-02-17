@@ -149,6 +149,26 @@ impl Terminal {
                 )?;
                 stdout.flush()?;
             }
+            StreamEvent::ToolExecutionStart { name, .. } => {
+                execute!(
+                    stdout,
+                    SetForegroundColor(Colors::TOOL_CALL),
+                    Print(format!("[executing: {}] ", name)),
+                    ResetColor,
+                )?;
+                stdout.flush()?;
+            }
+            StreamEvent::ToolExecutionResult { content, is_error, .. } => {
+                let color = if *is_error { Colors::ERROR } else { Colors::TOOL_RESULT };
+                let label = if *is_error { "error" } else { "result" };
+                execute!(
+                    stdout,
+                    SetForegroundColor(color),
+                    Print(format!("[{}: {}]\n", label, content)),
+                    ResetColor,
+                )?;
+                stdout.flush()?;
+            }
         }
         Ok(())
     }

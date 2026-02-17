@@ -11,6 +11,7 @@ use tracing::{debug, info, warn};
 /// The core agentic loop that orchestrates LLM ↔ Tool execution.
 ///
 /// Flow: User → LLM → ToolCalls → Execute → Results → LLM → ... → Final Text
+#[derive(Clone)]
 pub struct AgenticLoop {
     provider: Arc<dyn ToolAwareLlmProvider>,
     registry: Arc<ToolRegistry>,
@@ -51,16 +52,19 @@ impl AgenticLoop {
         self
     }
 
-    /// Run a single user turn through the agentic loop.
-    /// Returns all stream events and the final conversation state.
-    pub async fn run(
+    /// Run a single user turn through the agentic loop, streaming events through a channel.
+    ///
+    /// Each `StreamEvent` is sent through `tx` as it arrives from the LLM stream,
+    /// plus `ToolExecutionStart` / `ToolExecutionResult` events for tool execution.
+    /// The conversation is mutated in place as the loop progresses.
+    pub async fn run_streaming(
         &self,
         conversation: &mut Conversation,
         user_message: String,
         tool_context: &ToolContext,
-    ) -> Result<Vec<StreamEvent>, AgenticLoopError> {
+        tx: tokio::sync::mpsc::Sender<StreamEvent>,
+    ) -> Result<(), AgenticLoopError> {
         conversation.add_user_message(user_message);
-        let mut all_events = Vec::new();
 
         for iteration in 0..self.max_iterations {
             debug!(iteration, "Starting agentic loop iteration");
@@ -118,8 +122,11 @@ impl AgenticLoop {
                     StreamEvent::Error { message } => {
                         warn!(message, "Stream error");
                     }
+                    // ToolExecution* events are only emitted by us, not received from LLM
+                    StreamEvent::ToolExecutionStart { .. }
+                    | StreamEvent::ToolExecutionResult { .. } => {}
                 }
-                all_events.push(event);
+                tx.send(event).await.map_err(|_| AgenticLoopError::ChannelClosed)?;
             }
 
             // Add assistant response to conversation
@@ -139,11 +146,11 @@ impl AgenticLoop {
                 break;
             }
 
-            // Execute tool calls
+            // Execute tool calls, streaming execution events
             info!(count = tool_calls.len(), "Executing tool calls");
             let results = self
-                .execute_tool_calls(&tool_calls, tool_context)
-                .await;
+                .execute_tool_calls_streaming(&tool_calls, tool_context, &tx)
+                .await?;
 
             // Add results to conversation
             for result in results {
@@ -151,79 +158,127 @@ impl AgenticLoop {
             }
         }
 
+        Ok(())
+    }
+
+    /// Run a single user turn through the agentic loop.
+    /// Returns all stream events and the final conversation state.
+    ///
+    /// This is a convenience wrapper around [`run_streaming`](Self::run_streaming)
+    /// that collects all events into a `Vec`.
+    pub async fn run(
+        &self,
+        conversation: &mut Conversation,
+        user_message: String,
+        tool_context: &ToolContext,
+    ) -> Result<Vec<StreamEvent>, AgenticLoopError> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+
+        // We can't spawn run_streaming because conversation is &mut.
+        // Instead, run streaming in a select-like pattern using a background collector.
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+
+        self.run_streaming(conversation, user_message, tool_context, tx)
+            .await?;
+
+        // tx is dropped here, so collector will finish
+        let all_events = collector.await.expect("event collector task panicked");
         Ok(all_events)
     }
 
-    async fn execute_tool_calls(
+    /// Execute tool calls with streaming events for start/result of each tool.
+    async fn execute_tool_calls_streaming(
         &self,
         tool_calls: &[ToolCall],
         context: &ToolContext,
-    ) -> Vec<ToolResult> {
+        tx: &tokio::sync::mpsc::Sender<StreamEvent>,
+    ) -> Result<Vec<ToolResult>, AgenticLoopError> {
         let mut results = Vec::new();
 
-        // Execute in parallel where possible
-        let mut futures = Vec::new();
         for call in tool_calls {
-            let registry = self.registry.clone();
-            let permission_checker = self.permission_checker.clone();
-            let call = call.clone();
-            let ctx_path = context.working_directory.clone();
+            // Emit start event
+            tx.send(StreamEvent::ToolExecutionStart {
+                id: call.id.clone(),
+                name: call.name.clone(),
+            })
+            .await
+            .map_err(|_| AgenticLoopError::ChannelClosed)?;
 
-            futures.push(async move {
-                // Check permissions
-                let decision = permission_checker
-                    .check_permission(&call.name, &call.input)
-                    .await;
+            let result = self.execute_single_tool(call, context).await;
 
-                match decision {
-                    PermissionDecision::Denied(reason) => ToolResult {
-                        tool_call_id: call.id,
-                        content: format!("Permission denied: {}", reason),
-                        is_error: true,
-                    },
-                    PermissionDecision::NeedsConfirmation => {
-                        // In the agentic loop, we can't prompt interactively.
-                        // The CLI layer handles this before reaching here.
-                        ToolResult {
-                            tool_call_id: call.id,
-                            content: "Tool requires user confirmation".to_string(),
-                            is_error: true,
-                        }
-                    }
-                    PermissionDecision::Approved => {
-                        match registry.get(&call.name) {
-                            Some(tool) => {
-                                let tool_ctx = ToolContext {
-                                    working_directory: ctx_path,
-                                };
-                                match tool.execute(call.input, &tool_ctx).await {
-                                    Ok(mut result) => {
-                                        result.tool_call_id = call.id;
-                                        result
-                                    }
-                                    Err(e) => ToolResult {
-                                        tool_call_id: call.id,
-                                        content: format!("Tool error: {}", e),
-                                        is_error: true,
-                                    },
-                                }
+            // Emit result event
+            tx.send(StreamEvent::ToolExecutionResult {
+                id: result.tool_call_id.clone(),
+                content: result.content.clone(),
+                is_error: result.is_error,
+            })
+            .await
+            .map_err(|_| AgenticLoopError::ChannelClosed)?;
+
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+
+    async fn execute_single_tool(
+        &self,
+        call: &ToolCall,
+        context: &ToolContext,
+    ) -> ToolResult {
+        // Check permissions
+        let decision = self
+            .permission_checker
+            .check_permission(&call.name, &call.input)
+            .await;
+
+        match decision {
+            PermissionDecision::Denied(reason) => ToolResult {
+                tool_call_id: call.id.clone(),
+                content: format!("Permission denied: {}", reason),
+                is_error: true,
+            },
+            PermissionDecision::NeedsConfirmation => {
+                // In the agentic loop, we can't prompt interactively.
+                // The CLI layer handles this before reaching here.
+                ToolResult {
+                    tool_call_id: call.id.clone(),
+                    content: "Tool requires user confirmation".to_string(),
+                    is_error: true,
+                }
+            }
+            PermissionDecision::Approved => {
+                match self.registry.get(&call.name) {
+                    Some(tool) => {
+                        let tool_ctx = ToolContext {
+                            working_directory: context.working_directory.clone(),
+                        };
+                        match tool.execute(call.input.clone(), &tool_ctx).await {
+                            Ok(mut result) => {
+                                result.tool_call_id = call.id.clone();
+                                result
                             }
-                            None => ToolResult {
-                                tool_call_id: call.id,
-                                content: format!("Unknown tool: {}", call.name),
+                            Err(e) => ToolResult {
+                                tool_call_id: call.id.clone(),
+                                content: format!("Tool error: {}", e),
                                 is_error: true,
                             },
                         }
                     }
+                    None => ToolResult {
+                        tool_call_id: call.id.clone(),
+                        content: format!("Unknown tool: {}", call.name),
+                        is_error: true,
+                    },
                 }
-            });
+            }
         }
-
-        for future in futures {
-            results.push(future.await);
-        }
-
-        results
     }
 }
 
@@ -233,6 +288,8 @@ pub enum AgenticLoopError {
     LlmError(#[from] LlmError),
     #[error("Max iterations ({0}) exceeded")]
     MaxIterations(usize),
+    #[error("Stream channel closed by receiver")]
+    ChannelClosed,
 }
 
 #[cfg(test)]
@@ -311,5 +368,105 @@ mod tests {
 
         // Should have: user, assistant (tool call), tool result, assistant (text)
         assert!(conv.messages().len() >= 3);
+    }
+
+    #[tokio::test]
+    async fn test_run_streaming_sends_events_in_order() {
+        let (agentic_loop, provider) = setup_test_loop();
+
+        // Queue: tool call response, then text response after tool result
+        provider.queue_text("All done!"); // Second LLM turn
+        provider.queue_response(vec![
+            StreamEvent::TextDelta {
+                text: "Let me echo that.".to_string(),
+            },
+            StreamEvent::ToolCallStart {
+                id: "call_s1".to_string(),
+                name: "echo".to_string(),
+            },
+            StreamEvent::ToolCallDelta {
+                id: "call_s1".to_string(),
+                arguments_delta: r#"{"message": "streaming"}"#.to_string(),
+            },
+            StreamEvent::ToolCallEnd {
+                id: "call_s1".to_string(),
+            },
+            StreamEvent::MessageEnd {
+                stop_reason: StopReason::ToolUse,
+            },
+        ]);
+
+        let mut conv = Conversation::new(100_000);
+        let ctx = ToolContext {
+            working_directory: std::path::PathBuf::from("/tmp"),
+        };
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+
+        // Collect events in background
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                events.push(event);
+            }
+            events
+        });
+
+        agentic_loop
+            .run_streaming(&mut conv, "Stream test".to_string(), &ctx, tx)
+            .await
+            .unwrap();
+
+        let events = collector.await.unwrap();
+
+        // Verify we got events and they arrive in correct order:
+        // 1. TextDelta ("Let me echo that.")
+        // 2. ToolCallStart
+        // 3. ToolCallDelta
+        // 4. ToolCallEnd
+        // 5. MessageEnd (ToolUse)
+        // 6. ToolExecutionStart
+        // 7. ToolExecutionResult
+        // 8. TextDelta ("All done!")
+        // 9. MessageEnd (EndTurn)
+        assert!(events.len() >= 9, "Expected at least 9 events, got {}", events.len());
+
+        // First event should be TextDelta
+        assert!(matches!(&events[0], StreamEvent::TextDelta { text } if text == "Let me echo that."));
+
+        // ToolCallStart should come before ToolExecutionStart
+        let tool_call_start_idx = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolCallStart { .. }))
+            .expect("should have ToolCallStart");
+        let tool_exec_start_idx = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolExecutionStart { .. }))
+            .expect("should have ToolExecutionStart");
+        let tool_exec_result_idx = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolExecutionResult { .. }))
+            .expect("should have ToolExecutionResult");
+
+        assert!(
+            tool_call_start_idx < tool_exec_start_idx,
+            "ToolCallStart should come before ToolExecutionStart"
+        );
+        assert!(
+            tool_exec_start_idx < tool_exec_result_idx,
+            "ToolExecutionStart should come before ToolExecutionResult"
+        );
+
+        // Verify the tool execution result content
+        if let StreamEvent::ToolExecutionResult { content, is_error, .. } = &events[tool_exec_result_idx] {
+            assert_eq!(content, "streaming");
+            assert!(!is_error);
+        }
+
+        // Last event should be MessageEnd with EndTurn
+        assert!(matches!(
+            events.last().unwrap(),
+            StreamEvent::MessageEnd { stop_reason: StopReason::EndTurn }
+        ));
     }
 }

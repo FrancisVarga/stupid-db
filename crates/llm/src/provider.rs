@@ -39,3 +39,35 @@ pub enum LlmError {
     #[error("provider not configured: {0}")]
     NotConfigured(String),
 }
+
+/// Adapter that wraps a `Box<dyn LlmProvider>` and implements `SimpleLlmProvider`.
+///
+/// This bridges `stupid-llm`'s `LlmProvider` trait with `stupid-tool-runtime`'s
+/// `SimpleLlmProvider` trait, converting message types automatically.
+pub struct LlmProviderAdapter(pub Box<dyn LlmProvider>);
+
+#[async_trait]
+impl stupid_tool_runtime::bridge::SimpleLlmProvider for LlmProviderAdapter {
+    async fn complete(
+        &self,
+        messages: Vec<stupid_tool_runtime::bridge::SimpleMessage>,
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<String, stupid_tool_runtime::bridge::BridgeError> {
+        let llm_messages: Vec<Message> = messages
+            .into_iter()
+            .map(|m| Message {
+                role: match m.role {
+                    stupid_tool_runtime::bridge::SimpleRole::System => Role::System,
+                    stupid_tool_runtime::bridge::SimpleRole::User => Role::User,
+                    stupid_tool_runtime::bridge::SimpleRole::Assistant => Role::Assistant,
+                },
+                content: m.content,
+            })
+            .collect();
+        self.0
+            .complete(llm_messages, temperature, max_tokens)
+            .await
+            .map_err(|e| stupid_tool_runtime::bridge::BridgeError(e.to_string()))
+    }
+}
