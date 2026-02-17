@@ -17,6 +17,102 @@ use tracing::{info, warn};
 
 use crate::schema::AnomalyRule;
 
+// ── Deep-merge for `extends` inheritance ────────────────────────────
+
+/// Maximum inheritance chain depth to prevent infinite loops.
+const MAX_EXTENDS_DEPTH: usize = 5;
+
+/// Deep-merge two YAML `Value` maps: child fields win, arrays replace entirely.
+///
+/// For map values: recursively merge. For all other types (scalars, arrays):
+/// child value replaces parent.
+pub fn deep_merge(parent: &serde_yaml::Value, child: &serde_yaml::Value) -> serde_yaml::Value {
+    match (parent, child) {
+        (serde_yaml::Value::Mapping(pm), serde_yaml::Value::Mapping(cm)) => {
+            let mut merged = pm.clone();
+            for (key, child_val) in cm {
+                if let Some(parent_val) = pm.get(key) {
+                    merged.insert(key.clone(), deep_merge(parent_val, child_val));
+                } else {
+                    merged.insert(key.clone(), child_val.clone());
+                }
+            }
+            serde_yaml::Value::Mapping(merged)
+        }
+        // For scalars, arrays, etc.: child wins.
+        (_, child) => child.clone(),
+    }
+}
+
+/// Resolve `extends` chains: for each rule with an `extends` field,
+/// find the parent and deep-merge the YAML values.
+///
+/// Returns a new map with all extends chains resolved.
+pub fn resolve_extends(
+    raw_values: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<HashMap<String, serde_yaml::Value>, String> {
+    let mut resolved: HashMap<String, serde_yaml::Value> = HashMap::new();
+    let mut in_progress: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for id in raw_values.keys() {
+        resolve_single(id, raw_values, &mut resolved, &mut in_progress, 0)?;
+    }
+
+    Ok(resolved)
+}
+
+fn resolve_single(
+    id: &str,
+    raw_values: &HashMap<String, serde_yaml::Value>,
+    resolved: &mut HashMap<String, serde_yaml::Value>,
+    in_progress: &mut std::collections::HashSet<String>,
+    depth: usize,
+) -> std::result::Result<serde_yaml::Value, String> {
+    // Already resolved.
+    if let Some(val) = resolved.get(id) {
+        return Ok(val.clone());
+    }
+
+    // Cycle detection.
+    if in_progress.contains(id) {
+        return Err(format!("circular extends chain detected for rule '{}'", id));
+    }
+
+    // Depth limit.
+    if depth > MAX_EXTENDS_DEPTH {
+        return Err(format!(
+            "extends chain exceeds maximum depth ({}) for rule '{}'",
+            MAX_EXTENDS_DEPTH, id
+        ));
+    }
+
+    let raw = raw_values
+        .get(id)
+        .ok_or_else(|| format!("rule '{}' not found for extends resolution", id))?
+        .clone();
+
+    // Check for extends field.
+    let parent_id = raw
+        .as_mapping()
+        .and_then(|m| m.get(&serde_yaml::Value::String("metadata".to_string())))
+        .and_then(|meta| meta.as_mapping())
+        .and_then(|m| m.get(&serde_yaml::Value::String("extends".to_string())))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let result = if let Some(ref parent_id) = parent_id {
+        in_progress.insert(id.to_string());
+        let parent_val = resolve_single(parent_id, raw_values, resolved, in_progress, depth + 1)?;
+        in_progress.remove(id);
+        deep_merge(&parent_val, &raw)
+    } else {
+        raw
+    };
+
+    resolved.insert(id.to_string(), result.clone());
+    Ok(result)
+}
+
 // ── Error type ──────────────────────────────────────────────────────
 
 /// Errors that can occur during rule loading and management.
@@ -533,5 +629,132 @@ detection:
 
         let _loader = RuleLoader::new(nested.clone());
         assert!(nested.exists());
+    }
+
+    // ── Deep-merge tests ────────────────────────────────────────────
+
+    #[test]
+    fn deep_merge_child_scalar_wins() {
+        let parent: serde_yaml::Value = serde_yaml::from_str("a: 1\nb: 2").unwrap();
+        let child: serde_yaml::Value = serde_yaml::from_str("b: 99").unwrap();
+        let merged = super::deep_merge(&parent, &child);
+        let m = merged.as_mapping().unwrap();
+        assert_eq!(
+            m.get(&serde_yaml::Value::String("a".into())).and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            m.get(&serde_yaml::Value::String("b".into())).and_then(|v| v.as_i64()),
+            Some(99)
+        );
+    }
+
+    #[test]
+    fn deep_merge_nested_maps() {
+        let parent: serde_yaml::Value =
+            serde_yaml::from_str("spec:\n  a: 1\n  b: 2").unwrap();
+        let child: serde_yaml::Value =
+            serde_yaml::from_str("spec:\n  b: 99\n  c: 3").unwrap();
+        let merged = super::deep_merge(&parent, &child);
+        let spec = merged
+            .as_mapping()
+            .unwrap()
+            .get(&serde_yaml::Value::String("spec".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert_eq!(spec.get(&serde_yaml::Value::String("a".into())).and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(spec.get(&serde_yaml::Value::String("b".into())).and_then(|v| v.as_i64()), Some(99));
+        assert_eq!(spec.get(&serde_yaml::Value::String("c".into())).and_then(|v| v.as_i64()), Some(3));
+    }
+
+    #[test]
+    fn deep_merge_arrays_replace_entirely() {
+        let parent: serde_yaml::Value =
+            serde_yaml::from_str("tags:\n  - a\n  - b").unwrap();
+        let child: serde_yaml::Value =
+            serde_yaml::from_str("tags:\n  - x").unwrap();
+        let merged = super::deep_merge(&parent, &child);
+        let tags = merged
+            .as_mapping()
+            .unwrap()
+            .get(&serde_yaml::Value::String("tags".into()))
+            .unwrap()
+            .as_sequence()
+            .unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].as_str(), Some("x"));
+    }
+
+    #[test]
+    fn resolve_extends_simple_chain() {
+        let parent: serde_yaml::Value = serde_yaml::from_str(
+            "metadata:\n  id: parent\n  name: Parent\n  enabled: true\nspec:\n  a: 1\n  b: 2"
+        ).unwrap();
+        let child: serde_yaml::Value = serde_yaml::from_str(
+            "metadata:\n  id: child\n  name: Child\n  extends: parent\n  enabled: true\nspec:\n  b: 99"
+        ).unwrap();
+
+        let mut raw = HashMap::new();
+        raw.insert("parent".to_string(), parent);
+        raw.insert("child".to_string(), child);
+
+        let resolved = super::resolve_extends(&raw).unwrap();
+        let child_resolved = resolved.get("child").unwrap().as_mapping().unwrap();
+        let spec = child_resolved
+            .get(&serde_yaml::Value::String("spec".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+
+        // Inherited from parent.
+        assert_eq!(spec.get(&serde_yaml::Value::String("a".into())).and_then(|v| v.as_i64()), Some(1));
+        // Overridden by child.
+        assert_eq!(spec.get(&serde_yaml::Value::String("b".into())).and_then(|v| v.as_i64()), Some(99));
+    }
+
+    #[test]
+    fn resolve_extends_circular_detected() {
+        let a: serde_yaml::Value = serde_yaml::from_str(
+            "metadata:\n  id: a\n  name: A\n  extends: b\n  enabled: true"
+        ).unwrap();
+        let b: serde_yaml::Value = serde_yaml::from_str(
+            "metadata:\n  id: b\n  name: B\n  extends: a\n  enabled: true"
+        ).unwrap();
+
+        let mut raw = HashMap::new();
+        raw.insert("a".to_string(), a);
+        raw.insert("b".to_string(), b);
+
+        let result = super::resolve_extends(&raw);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("circular"));
+    }
+
+    #[test]
+    fn resolve_extends_missing_parent_errors() {
+        let child: serde_yaml::Value = serde_yaml::from_str(
+            "metadata:\n  id: child\n  name: Child\n  extends: nonexistent\n  enabled: true"
+        ).unwrap();
+
+        let mut raw = HashMap::new();
+        raw.insert("child".to_string(), child);
+
+        let result = super::resolve_extends(&raw);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn resolve_extends_no_extends_passthrough() {
+        let rule: serde_yaml::Value = serde_yaml::from_str(
+            "metadata:\n  id: standalone\n  name: Standalone\n  enabled: true\nspec:\n  x: 42"
+        ).unwrap();
+
+        let mut raw = HashMap::new();
+        raw.insert("standalone".to_string(), rule.clone());
+
+        let resolved = super::resolve_extends(&raw).unwrap();
+        assert_eq!(resolved.get("standalone").unwrap(), &rule);
     }
 }

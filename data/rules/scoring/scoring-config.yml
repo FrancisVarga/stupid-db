@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ScoringConfig
+metadata:
+  id: scoring-default
+  name: Default Anomaly Scoring Configuration
+  description: |
+    Signal weights, classification thresholds, z-score normalization,
+    and graph anomaly parameters for the multi-signal anomaly detection pipeline.
+  tags:
+    - scoring
+    - anomaly
+  enabled: true
+spec:
+  multi_signal_weights:
+    statistical: 0.2
+    dbscan_noise: 0.3
+    behavioral: 0.3
+    graph: 0.2
+
+  classification_thresholds:
+    mild: 0.3
+    anomalous: 0.5
+    highly_anomalous: 0.7
+
+  z_score_normalization:
+    divisor: 5.0
+
+  graph_anomaly:
+    neighbor_multiplier: 3.0
+    high_connectivity_score: 0.5
+    community_threshold: 3
+    multi_community_score: 0.3
+
+  default_anomaly_threshold: 2.0

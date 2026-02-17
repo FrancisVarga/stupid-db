@@ -286,7 +286,7 @@ pub fn parse_cooldown(s: &str) -> Option<Duration> {
 mod tests {
     use super::*;
     use crate::schema::{
-        AnomalyRule, Detection, RuleMetadata, Schedule as RuleSchedule,
+        AnomalyRule, CommonMetadata, Detection, Schedule as RuleSchedule,
     };
 
     /// Helper to build a minimal AnomalyRule for testing.
@@ -294,12 +294,13 @@ mod tests {
         AnomalyRule {
             api_version: "v1".to_string(),
             kind: "AnomalyRule".to_string(),
-            metadata: RuleMetadata {
+            metadata: CommonMetadata {
                 id: id.to_string(),
                 name: format!("Rule {}", id),
                 description: None,
                 tags: None,
                 enabled,
+                extends: None,
             },
             schedule: RuleSchedule {
                 cron: cron.to_string(),

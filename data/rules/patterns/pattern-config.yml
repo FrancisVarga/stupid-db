@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: PatternConfig
+metadata:
+  id: pattern-config-default
+  name: Default Pattern Mining Configuration
+  description: |
+    PrefixSpan algorithm defaults and declarative pattern classification rules.
+    Rules are evaluated in order; first match wins.
+  tags:
+    - patterns
+    - prefixspan
+  enabled: true
+spec:
+  prefixspan_defaults:
+    min_support: 0.01
+    max_length: 10
+    min_members: 50
+
+  # Classification rules — evaluated in order, first match wins.
+  classification_rules:
+    - category: ErrorChain
+      condition:
+        check: count_gte
+        event_code: "E"
+        min_count: 2
+
+    - category: Churn
+      condition:
+        check: has_then_absent
+        present_code: "E"
+        absent_code: "G"
+
+    - category: Funnel
+      condition:
+        check: sequence_match
+        sequence:
+          - "L"
+          - "G"
+
+    - category: Engagement
+      condition:
+        check: count_gte
+        event_code: "G"
+        min_count: 2
+
+    # Fallback — must be last.
+    - category: Unknown
+      condition:
+        check: count_gte
+        event_code: ""
+        min_count: 0

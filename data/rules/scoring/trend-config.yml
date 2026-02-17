@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: TrendConfig
+metadata:
+  id: trend-config-default
+  name: Default Trend Detection Configuration
+  description: |
+    Z-score thresholds, direction classification, window defaults,
+    and severity levels for the trend detection pipeline.
+  tags:
+    - trends
+    - scoring
+  enabled: true
+spec:
+  # 7 days × 24 hours = 168 data points
+  default_window_size: 168
+  # Minimum data points for valid z-score calculation
+  min_data_points: 3
+  # |z| must exceed this to trigger any trend detection
+  z_score_trigger: 2.0
+
+  direction_thresholds:
+    up: 0.5
+    down: 0.5
+
+  severity_thresholds:
+    notable: 2.0
+    significant: 3.0
+    critical: 4.0

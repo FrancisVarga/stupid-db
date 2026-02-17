@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: FeatureConfig
+metadata:
+  id: feature-config-default
+  name: Default Feature Configuration
+  description: |
+    Feature vector definition, encoding maps, event classification keywords,
+    and event compression codes for PrefixSpan pattern mining.
+  tags:
+    - features
+    - encoding
+  enabled: true
+spec:
+  features:
+    - name: login_count
+      index: 0
+    - name: game_count
+      index: 1
+    - name: unique_games
+      index: 2
+    - name: error_count
+      index: 3
+    - name: popup_count
+      index: 4
+    - name: platform_mobile_ratio
+      index: 5
+    - name: session_count
+      index: 6
+    - name: avg_session_gap_hours
+      index: 7
+    - name: vip_group
+      index: 8
+    - name: currency
+      index: 9
+
+  vip_encoding:
+    bronze: 1.0
+    silver: 2.0
+    gold: 3.0
+    platinum: 4.0
+    diamond: 5.0
+    vip: 6.0
+  vip_fallback: hash_based
+
+  currency_encoding:
+    USD: 1.0
+    EUR: 2.0
+    GBP: 3.0
+    CNY: 4.0
+    RMB: 4.0
+    JPY: 5.0
+    KRW: 6.0
+    THB: 7.0
+    VND: 8.0
+    IDR: 9.0
+    MYR: 10.0
+  currency_fallback: hash_based
+
+  event_classification:
+    login:
+      - login
+      - Login
+    game:
+      - game
+      - Game
+    error:
+      - error
+      - Error
+    popup:
+      - popup
+      - Popup
+
+  mobile_keywords:
+    - mobile
+    - android
+    - ios
+
+  event_compression:
+    Login:
+      code: "L"
+    GameOpened:
+      code: "G"
+      subtype_field: game
+    GridClick:
+      code: "G"
+      subtype_field: game
+    PopupModule:
+      code: "P"
+      subtype_field: popupType
+    PopUpModule:
+      code: "P"
+      subtype_field: popupType
+    "API Error":
+      code: "E"
+      subtype_field: statusCode

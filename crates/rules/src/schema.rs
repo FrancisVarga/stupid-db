@@ -1,12 +1,219 @@
 //! YAML DSL schema types with serde deserialization.
 //!
-//! Defines the complete type hierarchy for anomaly detection rules:
-//! `AnomalyRule` → `Detection` → `Template` / `Composition` → `Signal`
+//! Defines the complete type hierarchy for rule documents:
+//! - `RuleEnvelope`: lightweight first-pass header (apiVersion, kind, metadata)
+//! - `RuleDocument`: enum dispatching to kind-specific types
+//! - `AnomalyRule`: anomaly detection rules with templates and signal composition
+//!
+//! New rule kinds (EntitySchema, FeatureConfig, etc.) are added as `RuleDocument` variants.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use std::str::FromStr;
 
-// ── Root rule document ───────────────────────────────────────────────
+// ── Rule kind enum ──────────────────────────────────────────────────
+
+/// Supported rule kinds for two-pass deserialization dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RuleKind {
+    AnomalyRule,
+    EntitySchema,
+    FeatureConfig,
+    ScoringConfig,
+    TrendConfig,
+    PatternConfig,
+}
+
+impl fmt::Display for RuleKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RuleKind::AnomalyRule => write!(f, "AnomalyRule"),
+            RuleKind::EntitySchema => write!(f, "EntitySchema"),
+            RuleKind::FeatureConfig => write!(f, "FeatureConfig"),
+            RuleKind::ScoringConfig => write!(f, "ScoringConfig"),
+            RuleKind::TrendConfig => write!(f, "TrendConfig"),
+            RuleKind::PatternConfig => write!(f, "PatternConfig"),
+        }
+    }
+}
+
+impl FromStr for RuleKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "AnomalyRule" => Ok(RuleKind::AnomalyRule),
+            "EntitySchema" => Ok(RuleKind::EntitySchema),
+            "FeatureConfig" => Ok(RuleKind::FeatureConfig),
+            "ScoringConfig" => Ok(RuleKind::ScoringConfig),
+            "TrendConfig" => Ok(RuleKind::TrendConfig),
+            "PatternConfig" => Ok(RuleKind::PatternConfig),
+            other => Err(format!("unknown rule kind: '{}'", other)),
+        }
+    }
+}
+
+// ── Rule envelope (first-pass) ──────────────────────────────────────
+
+/// Lightweight first-pass deserializer that reads only the header fields.
+///
+/// Used during two-pass loading: first extract `kind` to determine the
+/// concrete type, then deserialize the full document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleEnvelope {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub kind: String,
+    pub metadata: CommonMetadata,
+    /// Remaining fields captured as raw YAML for second-pass deserialization.
+    #[serde(flatten)]
+    pub rest: serde_yaml::Value,
+}
+
+impl RuleEnvelope {
+    /// Parse the `kind` field into a typed [`RuleKind`].
+    pub fn rule_kind(&self) -> std::result::Result<RuleKind, String> {
+        self.kind.parse()
+    }
+
+    /// Two-pass: reconstruct the full YAML and deserialize into the concrete type.
+    pub fn parse_full(&self) -> std::result::Result<RuleDocument, String> {
+        match self.rule_kind()? {
+            RuleKind::AnomalyRule => {
+                let yaml = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+                let rule: AnomalyRule =
+                    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+                Ok(RuleDocument::Anomaly(rule))
+            }
+            RuleKind::EntitySchema => {
+                let yaml = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+                let rule: crate::entity_schema::EntitySchemaRule =
+                    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+                Ok(RuleDocument::EntitySchema(rule))
+            }
+            RuleKind::FeatureConfig => {
+                let yaml = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+                let rule: crate::feature_config::FeatureConfigRule =
+                    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+                Ok(RuleDocument::FeatureConfig(rule))
+            }
+            RuleKind::ScoringConfig => {
+                let yaml = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+                let rule: crate::scoring_config::ScoringConfigRule =
+                    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+                Ok(RuleDocument::ScoringConfig(rule))
+            }
+            RuleKind::TrendConfig => {
+                let yaml = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+                let rule: crate::trend_config::TrendConfigRule =
+                    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+                Ok(RuleDocument::TrendConfig(rule))
+            }
+            RuleKind::PatternConfig => {
+                let yaml = serde_yaml::to_string(self).map_err(|e| e.to_string())?;
+                let rule: crate::pattern_config::PatternConfigRule =
+                    serde_yaml::from_str(&yaml).map_err(|e| e.to_string())?;
+                Ok(RuleDocument::PatternConfig(rule))
+            }
+        }
+    }
+}
+
+// ── Rule document (multi-kind container) ────────────────────────────
+
+/// A fully deserialized rule of any supported kind.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuleDocument {
+    /// Anomaly detection rule (spike, drift, absence, threshold, compose).
+    Anomaly(AnomalyRule),
+    /// Entity schema — field mappings, extraction plans, embedding templates.
+    EntitySchema(crate::entity_schema::EntitySchemaRule),
+    /// Feature config — feature vector, encodings, event classification.
+    FeatureConfig(crate::feature_config::FeatureConfigRule),
+    /// Scoring config — anomaly weights, thresholds, graph params.
+    ScoringConfig(crate::scoring_config::ScoringConfigRule),
+    /// Trend config — z-score thresholds, window defaults, severity.
+    TrendConfig(crate::trend_config::TrendConfigRule),
+    /// Pattern config — PrefixSpan defaults, classification rules.
+    PatternConfig(crate::pattern_config::PatternConfigRule),
+}
+
+impl RuleDocument {
+    /// Get the rule's metadata regardless of kind.
+    pub fn metadata(&self) -> &CommonMetadata {
+        match self {
+            RuleDocument::Anomaly(rule) => &rule.metadata,
+            RuleDocument::EntitySchema(rule) => &rule.metadata,
+            RuleDocument::FeatureConfig(rule) => &rule.metadata,
+            RuleDocument::ScoringConfig(rule) => &rule.metadata,
+            RuleDocument::TrendConfig(rule) => &rule.metadata,
+            RuleDocument::PatternConfig(rule) => &rule.metadata,
+        }
+    }
+
+    /// Get the rule kind.
+    pub fn kind(&self) -> RuleKind {
+        match self {
+            RuleDocument::Anomaly(_) => RuleKind::AnomalyRule,
+            RuleDocument::EntitySchema(_) => RuleKind::EntitySchema,
+            RuleDocument::FeatureConfig(_) => RuleKind::FeatureConfig,
+            RuleDocument::ScoringConfig(_) => RuleKind::ScoringConfig,
+            RuleDocument::TrendConfig(_) => RuleKind::TrendConfig,
+            RuleDocument::PatternConfig(_) => RuleKind::PatternConfig,
+        }
+    }
+
+    /// Try to extract as an `AnomalyRule` reference.
+    pub fn as_anomaly(&self) -> Option<&AnomalyRule> {
+        match self {
+            RuleDocument::Anomaly(rule) => Some(rule),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as an `EntitySchemaRule` reference.
+    pub fn as_entity_schema(&self) -> Option<&crate::entity_schema::EntitySchemaRule> {
+        match self {
+            RuleDocument::EntitySchema(rule) => Some(rule),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as a `FeatureConfigRule` reference.
+    pub fn as_feature_config(&self) -> Option<&crate::feature_config::FeatureConfigRule> {
+        match self {
+            RuleDocument::FeatureConfig(rule) => Some(rule),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as a `ScoringConfigRule` reference.
+    pub fn as_scoring_config(&self) -> Option<&crate::scoring_config::ScoringConfigRule> {
+        match self {
+            RuleDocument::ScoringConfig(rule) => Some(rule),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as a `TrendConfigRule` reference.
+    pub fn as_trend_config(&self) -> Option<&crate::trend_config::TrendConfigRule> {
+        match self {
+            RuleDocument::TrendConfig(rule) => Some(rule),
+            _ => None,
+        }
+    }
+
+    /// Try to extract as a `PatternConfigRule` reference.
+    pub fn as_pattern_config(&self) -> Option<&crate::pattern_config::PatternConfigRule> {
+        match self {
+            RuleDocument::PatternConfig(rule) => Some(rule),
+            _ => None,
+        }
+    }
+}
+
+// ── Root anomaly rule document ──────────────────────────────────────
 
 /// Top-level anomaly rule definition parsed from YAML.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -15,7 +222,7 @@ pub struct AnomalyRule {
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
-    pub metadata: RuleMetadata,
+    pub metadata: CommonMetadata,
     pub schedule: Schedule,
     pub detection: Detection,
     pub filters: Option<Filters>,
@@ -23,10 +230,13 @@ pub struct AnomalyRule {
     pub notifications: Vec<NotificationChannel>,
 }
 
-/// Rule identity and lifecycle metadata.
+/// Shared metadata for all rule kinds (anomaly, entity schema, feature config, etc.).
+///
+/// The `extends` field enables rule inheritance: a child rule references a parent
+/// by ID and deep-merges the parent's fields, with the child's values winning.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct RuleMetadata {
+pub struct CommonMetadata {
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -35,7 +245,14 @@ pub struct RuleMetadata {
     pub tags: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Parent rule ID for inheritance. The loader deep-merges the parent's
+    /// spec into this rule, with child fields taking precedence.
+    #[serde(default)]
+    pub extends: Option<String>,
 }
+
+/// Type alias for backward compatibility with existing code that references `RuleMetadata`.
+pub type RuleMetadata = CommonMetadata;
 
 fn default_true() -> bool {
     true
@@ -566,5 +783,89 @@ value: 100.0
         assert_eq!(params.feature, "error_count");
         assert_eq!(params.operator, ThresholdOperator::Gte);
         assert_eq!(params.value, 100.0);
+    }
+
+    // ── RuleKind / RuleEnvelope / RuleDocument tests ────────────────
+
+    #[test]
+    fn rule_kind_from_str() {
+        assert_eq!("AnomalyRule".parse::<RuleKind>().unwrap(), RuleKind::AnomalyRule);
+        assert_eq!("EntitySchema".parse::<RuleKind>().unwrap(), RuleKind::EntitySchema);
+        assert_eq!("FeatureConfig".parse::<RuleKind>().unwrap(), RuleKind::FeatureConfig);
+        assert_eq!("ScoringConfig".parse::<RuleKind>().unwrap(), RuleKind::ScoringConfig);
+        assert_eq!("TrendConfig".parse::<RuleKind>().unwrap(), RuleKind::TrendConfig);
+        assert_eq!("PatternConfig".parse::<RuleKind>().unwrap(), RuleKind::PatternConfig);
+        assert!("UnknownKind".parse::<RuleKind>().is_err());
+    }
+
+    #[test]
+    fn rule_kind_display() {
+        assert_eq!(RuleKind::AnomalyRule.to_string(), "AnomalyRule");
+        assert_eq!(RuleKind::EntitySchema.to_string(), "EntitySchema");
+    }
+
+    #[test]
+    fn rule_envelope_parses_anomaly_rule() {
+        let envelope: RuleEnvelope = serde_yaml::from_str(SPIKE_RULE_YAML).unwrap();
+        assert_eq!(envelope.api_version, "v1");
+        assert_eq!(envelope.kind, "AnomalyRule");
+        assert_eq!(envelope.metadata.id, "login-spike");
+        assert_eq!(envelope.rule_kind().unwrap(), RuleKind::AnomalyRule);
+    }
+
+    #[test]
+    fn rule_envelope_unknown_kind_errors() {
+        let yaml = r#"
+apiVersion: v1
+kind: UnknownKind
+metadata:
+  id: test
+  name: Test
+  enabled: true
+"#;
+        let envelope: RuleEnvelope = serde_yaml::from_str(yaml).unwrap();
+        assert!(envelope.rule_kind().is_err());
+    }
+
+    #[test]
+    fn rule_envelope_parse_full_anomaly() {
+        let envelope: RuleEnvelope = serde_yaml::from_str(SPIKE_RULE_YAML).unwrap();
+        let doc = envelope.parse_full().unwrap();
+
+        assert_eq!(doc.kind(), RuleKind::AnomalyRule);
+        assert_eq!(doc.metadata().id, "login-spike");
+
+        let rule = doc.as_anomaly().unwrap();
+        assert_eq!(rule.detection.template, Some(DetectionTemplate::Spike));
+    }
+
+    #[test]
+    fn rule_document_metadata_accessor() {
+        let rule: AnomalyRule = serde_yaml::from_str(SPIKE_RULE_YAML).unwrap();
+        let doc = RuleDocument::Anomaly(rule.clone());
+        assert_eq!(doc.metadata().id, rule.metadata.id);
+        assert_eq!(doc.metadata().name, rule.metadata.name);
+    }
+
+    #[test]
+    fn common_metadata_with_extends() {
+        let yaml = r#"
+apiVersion: v1
+kind: AnomalyRule
+metadata:
+  id: child-rule
+  name: Child Rule
+  extends: parent-rule
+  enabled: true
+schedule:
+  cron: "*/15 * * * *"
+detection:
+  template: spike
+  params:
+    feature: login_count
+    multiplier: 3.0
+"#;
+        let rule: AnomalyRule = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(rule.metadata.extends.as_deref(), Some("parent-rule"));
     }
 }

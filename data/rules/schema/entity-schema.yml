@@ -1,0 +1,245 @@
+apiVersion: v1
+kind: EntitySchema
+metadata:
+  id: entity-schema-default
+  name: Default Entity Schema
+  description: |
+    Canonical entity extraction schema defining all entity types, edge types,
+    field mappings (with aliases), per-event extraction plans, and embedding templates.
+  tags:
+    - schema
+    - entity
+  enabled: true
+spec:
+  null_values:
+    - "None"
+    - "null"
+    - "undefined"
+    - ""
+
+  entity_types:
+    - name: Member
+      key_prefix: "member:"
+    - name: Device
+      key_prefix: "device:"
+    - name: Game
+      key_prefix: "game:"
+    - name: Affiliate
+      key_prefix: "affiliate:"
+    - name: Currency
+      key_prefix: "currency:"
+    - name: VipGroup
+      key_prefix: "vipgroup:"
+    - name: Error
+      key_prefix: "error:"
+    - name: Platform
+      key_prefix: "platform:"
+    - name: Popup
+      key_prefix: "popup:"
+    - name: Provider
+      key_prefix: "provider:"
+
+  edge_types:
+    - name: LoggedInFrom
+      from: Member
+      to: Device
+    - name: OpenedGame
+      from: Member
+      to: Game
+    - name: SawPopup
+      from: Member
+      to: Popup
+    - name: HitError
+      from: Member
+      to: Error
+    - name: BelongsToGroup
+      from: Member
+      to: VipGroup
+    - name: ReferredBy
+      from: Member
+      to: Affiliate
+    - name: UsesCurrency
+      from: Member
+      to: Currency
+    - name: PlaysOnPlatform
+      from: Member
+      to: Platform
+    - name: ProvidedBy
+      from: Game
+      to: Provider
+
+  field_mappings:
+    - field: memberCode
+      aliases: []
+      entity_type: Member
+      key_prefix: "member:"
+    - field: fingerprint
+      aliases:
+        - deviceId
+      entity_type: Device
+      key_prefix: "device:"
+    - field: game
+      aliases:
+        - gameName
+      entity_type: Game
+      key_prefix: "game:"
+    - field: affiliateId
+      aliases:
+        - affiliateid
+        - affiliateID
+        - affiliateCode
+      entity_type: Affiliate
+      key_prefix: "affiliate:"
+    - field: currency
+      aliases: []
+      entity_type: Currency
+      key_prefix: "currency:"
+    - field: rGroup
+      aliases:
+        - vipGroup
+      entity_type: VipGroup
+      key_prefix: "vipgroup:"
+    - field: error
+      aliases:
+        - errorCode
+      entity_type: Error
+      key_prefix: "error:"
+    - field: platform
+      aliases: []
+      entity_type: Platform
+      key_prefix: "platform:"
+    - field: trackingId
+      aliases:
+        - popupType
+        - popupId
+      entity_type: Popup
+      key_prefix: "popup:"
+    - field: gameTrackingProvider
+      aliases:
+        - provider
+      entity_type: Provider
+      key_prefix: "provider:"
+
+  event_extraction:
+    Login:
+      aliases: []
+      entities:
+        - field: memberCode
+          entity_type: Member
+          fallback_fields: []
+        - field: fingerprint
+          entity_type: Device
+          fallback_fields: []
+        - field: platform
+          entity_type: Platform
+          fallback_fields: []
+        - field: currency
+          entity_type: Currency
+          fallback_fields: []
+        - field: rGroup
+          entity_type: VipGroup
+          fallback_fields: []
+        - field: affiliateId
+          entity_type: Affiliate
+          fallback_fields:
+            - affiliateid
+            - affiliateID
+      edges:
+        - from_field: memberCode
+          to_field: fingerprint
+          edge: LoggedInFrom
+        - from_field: memberCode
+          to_field: platform
+          edge: PlaysOnPlatform
+        - from_field: memberCode
+          to_field: currency
+          edge: UsesCurrency
+        - from_field: memberCode
+          to_field: rGroup
+          edge: BelongsToGroup
+        - from_field: memberCode
+          to_field: affiliateId
+          edge: ReferredBy
+
+    GameOpened:
+      aliases:
+        - GridClick
+      entities:
+        - field: memberCode
+          entity_type: Member
+          fallback_fields: []
+        - field: game
+          entity_type: Game
+          fallback_fields: []
+        - field: gameTrackingProvider
+          entity_type: Provider
+          fallback_fields: []
+        - field: platform
+          entity_type: Platform
+          fallback_fields: []
+        - field: currency
+          entity_type: Currency
+          fallback_fields: []
+      edges:
+        - from_field: memberCode
+          to_field: game
+          edge: OpenedGame
+        - from_field: game
+          to_field: gameTrackingProvider
+          edge: ProvidedBy
+        - from_field: memberCode
+          to_field: platform
+          edge: PlaysOnPlatform
+        - from_field: memberCode
+          to_field: currency
+          edge: UsesCurrency
+
+    PopupModule:
+      aliases:
+        - PopUpModule
+      entities:
+        - field: memberCode
+          entity_type: Member
+          fallback_fields: []
+        - field: trackingId
+          entity_type: Popup
+          fallback_fields:
+            - popupType
+        - field: platform
+          entity_type: Platform
+          fallback_fields: []
+      edges:
+        - from_field: memberCode
+          to_field: trackingId
+          edge: SawPopup
+        - from_field: memberCode
+          to_field: platform
+          edge: PlaysOnPlatform
+
+    "API Error":
+      aliases: []
+      entities:
+        - field: memberCode
+          entity_type: Member
+          fallback_fields: []
+        - field: url
+          entity_type: Error
+          fallback_fields:
+            - error
+        - field: platform
+          entity_type: Platform
+          fallback_fields: []
+      edges:
+        - from_field: memberCode
+          to_field: url
+          edge: HitError
+        - from_field: memberCode
+          to_field: platform
+          edge: PlaysOnPlatform
+
+  embedding_templates:
+    Login: "Login member:{memberCode} platform:{platform} currency:{currency} vip:{rGroup}"
+    GameOpened: "GameOpened member:{memberCode} game:{game} provider:{gameTrackingProvider} platform:{platform}"
+    PopupModule: "PopupModule member:{memberCode} popup:{trackingId} platform:{platform}"
+    "API Error": "APIError member:{memberCode} url:{url} status:{statusCode} error:{error|truncate:100}"
+    GridClick: "GridClick member:{memberCode} game:{game} platform:{platform}"
