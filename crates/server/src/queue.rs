@@ -300,12 +300,12 @@ async fn process_batch(
     let graph_ops_count = {
         let mut all_ops = Vec::new();
         for doc in &docs {
-            crate::extract_graph_ops(doc, "queue", &mut all_ops);
+            crate::graph_ops::extract_graph_ops(doc, "queue", &mut all_ops);
         }
 
         let mut graph = app_state.graph.write().await;
         for op in &all_ops {
-            crate::apply_graph_op(op, &mut graph, "queue");
+            crate::graph_ops::apply_graph_op(op, &mut graph, "queue");
         }
         all_ops.len()
     };
