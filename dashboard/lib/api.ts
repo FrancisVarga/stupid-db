@@ -1,9 +1,12 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:56415";
 export const WS_URL = API_BASE.replace(/^http/, "ws") + "/ws";
 
-async function checkedFetch(url: string, init?: RequestInit): Promise<Response> {
+async function checkedFetch(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = 60_000,
+): Promise<Response> {
   const controller = new AbortController();
-  const timeoutMs = 60_000; // 60s timeout for all API calls
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -612,10 +615,12 @@ export async function uploadDocument(
 }> {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await checkedFetch(`${API_BASE}/embeddings/upload`, {
-    method: "POST",
-    body: formData,
-  });
+  // 10-minute timeout: scanned PDFs with OCR can take several minutes
+  const res = await checkedFetch(
+    `${API_BASE}/embeddings/upload`,
+    { method: "POST", body: formData },
+    600_000,
+  );
   return res.json();
 }
 
