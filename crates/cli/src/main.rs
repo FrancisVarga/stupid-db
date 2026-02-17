@@ -134,9 +134,13 @@ async fn main() -> Result<()> {
     // Print banner
     terminal.print_banner(provider_name, &model)?;
 
-    // Tool context
+    // Tool context — prefer agents/stupid-db-claude-code as the working
+    // directory so Claude Code always operates within its dedicated workspace.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let agents_dir = cwd.join("agents/stupid-db-claude-code");
+    std::fs::create_dir_all(&agents_dir).ok();
     let tool_context = ToolContext {
-        working_directory: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        working_directory: agents_dir,
     };
 
     // REPL loop

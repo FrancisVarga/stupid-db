@@ -790,8 +790,15 @@ pub async fn sessions_stream(
     // Set up streaming channel
     let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(256);
 
+    // Use agents/stupid-db-claude-code as the working directory.
+    // data_dir is typically `data/`; its parent is the project root.
+    let agents_dir = state.data_dir
+        .parent()
+        .unwrap_or(&state.data_dir)
+        .join("agents/stupid-db-claude-code");
+    std::fs::create_dir_all(&agents_dir).ok();
     let tool_context = ToolContext {
-        working_directory: state.data_dir.clone(),
+        working_directory: agents_dir,
     };
 
     // Clone what we need for the background task
