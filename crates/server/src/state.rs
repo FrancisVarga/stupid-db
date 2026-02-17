@@ -55,6 +55,8 @@ pub struct AppState {
     pub queue_connections: Arc<tokio::sync::RwLock<crate::queue_connections::QueueConnectionStore>>,
     /// Encrypted Athena connection store.
     pub athena_connections: Arc<tokio::sync::RwLock<crate::athena_connections::AthenaConnectionStore>>,
+    /// Embedding backend for vector search features.
+    pub embedder: Option<Arc<dyn stupid_ingest::embedding::Embedder>>,
     /// Session store for agent chat history persistence.
     pub session_store: Arc<tokio::sync::RwLock<stupid_agent::session::SessionStore>>,
     /// Anomaly rule loader (filesystem-backed with hot-reload).
@@ -65,6 +67,8 @@ pub struct AppState {
     pub audit_log: stupid_rules::audit_log::AuditLog,
     /// Per-connection Athena query audit log with cost tracking.
     pub athena_query_log: crate::athena_query_log::AthenaQueryLog,
+    /// PostgreSQL connection pool for pgvector embedding storage.
+    pub pg_pool: Option<sqlx::PgPool>,
 }
 
 /// Lock-free atomic counters for queue consumer observability.

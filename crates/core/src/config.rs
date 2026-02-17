@@ -281,6 +281,8 @@ pub struct PostgresConfig {
     pub password: Option<String>,
     pub ssl_mode: String,
     pub max_connections: u32,
+    /// Full connection URL (e.g. from PG_URL env var). Preferred by sqlx.
+    pub pg_url: Option<String>,
 }
 
 impl PostgresConfig {
@@ -293,6 +295,7 @@ impl PostgresConfig {
             password: profiled_env_opt(p, "PG_PASSWORD"),
             ssl_mode: profiled_env_or(p, "PG_SSL_MODE", "prefer"),
             max_connections: profiled_env_u32(p, "PG_MAX_CONNECTIONS", 10),
+            pg_url: profiled_env_opt(p, "PG_URL"),
         }
     }
 
@@ -303,6 +306,11 @@ impl PostgresConfig {
             "postgres://{}:{}@{}:{}/{}?sslmode={}",
             user, pass, self.host, self.port, self.database, self.ssl_mode
         )
+    }
+
+    /// Connection URL for sqlx — prefers PG_URL env var, falls back to constructed string.
+    pub fn database_url(&self) -> String {
+        self.pg_url.clone().unwrap_or_else(|| self.connection_string())
     }
 
     pub fn is_configured(&self) -> bool {

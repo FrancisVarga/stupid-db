@@ -45,6 +45,8 @@ aws-sdk-athena = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { version = "1" }
 tokio-stream = "0.1"
+sqlx = { workspace = true }
+pgvector = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

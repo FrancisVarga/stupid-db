@@ -45,7 +45,7 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
 # Parquet/Arrow
@@ -67,6 +67,9 @@ sha2 = "0.10"
 
 # Compression
 zstd = "0.13"
+
+# Document extraction
+pdf-extract = "0.7"
 
 # Parallelism
 rayon = "1.10"
@@ -107,6 +110,10 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6"
 crossterm = "0.28"
 toml = "0.8"
+
+# PostgreSQL
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"] }
+pgvector = { version = "0.4", features = ["sqlx"] }
 
 # ── Dev build optimizations ────────────────────────────────────────
 # See issue #61: https://github.com/FrancisVarga/stupid-db/issues/61

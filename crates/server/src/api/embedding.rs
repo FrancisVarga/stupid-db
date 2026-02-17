@@ -1,0 +1,213 @@
+use std::sync::Arc;
+
+use axum::extract::{Multipart, Path, State};
+use axum::http::StatusCode;
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use tracing::info;
+use uuid::Uuid;
+
+use crate::state::AppState;
+use crate::vector_store::{self, ChunkInsert};
+
+// ── Request/Response types ────────────────────────
+
+#[derive(Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+fn default_limit() -> i64 {
+    10
+}
+
+#[derive(Serialize)]
+pub struct UploadResponse {
+    pub document_id: Uuid,
+    pub filename: String,
+    pub chunk_count: usize,
+    pub file_size: i64,
+}
+
+#[derive(Serialize)]
+pub struct SearchResponse {
+    pub results: Vec<vector_store::SearchResult>,
+}
+
+#[derive(Serialize)]
+pub struct DocumentListResponse {
+    pub documents: Vec<vector_store::DocumentRecord>,
+}
+
+// ── Helper: check pool + embedder ─────────────────
+
+fn check_embedding_deps(
+    state: &AppState,
+) -> Result<
+    (
+        &sqlx::PgPool,
+        &Arc<dyn stupid_ingest::embedding::Embedder>,
+    ),
+    (StatusCode, String),
+> {
+    let pool = state
+        .pg_pool
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "PostgreSQL not configured".to_string()))?;
+    let embedder = state
+        .embedder
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "Embedding provider not configured".to_string()))?;
+    Ok((pool, embedder))
+}
+
+// ── POST /embeddings/upload ───────────────────────
+
+pub async fn upload(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, (StatusCode, String)> {
+    let (pool, embedder) = check_embedding_deps(&state)?;
+
+    // Extract file from multipart
+    let field = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Multipart error: {e}")))?
+        .ok_or((StatusCode::BAD_REQUEST, "No file provided".to_string()))?;
+
+    let filename = field.file_name().unwrap_or("unnamed").to_string();
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to read file: {e}")))?;
+
+    let file_size = bytes.len() as i64;
+
+    // Check file size limit (50MB)
+    if file_size > 50 * 1024 * 1024 {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "File exceeds 50MB limit".to_string()));
+    }
+
+    // Extract text
+    let doc = stupid_ingest::document::extract_text(&bytes, &filename)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Text extraction failed: {e}")))?;
+
+    // Chunk the document
+    let config = stupid_ingest::document::chunker::ChunkConfig::default();
+    let chunks = stupid_ingest::document::chunker::chunk_document(&doc, &config);
+
+    if chunks.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Document produced no chunks (empty or unreadable)".to_string(),
+        ));
+    }
+
+    // Embed all chunks
+    let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+    let embeddings = embedder
+        .embed_batch(&texts)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed: {e}")))?;
+
+    // Insert document
+    let document_id = vector_store::insert_document(pool, &filename, &doc.file_type, file_size)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("DB insert failed: {e}")))?;
+
+    // Insert chunks with embeddings
+    let chunk_inserts: Vec<ChunkInsert> = chunks
+        .iter()
+        .zip(embeddings)
+        .map(|(chunk, emb)| ChunkInsert {
+            chunk_index: chunk.index,
+            content: chunk.content.clone(),
+            page_number: chunk.page_number,
+            section_heading: chunk.section_heading.clone(),
+            embedding: emb,
+        })
+        .collect();
+
+    let chunk_count = chunk_inserts.len();
+    vector_store::insert_chunks(pool, document_id, chunk_inserts)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Chunk insert failed: {e}")))?;
+
+    info!("Uploaded document '{}': {} chunks embedded", filename, chunk_count);
+
+    Ok(Json(UploadResponse {
+        document_id,
+        filename,
+        chunk_count,
+        file_size,
+    }))
+}
+
+// ── POST /embeddings/search ───────────────────────
+
+pub async fn search(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SearchRequest>,
+) -> Result<Json<SearchResponse>, (StatusCode, String)> {
+    let (pool, embedder) = check_embedding_deps(&state)?;
+
+    // Embed the query
+    let embeddings = embedder
+        .embed_batch(&[&req.query])
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed: {e}")))?;
+
+    let query_embedding = embeddings
+        .into_iter()
+        .next()
+        .ok_or((StatusCode::INTERNAL_SERVER_ERROR, "No embedding returned".to_string()))?;
+
+    // Search pgvector
+    let results = vector_store::search(pool, query_embedding, req.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Search failed: {e}")))?;
+
+    Ok(Json(SearchResponse { results }))
+}
+
+// ── GET /embeddings/documents ─────────────────────
+
+pub async fn list_documents(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<DocumentListResponse>, (StatusCode, String)> {
+    let pool = state
+        .pg_pool
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "PostgreSQL not configured".to_string()))?;
+
+    let documents = vector_store::list_documents(pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to list documents: {e}")))?;
+
+    Ok(Json(DocumentListResponse { documents }))
+}
+
+// ── DELETE /embeddings/documents/:id ──────────────
+
+pub async fn delete_document(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .pg_pool
+        .as_ref()
+        .ok_or((StatusCode::SERVICE_UNAVAILABLE, "PostgreSQL not configured".to_string()))?;
+
+    let deleted = vector_store::delete_document(pool, id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Delete failed: {e}")))?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "Document not found".to_string()))
+    }
+}

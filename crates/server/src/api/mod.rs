@@ -7,6 +7,7 @@ mod agents;
 mod athena_query;
 mod compute;
 mod connections;
+pub mod embedding;
 mod graph;
 mod health;
 mod query;

@@ -563,3 +563,70 @@ export async function executeTeamInSession(
   );
   return res.json();
 }
+
+// ── Embeddings API ─────────────────────────────────
+
+export interface EmbeddingDocument {
+  id: string;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  uploaded_at: string;
+  chunk_count: number;
+}
+
+export interface SearchResult {
+  chunk_id: string;
+  document_id: string;
+  filename: string;
+  content: string;
+  chunk_index: number;
+  page_number: number | null;
+  section_heading: string | null;
+  similarity: number;
+}
+
+export async function uploadDocument(
+  file: File
+): Promise<{
+  document_id: string;
+  filename: string;
+  chunk_count: number;
+  file_size: number;
+}> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await checkedFetch(`${API_BASE}/embeddings/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  return res.json();
+}
+
+export async function searchEmbeddings(
+  query: string,
+  limit = 10
+): Promise<{ results: SearchResult[] }> {
+  const res = await checkedFetch(`${API_BASE}/embeddings/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, limit }),
+  });
+  return res.json();
+}
+
+export async function listEmbeddingDocuments(): Promise<{
+  documents: EmbeddingDocument[];
+}> {
+  const res = await checkedFetch(`${API_BASE}/embeddings/documents`, {
+    cache: "no-store",
+  });
+  return res.json();
+}
+
+export async function deleteEmbeddingDocument(id: string): Promise<void> {
+  await checkedFetch(
+    `${API_BASE}/embeddings/documents/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+}

@@ -1,5 +1,7 @@
 mod anomaly_rules;
 mod api;
+mod db;
+mod vector_store;
 mod rules;
 mod athena_connections;
 mod athena_query;
@@ -126,6 +128,39 @@ fn build_agentic_loop(config: &stupid_core::Config) -> Option<AgenticLoop> {
     Some(agentic_loop)
 }
 
+/// Build an Embedder from config. Returns None if no embedding provider configured.
+fn build_embedder(config: &stupid_core::Config) -> Option<Arc<dyn stupid_ingest::embedding::Embedder>> {
+    use stupid_ingest::embedding::{OllamaEmbedder, OpenAiEmbedder};
+
+    match config.embedding.provider.as_str() {
+        "ollama" => {
+            let embedder = OllamaEmbedder::new(
+                config.ollama.url.clone(),
+                config.ollama.embedding_model.clone(),
+                config.embedding.dimensions as usize,
+            );
+            info!("Embedding provider ready: ollama (model: {}, dims: {})",
+                  config.ollama.embedding_model, config.embedding.dimensions);
+            Some(Arc::new(embedder))
+        }
+        "openai" => {
+            let api_key = config.llm.openai_api_key.clone()?;
+            let embedder = OpenAiEmbedder::new(
+                api_key,
+                "text-embedding-3-small".to_string(),
+                config.llm.openai_base_url.clone(),
+                config.embedding.dimensions as usize,
+            );
+            info!("Embedding provider ready: openai (dims: {})", config.embedding.dimensions);
+            Some(Arc::new(embedder))
+        }
+        other => {
+            tracing::warn!("Unknown embedding provider '{}' — embedding features disabled", other);
+            None
+        }
+    }
+}
+
 async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow::Result<()> {
     config.log_summary();
 
@@ -194,6 +229,9 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         }
     }
 
+    // Initialize PostgreSQL connection pool and run migrations.
+    let pg_pool = db::init_pg_pool(&config.postgres).await;
+
     let state = Arc::new(state::AppState {
         graph: shared_graph.clone(),
         knowledge: knowledge.clone(),
@@ -214,11 +252,13 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         connections: Arc::new(RwLock::new(conn_store)),
         queue_connections: Arc::new(RwLock::new(queue_conn_store)),
         athena_connections: Arc::new(RwLock::new(athena_conn_store)),
+        embedder: build_embedder(config),
         session_store: Arc::new(RwLock::new(session_store)),
         rule_loader,
         trigger_history: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         audit_log: stupid_rules::audit_log::AuditLog::new(),
         athena_query_log: crate::athena_query_log::AthenaQueryLog::new(&config.storage.data_dir),
+        pg_pool,
     });
 
     let app = Router::new()
@@ -267,6 +307,12 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/athena-connections/{id}/schema", get(api::athena_connections_schema))
         .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh))
         .route("/athena-connections/{id}/query-log", get(api::athena_connections_query_log));
+
+    let app = app
+        .route("/embeddings/upload", post(api::embedding::upload))
+        .route("/embeddings/search", post(api::embedding::search))
+        .route("/embeddings/documents", get(api::embedding::list_documents))
+        .route("/embeddings/documents/{id}", axum::routing::delete(api::embedding::delete_document));
 
     let app = app
         .merge(anomaly_rules::anomaly_rules_router())
