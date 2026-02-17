@@ -110,10 +110,18 @@ async fn main() -> Result<()> {
         )
     };
 
-    // Build conversation from session state
+    // Build conversation from session state.
+    // Load system prompt: prefer session's explicit prompt, fall back to
+    // auto-discovered project context (CLAUDE.md + skills + rules + agents).
     let mut conversation = Conversation::new(config.max_context_tokens);
-    if let Some(ref prompt) = session.system_prompt {
-        conversation = conversation.with_system_prompt(prompt.clone());
+    let system_prompt = if let Some(ref prompt) = session.system_prompt {
+        prompt.clone()
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        stupid_tool_runtime::load_project_context(&cwd.join("agents/stupid-db-claude-code"))
+    };
+    if !system_prompt.is_empty() {
+        conversation = conversation.with_system_prompt(system_prompt);
     }
 
     // Replay existing messages into conversation

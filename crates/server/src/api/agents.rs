@@ -760,8 +760,20 @@ pub async fn sessions_stream(
     };
 
     let mut conversation = stupid_tool_runtime::Conversation::new(8192);
-    if let Some(ref prompt) = req.system_prompt {
-        conversation = conversation.with_system_prompt(prompt.clone());
+
+    // Load system prompt: prefer explicit request prompt, fall back to
+    // auto-discovered project context (CLAUDE.md + skills + rules + agents).
+    let system_prompt = if let Some(ref prompt) = req.system_prompt {
+        prompt.clone()
+    } else {
+        let project_root = state.data_dir
+            .parent()
+            .unwrap_or(&state.data_dir)
+            .join("agents/stupid-db-claude-code");
+        stupid_tool_runtime::load_project_context(&project_root)
+    };
+    if !system_prompt.is_empty() {
+        conversation = conversation.with_system_prompt(system_prompt);
     }
 
     // Convert SessionMessages to ConversationMessages (skip the last one — it's the

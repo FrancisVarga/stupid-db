@@ -7,8 +7,10 @@ pub mod permission;
 pub mod conversation;
 pub mod stream;
 pub mod bridge;
+pub mod context;
 
 pub use tool::{Tool, ToolDefinition, ToolCall, ToolResult};
+pub use context::load_project_context;
 pub use registry::ToolRegistry;
 pub use runtime::AgenticLoop;
 pub use provider::ToolAwareLlmProvider;
