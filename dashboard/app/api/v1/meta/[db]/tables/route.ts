@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db/client";
-import { listTables } from "@/lib/db/introspect";
+import { listTables, listSchemas } from "@/lib/db/introspect";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +12,22 @@ export async function GET(
 
   try {
     const sql = await getPool(db);
-    const schema = _req.nextUrl.searchParams.get("schema") ?? "public";
-    const tables = await listTables(sql, schema);
+    const schemaParam = _req.nextUrl.searchParams.get("schema");
+
+    // If schema=* or schema=all, return tables grouped by schema
+    if (schemaParam === "*" || schemaParam === "all") {
+      const schemas = await listSchemas(sql);
+      const grouped: Record<string, Awaited<ReturnType<typeof listTables>>> = {};
+      await Promise.all(
+        schemas.map(async (s) => {
+          const tables = await listTables(sql, s);
+          if (tables.length > 0) grouped[s] = tables;
+        }),
+      );
+      return NextResponse.json(grouped);
+    }
+
+    const tables = await listTables(sql, schemaParam ?? "public");
     return NextResponse.json(tables);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
