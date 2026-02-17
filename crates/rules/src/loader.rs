@@ -364,6 +364,11 @@ impl RuleLoader {
     }
 
     /// Get the shared anomaly rules map (backward compatibility).
+    /// Get the rules directory path.
+    pub fn rules_dir(&self) -> &Path {
+        &self.rules_dir
+    }
+
     pub fn rules(&self) -> Arc<RwLock<HashMap<String, AnomalyRule>>> {
         Arc::clone(&self.anomaly_rules)
     }

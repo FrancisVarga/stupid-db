@@ -212,6 +212,33 @@ impl RuleDocument {
         }
     }
 
+    /// Get mutable reference to the rule's metadata regardless of kind.
+    pub fn metadata_mut(&mut self) -> &mut CommonMetadata {
+        match self {
+            RuleDocument::Anomaly(rule) => &mut rule.metadata,
+            RuleDocument::EntitySchema(rule) => &mut rule.metadata,
+            RuleDocument::FeatureConfig(rule) => &mut rule.metadata,
+            RuleDocument::ScoringConfig(rule) => &mut rule.metadata,
+            RuleDocument::TrendConfig(rule) => &mut rule.metadata,
+            RuleDocument::PatternConfig(rule) => &mut rule.metadata,
+        }
+    }
+
+    /// Serialize this document to JSON, delegating to the inner type.
+    ///
+    /// Each inner type already has `apiVersion`, `kind`, and `metadata` fields,
+    /// so the JSON output naturally identifies the rule kind.
+    pub fn to_json(&self) -> serde_json::Result<serde_json::Value> {
+        match self {
+            RuleDocument::Anomaly(r) => serde_json::to_value(r),
+            RuleDocument::EntitySchema(r) => serde_json::to_value(r),
+            RuleDocument::FeatureConfig(r) => serde_json::to_value(r),
+            RuleDocument::ScoringConfig(r) => serde_json::to_value(r),
+            RuleDocument::TrendConfig(r) => serde_json::to_value(r),
+            RuleDocument::PatternConfig(r) => serde_json::to_value(r),
+        }
+    }
+
     /// Serialize this document to YAML, delegating to the inner type.
     pub fn to_yaml(&self) -> std::result::Result<String, serde_yaml::Error> {
         match self {

@@ -1,5 +1,6 @@
 mod anomaly_rules;
 mod api;
+mod rules;
 mod athena_connections;
 mod athena_query;
 mod athena_query_log;
@@ -221,6 +222,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
 
     let app = app
         .merge(anomaly_rules::anomaly_rules_router())
+        .merge(rules::rules_router())
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
