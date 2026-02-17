@@ -9,6 +9,5 @@
     ]
   },
   "enableAllProjectMcpServers": true,
-  "outputStyle": "Explanatory",
-  "model": "opus"
+  "outputStyle": "Explanatory"
 }
