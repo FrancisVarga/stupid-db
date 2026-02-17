@@ -93,6 +93,35 @@ export const ALL_RULE_KINDS: RuleKind[] = [
   "PatternConfig",
 ];
 
+// ── Dashboard Types ──────────────────────────────────────────────────
+
+/** Match summary within a trigger entry. */
+export interface RecentMatchSummary {
+  entity_key: string;
+  entity_type: string;
+  score: number;
+  reason: string;
+}
+
+/** A recent trigger entry enriched with rule metadata for the dashboard feed. */
+export interface RecentTrigger {
+  rule_id: string;
+  rule_name: string;
+  kind: RuleKind;
+  timestamp: string;
+  matches_found: number;
+  evaluation_ms: number;
+  matches?: RecentMatchSummary[];
+}
+
+// ── Dashboard Operations ─────────────────────────────────────────────
+
+export async function getRecentTriggers(limit?: number): Promise<RecentTrigger[]> {
+  const params = limit != null ? `?limit=${limit}` : "";
+  const res = await checkedFetch(`${API_BASE}/rules/recent-triggers${params}`, { cache: "no-store" });
+  return res.json();
+}
+
 // ── CRUD Operations ──────────────────────────────────────────────────
 
 export async function listRules(kind?: RuleKind): Promise<GenericRuleSummary[]> {

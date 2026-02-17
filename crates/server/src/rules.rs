@@ -16,9 +16,29 @@ use tracing::warn;
 
 use stupid_rules::schema::{RuleEnvelope, RuleKind};
 
+use crate::anomaly_rules::MatchSummary;
 use crate::state::AppState;
 
 // ── Types ────────────────────────────────────────────────────────────
+
+/// A recent trigger entry enriched with rule metadata for the dashboard feed.
+#[derive(Debug, Serialize)]
+pub struct RecentTrigger {
+    pub rule_id: String,
+    pub rule_name: String,
+    pub kind: RuleKind,
+    pub timestamp: String,
+    pub matches_found: usize,
+    pub evaluation_ms: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<MatchSummary>,
+}
+
+/// Query parameters for GET /rules/recent-triggers.
+#[derive(Debug, Deserialize)]
+pub struct RecentTriggersParams {
+    pub limit: Option<u32>,
+}
 
 /// Lightweight summary returned by GET /rules.
 #[derive(Debug, Serialize)]
@@ -254,10 +274,57 @@ async fn toggle_rule(
     Ok(Json(json))
 }
 
+/// Get recent trigger events across all rules, sorted by timestamp descending.
+///
+/// Merges all per-rule trigger histories and enriches each entry with rule
+/// metadata (name, kind) for display in the dashboard feed.
+async fn recent_triggers(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecentTriggersParams>,
+) -> Json<Vec<RecentTrigger>> {
+    let limit = params.limit.unwrap_or(50).min(200) as usize;
+
+    // Build a name+kind lookup from documents.
+    let docs = state.rule_loader.documents();
+    let docs_guard = docs.read().expect("documents lock poisoned");
+    let meta_map: std::collections::HashMap<&str, (&str, RuleKind)> = docs_guard
+        .iter()
+        .map(|(id, doc)| (id.as_str(), (doc.metadata().name.as_str(), doc.kind())))
+        .collect();
+
+    // Merge all trigger histories.
+    let history = state.trigger_history.read().expect("trigger_history lock");
+    let mut all: Vec<RecentTrigger> = history
+        .iter()
+        .flat_map(|(rule_id, deque)| {
+            let (name, kind) = meta_map
+                .get(rule_id.as_str())
+                .copied()
+                .unwrap_or(("(unknown)", RuleKind::AnomalyRule));
+            deque.iter().map(move |entry| RecentTrigger {
+                rule_id: rule_id.clone(),
+                rule_name: name.to_string(),
+                kind,
+                timestamp: entry.timestamp.clone(),
+                matches_found: entry.matches_found,
+                evaluation_ms: entry.evaluation_ms,
+                matches: entry.matches.clone(),
+            })
+        })
+        .collect();
+
+    // Sort by timestamp descending (RFC-3339 is lexicographically sortable).
+    all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all.truncate(limit);
+
+    Json(all)
+}
+
 /// Build the generic rules sub-router.
 pub fn rules_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/rules", get(list_rules).post(create_rule))
+        .route("/rules/recent-triggers", get(recent_triggers))
         .route("/rules/{id}", get(get_rule).put(update_rule).delete(delete_rule))
         .route("/rules/{id}/yaml", get(get_rule_yaml))
         .route("/rules/{id}/toggle", post(toggle_rule))
