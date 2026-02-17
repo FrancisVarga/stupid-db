@@ -13,7 +13,7 @@ use crate::vector_store::{self, ChunkInsert};
 
 // ── Request/Response types ────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SearchRequest {
     pub query: String,
     #[serde(default = "default_limit")]
@@ -24,21 +24,24 @@ fn default_limit() -> i64 {
     10
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct UploadResponse {
+    #[schema(value_type = String)]
     pub document_id: Uuid,
     pub filename: String,
     pub chunk_count: usize,
     pub file_size: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SearchResponse {
+    #[schema(value_type = Vec<Object>)]
     pub results: Vec<vector_store::SearchResult>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DocumentListResponse {
+    #[schema(value_type = Vec<Object>)]
     pub documents: Vec<vector_store::DocumentRecord>,
 }
 
@@ -66,6 +69,20 @@ fn check_embedding_deps(
 
 // ── POST /embeddings/upload ───────────────────────
 
+/// Upload a document for embedding
+///
+/// Accepts multipart/form-data with a file field. The document is parsed,
+/// chunked, embedded, and stored in pgvector for semantic search.
+#[utoipa::path(
+    post,
+    path = "/embeddings/upload",
+    tag = "Embeddings",
+    request_body(content_type = "multipart/form-data", description = "File upload"),
+    responses(
+        (status = 200, description = "Document uploaded and chunked", body = UploadResponse),
+        (status = 400, description = "Upload error", body = String)
+    )
+)]
 pub async fn upload(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
@@ -134,12 +151,23 @@ pub async fn upload(
         ));
     }
 
-    // Embed all chunks
+    // Embed chunks in batches to avoid API timeouts on large documents
+    const EMBED_BATCH_SIZE: usize = 64;
     let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-    let embeddings = embedder
-        .embed_batch(&texts)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed: {e}")))?;
+    let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+    for (i, batch) in texts.chunks(EMBED_BATCH_SIZE).enumerate() {
+        info!(
+            "Embedding batch {}/{} ({} chunks)",
+            i + 1,
+            (texts.len() + EMBED_BATCH_SIZE - 1) / EMBED_BATCH_SIZE,
+            batch.len()
+        );
+        let batch_embeddings = embedder
+            .embed_batch(batch)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed (batch {}): {e}", i + 1)))?;
+        embeddings.extend(batch_embeddings);
+    }
 
     // Insert document
     let document_id = vector_store::insert_document(pool, &filename, &doc.file_type, file_size)
@@ -186,6 +214,20 @@ pub async fn upload(
 
 // ── POST /embeddings/search ───────────────────────
 
+/// Semantic search across embedded documents
+///
+/// Embeds the query text and performs a cosine-similarity search against
+/// all stored document chunks via pgvector.
+#[utoipa::path(
+    post,
+    path = "/embeddings/search",
+    tag = "Embeddings",
+    request_body = SearchRequest,
+    responses(
+        (status = 200, description = "Search results ranked by similarity", body = SearchResponse),
+        (status = 503, description = "Embedding service unavailable", body = String)
+    )
+)]
 pub async fn search(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SearchRequest>,
@@ -213,6 +255,18 @@ pub async fn search(
 
 // ── GET /embeddings/documents ─────────────────────
 
+/// List all embedded documents
+///
+/// Returns metadata for every document that has been uploaded and embedded.
+#[utoipa::path(
+    get,
+    path = "/embeddings/documents",
+    tag = "Embeddings",
+    responses(
+        (status = 200, description = "List of embedded documents", body = DocumentListResponse),
+        (status = 503, description = "PostgreSQL not configured", body = String)
+    )
+)]
 pub async fn list_documents(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<DocumentListResponse>, (StatusCode, String)> {
@@ -230,6 +284,20 @@ pub async fn list_documents(
 
 // ── DELETE /embeddings/documents/:id ──────────────
 
+/// Delete an embedded document and its chunks
+///
+/// Removes the document record, all associated chunks and embeddings from
+/// pgvector, and deletes the stored original file from disk.
+#[utoipa::path(
+    delete,
+    path = "/embeddings/documents/{id}",
+    tag = "Embeddings",
+    params(("id" = String, Path, description = "Document UUID")),
+    responses(
+        (status = 204, description = "Document deleted"),
+        (status = 404, description = "Document not found", body = String)
+    )
+)]
 pub async fn delete_document(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,

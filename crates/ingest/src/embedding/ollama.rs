@@ -14,7 +14,10 @@ pub struct OllamaEmbedder {
 impl OllamaEmbedder {
     pub fn new(url: String, model: String, dimensions: usize) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(300))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             url,
             model,
             dimensions,

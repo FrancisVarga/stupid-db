@@ -21,7 +21,10 @@ impl OpenAiEmbedder {
         dimensions: usize,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
             api_key,
             model,
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com".to_string()),
