@@ -88,6 +88,41 @@ fn format_generic(doc: &Document) -> String {
     parts.join(" ")
 }
 
+// ── Config-driven embedding templates ─────────────────────────────
+
+use stupid_rules::entity_schema::{CompiledEntitySchema, TemplateSegment};
+
+/// Convert a document to text using compiled embedding templates from the EntitySchema.
+///
+/// Looks up the event type (including aliases) in the schema's embedding_templates.
+/// Falls back to the generic format if no template is found.
+pub fn document_to_text_with_schema(doc: &Document, schema: &CompiledEntitySchema) -> String {
+    if let Some(segments) = schema.embedding_templates.get(doc.event_type.as_str()) {
+        render_template(doc, segments)
+    } else {
+        format_generic(doc)
+    }
+}
+
+/// Render a pre-parsed template against a document's fields.
+fn render_template(doc: &Document, segments: &[TemplateSegment]) -> String {
+    let mut output = String::new();
+    for segment in segments {
+        match segment {
+            TemplateSegment::Literal(text) => output.push_str(text),
+            TemplateSegment::Field(name) => {
+                output.push_str(&field_str(doc, name));
+            }
+            TemplateSegment::FieldTruncated(name, max_len) => {
+                let val = field_str(doc, name);
+                let truncated: String = val.chars().take(*max_len).collect();
+                output.push_str(&truncated);
+            }
+        }
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

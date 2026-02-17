@@ -179,6 +179,119 @@ pub fn compute_all_pmi(matrices: &mut HashMap<(EntityType, EntityType), Cooccurr
     }
 }
 
+// ── Config-driven co-occurrence ────────────────────────────────────
+
+use stupid_rules::entity_schema::CompiledEntitySchema;
+
+/// Parse an EntityType from a schema string name.
+fn parse_entity_type(name: &str) -> Option<EntityType> {
+    match name {
+        "Member" => Some(EntityType::Member),
+        "Device" => Some(EntityType::Device),
+        "Game" => Some(EntityType::Game),
+        "Affiliate" => Some(EntityType::Affiliate),
+        "Currency" => Some(EntityType::Currency),
+        "VipGroup" => Some(EntityType::VipGroup),
+        "Error" => Some(EntityType::Error),
+        "Platform" => Some(EntityType::Platform),
+        "Popup" => Some(EntityType::Popup),
+        "Provider" => Some(EntityType::Provider),
+        _ => None,
+    }
+}
+
+/// Update co-occurrence matrices using field mappings from a compiled EntitySchema.
+///
+/// Replaces the hardcoded `ENTITY_FIELDS` constant with schema-driven lookup.
+/// Field aliases from the schema are automatically resolved.
+pub fn update_cooccurrence_with_schema(
+    cooccurrence: &mut HashMap<(EntityType, EntityType), SparseMatrix>,
+    docs: &[Document],
+    schema: &CompiledEntitySchema,
+) {
+    for doc in docs {
+        let entities: Vec<(EntityType, String)> = schema
+            .field_to_entity
+            .iter()
+            .filter_map(|(field, entity_type_name)| {
+                let et = parse_entity_type(entity_type_name)?;
+                doc.fields
+                    .get(field.as_str())
+                    .and_then(FieldValue::as_str)
+                    .filter(|s| !s.is_empty() && !schema.null_values.contains(*s))
+                    .map(|val| (et, val.to_owned()))
+            })
+            .collect();
+
+        for i in 0..entities.len() {
+            for j in (i + 1)..entities.len() {
+                let (type_a, ref key_a) = entities[i];
+                let (type_b, ref key_b) = entities[j];
+
+                let (ordered_type, ordered_key_a, ordered_key_b) =
+                    if (type_a as u8) <= (type_b as u8) {
+                        ((type_a, type_b), key_a.clone(), key_b.clone())
+                    } else {
+                        ((type_b, type_a), key_b.clone(), key_a.clone())
+                    };
+
+                let matrix = cooccurrence.entry(ordered_type).or_default();
+                *matrix
+                    .entries
+                    .entry((ordered_key_a, ordered_key_b))
+                    .or_insert(0.0) += 1.0;
+            }
+        }
+    }
+}
+
+/// Update co-occurrence matrices with PMI tracking using schema field mappings.
+pub fn update_cooccurrence_with_pmi_and_schema(
+    matrices: &mut HashMap<(EntityType, EntityType), CooccurrenceMatrix>,
+    docs: &[Document],
+    schema: &CompiledEntitySchema,
+) {
+    for doc in docs {
+        let entities: Vec<(EntityType, String)> = schema
+            .field_to_entity
+            .iter()
+            .filter_map(|(field, entity_type_name)| {
+                let et = parse_entity_type(entity_type_name)?;
+                doc.fields
+                    .get(field.as_str())
+                    .and_then(FieldValue::as_str)
+                    .filter(|s| !s.is_empty() && !schema.null_values.contains(*s))
+                    .map(|val| (et, val.to_owned()))
+            })
+            .collect();
+
+        for i in 0..entities.len() {
+            for j in (i + 1)..entities.len() {
+                let (type_a, ref key_a) = entities[i];
+                let (type_b, ref key_b) = entities[j];
+
+                let (ordered_type, ordered_key_a, ordered_key_b) =
+                    if (type_a as u8) <= (type_b as u8) {
+                        ((type_a, type_b), key_a.clone(), key_b.clone())
+                    } else {
+                        ((type_b, type_a), key_b.clone(), key_a.clone())
+                    };
+
+                let matrix = matrices.entry(ordered_type).or_default();
+                *matrix
+                    .counts
+                    .entries
+                    .entry((ordered_key_a.clone(), ordered_key_b.clone()))
+                    .or_insert(0.0) += 1.0;
+
+                *matrix.marginals.entry(ordered_key_a).or_insert(0.0) += 1.0;
+                *matrix.marginals.entry(ordered_key_b).or_insert(0.0) += 1.0;
+                matrix.total_docs += 1.0;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

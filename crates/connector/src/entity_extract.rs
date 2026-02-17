@@ -178,3 +178,128 @@ fn get_affiliate(doc: &Document) -> Option<&str> {
         .or_else(|| get_field(doc, "affiliateid"))
         .or_else(|| get_field(doc, "affiliateID"))
 }
+
+// ── Config-driven entity extraction ───────────────────────────────
+
+use stupid_rules::entity_schema::CompiledEntitySchema;
+
+/// Config-driven entity extraction using a compiled EntitySchema.
+///
+/// Replaces the hardcoded event-type dispatch table with schema-driven
+/// extraction plans. Falls back to the hardcoded extractor for unknown
+/// event types not in the schema.
+pub struct SchemaEntityExtractor;
+
+impl SchemaEntityExtractor {
+    /// Extract entities and edges from a document using the compiled schema.
+    ///
+    /// For each event type (including aliases), looks up the extraction plan
+    /// and processes entity fields and edge directives.
+    pub fn extract(
+        doc: &Document,
+        graph: &mut GraphStore,
+        segment_id: &SegmentId,
+        schema: &CompiledEntitySchema,
+    ) {
+        let event_type = doc.event_type.as_str();
+
+        let extractor = match schema.event_extractors.get(event_type) {
+            Some(e) => e,
+            None => return, // No extraction plan for this event type
+        };
+
+        // Extract entities: build a map of field_name → NodeId for edge creation.
+        let mut field_nodes: std::collections::HashMap<String, stupid_core::NodeId> =
+            std::collections::HashMap::new();
+
+        for entity_def in &extractor.entities {
+            // Try primary field, then fallback fields.
+            let value = get_field_with_schema(doc, &entity_def.field, schema)
+                .or_else(|| {
+                    entity_def
+                        .fallback_fields
+                        .iter()
+                        .find_map(|fb| get_field_with_schema(doc, fb, schema))
+                });
+
+            if let Some(val) = value {
+                let key_prefix = schema
+                    .key_prefixes
+                    .get(&entity_def.entity_type)
+                    .map(|p| p.as_str())
+                    .unwrap_or("");
+
+                // Parse the Rust EntityType from the schema string.
+                if let Some(entity_type) = parse_entity_type(&entity_def.entity_type) {
+                    let node_key = format!("{}{}", key_prefix, val);
+                    let node_id = graph.upsert_node(entity_type, &node_key, segment_id);
+                    field_nodes.insert(entity_def.field.clone(), node_id);
+                }
+            }
+        }
+
+        // Create edges between extracted entities.
+        for edge_def in &extractor.edges {
+            if let (Some(&from_id), Some(&to_id)) = (
+                field_nodes.get(&edge_def.from_field),
+                field_nodes.get(&edge_def.to_field),
+            ) {
+                if let Some(edge_type) = parse_edge_type(&edge_def.edge) {
+                    graph.add_edge(from_id, to_id, edge_type, segment_id);
+                }
+            }
+        }
+    }
+}
+
+/// Get a field value, filtering out schema-defined null values.
+fn get_field_with_schema<'a>(
+    doc: &'a Document,
+    name: &str,
+    schema: &CompiledEntitySchema,
+) -> Option<&'a str> {
+    doc.fields.get(name).and_then(|v| match v {
+        FieldValue::Text(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || schema.null_values.contains(trimmed) {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        _ => None,
+    })
+}
+
+/// Parse an EntityType from a schema string name.
+fn parse_entity_type(name: &str) -> Option<EntityType> {
+    match name {
+        "Member" => Some(EntityType::Member),
+        "Device" => Some(EntityType::Device),
+        "Game" => Some(EntityType::Game),
+        "Affiliate" => Some(EntityType::Affiliate),
+        "Currency" => Some(EntityType::Currency),
+        "VipGroup" => Some(EntityType::VipGroup),
+        "Error" => Some(EntityType::Error),
+        "Platform" => Some(EntityType::Platform),
+        "Popup" => Some(EntityType::Popup),
+        "Provider" => Some(EntityType::Provider),
+        _ => None,
+    }
+}
+
+/// Parse an EdgeType from a schema string name.
+fn parse_edge_type(name: &str) -> Option<EdgeType> {
+    match name {
+        "LoggedInFrom" => Some(EdgeType::LoggedInFrom),
+        "OpenedGame" => Some(EdgeType::OpenedGame),
+        "SawPopup" => Some(EdgeType::SawPopup),
+        "HitError" => Some(EdgeType::HitError),
+        "BelongsToGroup" => Some(EdgeType::BelongsToGroup),
+        "ReferredBy" => Some(EdgeType::ReferredBy),
+        "UsesCurrency" => Some(EdgeType::UsesCurrency),
+        "PlaysOnPlatform" => Some(EdgeType::PlaysOnPlatform),
+        "ProvidedBy" => Some(EdgeType::ProvidedBy),
+        _ => None,
+    }
+}

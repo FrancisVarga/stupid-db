@@ -10,7 +10,7 @@ use stupid_rules::schema::{
 /// Integration tests run from the crate directory, so we go up two levels.
 fn examples_dir() -> std::path::PathBuf {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest.join("../../data/rules/examples")
+    manifest.join("../../data/rules/anomaly/examples")
 }
 
 /// Resolve the default rules directory (root of data/rules/).
@@ -20,7 +20,7 @@ fn defaults_dir() -> std::path::PathBuf {
 }
 
 fn load_default_rule(filename: &str) -> AnomalyRule {
-    let path = defaults_dir().join(filename);
+    let path = defaults_dir().join("anomaly").join(filename);
     let yaml = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
     serde_yaml::from_str(&yaml)

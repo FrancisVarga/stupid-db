@@ -1,9 +1,11 @@
 //! Comprehensive rule validation with structured errors and suggestions.
 //!
-//! Validates all aspects of an [`AnomalyRule`]: schema, detection, schedule,
-//! notifications, and filters. Returns a [`ValidationResult`] with errors
-//! (block save) and warnings (advisory).
+//! Validates all aspects of rule documents: AnomalyRule (schema, detection,
+//! schedule, notifications, filters) and config rule kinds (EntitySchema,
+//! FeatureConfig, ScoringConfig, TrendConfig, PatternConfig).
+//! Returns a [`ValidationResult`] with errors (block save) and warnings (advisory).
 
+pub(crate) mod config_checks;
 mod filter_checks;
 mod notification_checks;
 mod schedule_checks;
@@ -92,6 +94,36 @@ pub fn validate_rule(rule: &AnomalyRule) -> ValidationResult {
     schedule_checks::validate_schedule(rule, &mut result);
     notification_checks::validate_notifications(rule, &mut result);
     filter_checks::validate_filters(rule, &mut result);
+    result
+}
+
+/// Validate any [`RuleDocument`] variant, dispatching to the appropriate validator.
+pub fn validate_document(doc: &RuleDocument) -> ValidationResult {
+    let mut result = ValidationResult::new();
+    match doc {
+        RuleDocument::Anomaly(rule) => {
+            schema_checks::validate_schema(rule, &mut result);
+            schema_checks::validate_detection(rule, &mut result);
+            schedule_checks::validate_schedule(rule, &mut result);
+            notification_checks::validate_notifications(rule, &mut result);
+            filter_checks::validate_filters(rule, &mut result);
+        }
+        RuleDocument::EntitySchema(rule) => {
+            config_checks::validate_entity_schema(rule, &mut result);
+        }
+        RuleDocument::FeatureConfig(rule) => {
+            config_checks::validate_feature_config(rule, &mut result);
+        }
+        RuleDocument::ScoringConfig(rule) => {
+            config_checks::validate_scoring_config(rule, &mut result);
+        }
+        RuleDocument::TrendConfig(rule) => {
+            config_checks::validate_trend_config(rule, &mut result);
+        }
+        RuleDocument::PatternConfig(rule) => {
+            config_checks::validate_pattern_config(rule, &mut result);
+        }
+    }
     result
 }
 

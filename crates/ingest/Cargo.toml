@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 stupid-core = { path = "../core" }
+stupid-rules = { path = "../rules" }
 parquet = { workspace = true }
 arrow = { workspace = true }
 tracing = { workspace = true }
