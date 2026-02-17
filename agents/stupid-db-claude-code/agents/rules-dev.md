@@ -62,6 +62,12 @@ You are a specialist in the stupid-db YAML rules system.
 - Schema sync tests verify YAML types match Rust enums
 - Always test with actual YAML files from data/rules/
 
+## Related Skills
+
+- **rule-authoring** — Complete YAML schema reference for all 6 kinds (field-level detail)
+- **rule-validation** — Validation patterns, common errors, debugging, testing strategies
+- **anomaly-detection-patterns** — Templates, composition trees, multi-signal scoring, enrichment
+
 ## Before Writing Code
 
 1. Read schema.rs to understand current RuleDocument enum
