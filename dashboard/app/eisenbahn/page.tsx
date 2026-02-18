@@ -323,16 +323,30 @@ export default function EisenbahnPage() {
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-6 py-6">
         <div className="max-w-[1400px] mx-auto space-y-6">
-          {/* Error state */}
-          {error && (
+          {/* Error state — broker unreachable */}
+          {error && !metrics && (
             <div
-              className="rounded-xl p-4"
+              className="rounded-xl p-5"
               style={{
                 background: "rgba(255, 71, 87, 0.05)",
                 border: "1px solid rgba(255, 71, 87, 0.2)",
               }}
             >
-              <span className="text-red-400 text-sm font-mono">{error}</span>
+              <div className="flex items-center gap-3 mb-2">
+                <div className="w-2.5 h-2.5 rounded-full bg-red-400 animate-pulse" />
+                <span className="text-red-400 text-sm font-bold font-mono tracking-wide">
+                  Broker Unreachable
+                </span>
+              </div>
+              <p className="text-slate-500 text-xs font-mono leading-relaxed ml-[22px]">
+                Cannot connect to eisenbahn broker at <code className="text-slate-400">localhost:9090</code>.
+                Start it with <code className="text-slate-400">./scripts/dev.sh --eisenbahn</code> or{" "}
+                <code className="text-slate-400">cargo run --bin eisenbahn-launcher</code>.
+                <br />
+                <span className="text-slate-600 mt-1 inline-block">
+                  Auto-reconnecting every second...
+                </span>
+              </p>
             </div>
           )}
 
