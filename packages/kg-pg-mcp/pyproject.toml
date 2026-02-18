@@ -5,7 +5,7 @@ description = "Knowledge Graph MCP server with PostgreSQL pgvector for embedding
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "fastmcp>=2.14.5",
+    "fastmcp[tasks]>=3.0.0rc1",
     "loguru>=0.7.3",
     "python-dotenv>=1.2.1",
     "pydantic-settings>=2.7.0",
@@ -19,6 +19,7 @@ dependencies = [
     "markdownify>=0.14.1",
     "pymupdf>=1.27.1",
     "tiktoken>=0.8.0",
+    "joblib>=1.5.3",
 ]
 
 [project.scripts]

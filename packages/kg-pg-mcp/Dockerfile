@@ -3,18 +3,19 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Layer 1: uv cache — only re-runs when lockfile or deps change
-COPY pyproject.toml ./
+# Layer 1: Install only dependencies (cached unless pyproject.toml changes)
+# Extract deps and write to requirements.txt to avoid shell metachar issues (<, >)
+COPY pyproject.toml README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --compile-bytecode \
-    --no-deps --dry-run . 2>/dev/null || true
+    python3 -c "import tomllib,pathlib;d=tomllib.loads(pathlib.Path('pyproject.toml').read_text());print('\n'.join(d['project']['dependencies']))" > /tmp/requirements.txt && \
+    uv pip install --system --compile-bytecode -r /tmp/requirements.txt
 
-# Layer 2: Install all dependencies (cached unless pyproject.toml changes)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --compile-bytecode .
-
-# Layer 3: Copy application code (changes most often — last layer)
+# Layer 2: Copy source and install the project itself (no-deps — deps already cached)
 COPY kg_pg_mcp/ ./kg_pg_mcp/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --compile-bytecode --no-deps .
+
+# Layer 3: Copy non-Python files needed at runtime
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
 
@@ -47,9 +48,9 @@ ENV KG_PORT=12312
 
 EXPOSE 12312
 
-# Health check via HTTP (FastMCP SSE exposes /sse endpoint)
+# Health check via HTTP — use HEAD to avoid SSE stream hang
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:12312/sse', timeout=3)" || exit 1
+    CMD python -c "import httpx; httpx.head('http://localhost:12312/sse', timeout=3)" || exit 1
 
 # Run migrations then start the MCP server
 CMD ["sh", "-c", "python -m alembic upgrade head && python -m kg_pg_mcp.server"]
