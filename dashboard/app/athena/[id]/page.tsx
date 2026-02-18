@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import AthenaQueryPanel from "@/components/db/AthenaQueryPanel";
 import AthenaQueryLogPanel from "@/components/db/AthenaQueryLog";
+import AthenaConnectionOverview from "@/components/db/AthenaConnectionOverview";
 import AthenaAIChat from "@/components/db/AthenaAIChat";
 import type { AthenaAIChatHandle } from "@/components/db/AthenaAIChat";
 import {
@@ -40,7 +41,7 @@ export default function AthenaConnectionDetailPage() {
   const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
 
   // Right panel tab
-  const [rightTab, setRightTab] = useState<"query" | "logs">("query");
+  const [rightTab, setRightTab] = useState<"overview" | "query" | "logs">("overview");
   const [queryLogRefreshKey, setQueryLogRefreshKey] = useState(0);
 
   // Clipboard feedback
@@ -377,6 +378,9 @@ export default function AthenaConnectionDetailPage() {
             className="flex items-center gap-1 px-4 pt-3 pb-1 shrink-0"
             style={{ borderBottom: "1px solid rgba(16, 185, 129, 0.06)" }}
           >
+            <RightTabButton active={rightTab === "overview"} onClick={() => setRightTab("overview")}>
+              Overview
+            </RightTabButton>
             <RightTabButton active={rightTab === "query"} onClick={() => setRightTab("query")}>
               Query
             </RightTabButton>
@@ -388,7 +392,15 @@ export default function AthenaConnectionDetailPage() {
             </RightTabButton>
           </div>
 
-          {rightTab === "query" ? (
+          {rightTab === "overview" ? (
+            <div className="flex-1 overflow-y-auto px-4 py-4">
+              <AthenaConnectionOverview
+                connectionId={id}
+                connection={connection}
+                schema={schema}
+              />
+            </div>
+          ) : rightTab === "query" ? (
             <div className="flex-1 flex min-h-0">
               {/* AI Chat panel (left) */}
               <div
