@@ -1,6 +1,7 @@
-//! Health, loading, stats, catalog, queue status, and scheduler metrics endpoints.
+//! Health, loading, stats, queue status, and scheduler metrics endpoints.
 //!
 //! SRP: server readiness and operational metrics.
+//! Note: catalog endpoints moved to catalog_api.rs.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -11,8 +12,6 @@ use serde::Serialize;
 
 use crate::credential_store::CredentialStore;
 use crate::state::AppState;
-
-use super::NotReadyResponse;
 
 // ── Health & Loading ──────────────────────────────────────────────
 
@@ -105,38 +104,6 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Json<StatsResponse> {
         community_count: comm_count,
         degree_count: deg_count,
     })
-}
-
-// ── Catalog endpoint ───────────────────────────────────────────────
-
-/// Return the entity/schema catalog (available after loading completes).
-#[utoipa::path(
-    get,
-    path = "/catalog",
-    tag = "Health",
-    responses(
-        (status = 200, description = "Entity and schema catalog", body = Object),
-        (status = 503, description = "Service not ready", body = NotReadyResponse)
-    )
-)]
-pub async fn catalog(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<stupid_catalog::Catalog>, (axum::http::StatusCode, Json<NotReadyResponse>)> {
-    super::require_ready(&state).await?;
-    let catalog_lock = state.catalog.read().await;
-    match catalog_lock.as_ref() {
-        Some(cat) => Ok(Json(cat.clone())),
-        None => {
-            let status = state.loading.to_status().await;
-            Err((
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                Json(NotReadyResponse {
-                    error: "Catalog not yet built.",
-                    loading: status,
-                }),
-            ))
-        }
-    }
 }
 
 // ── Queue status ──────────────────────────────────────────────

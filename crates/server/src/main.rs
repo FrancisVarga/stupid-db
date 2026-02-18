@@ -1,5 +1,6 @@
 mod anomaly_rules;
 mod api;
+mod catalog_api;
 mod db;
 mod vector_store;
 mod rules;
@@ -274,7 +275,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         .route("/graph/nodes", get(api::graph_nodes))
         .route("/graph/nodes/{id}", get(api::graph_node_by_id))
         .route("/graph/force", get(api::graph_force))
-        .route("/catalog", get(api::catalog))
+        // /catalog routes handled by catalog_api::catalog_router()
         .route("/compute/pagerank", get(api::compute_pagerank))
         .route("/compute/communities", get(api::compute_communities))
         .route("/compute/degrees", get(api::compute_degrees))
@@ -324,6 +325,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
     let app = app
         .merge(anomaly_rules::anomaly_rules_router())
         .merge(rules::rules_router())
+        .merge(catalog_api::catalog_router())
         .layer(CorsLayer::permissive())
         .with_state(state.clone())
         .merge(Scalar::with_url("/docs", api::doc::ApiDoc::openapi()));

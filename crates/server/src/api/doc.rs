@@ -14,6 +14,7 @@ use utoipa::OpenApi;
     ),
     tags(
         (name = "Health", description = "Server readiness, stats, and operational metrics"),
+        (name = "Catalog", description = "Schema catalog CRUD, segment partials, external sources, snapshots, and query execution"),
         (name = "Graph", description = "Knowledge-graph node queries and force-layout data"),
         (name = "Compute", description = "PageRank, communities, co-occurrence, trends, and anomalies"),
         (name = "Query", description = "Natural-language query via LLM-generated plans"),
@@ -32,9 +33,21 @@ use utoipa::OpenApi;
         crate::api::health::health,
         crate::api::health::loading,
         crate::api::health::stats,
-        crate::api::health::catalog,
         crate::api::health::queue_status,
         crate::api::health::scheduler_metrics,
+        // Catalog
+        crate::catalog_api::get_catalog,
+        crate::catalog_api::get_manifest,
+        crate::catalog_api::rebuild_catalog,
+        crate::catalog_api::list_segments,
+        crate::catalog_api::get_segment,
+        crate::catalog_api::delete_segment,
+        crate::catalog_api::list_externals,
+        crate::catalog_api::get_external,
+        crate::catalog_api::add_external,
+        crate::catalog_api::delete_external,
+        crate::catalog_api::create_snapshot,
+        crate::catalog_api::execute_query,
         // Graph
         crate::api::graph::graph_nodes,
         crate::api::graph::graph_node_by_id,
@@ -177,6 +190,11 @@ use utoipa::OpenApi;
         crate::api::agents::SessionExecuteTeamRequest,
         crate::api::agents::SessionExecuteRequest,
         crate::api::agents::SessionStreamRequest,
+        // Catalog
+        crate::catalog_api::SegmentListResponse,
+        crate::catalog_api::RebuildResponse,
+        crate::catalog_api::SnapshotResponse,
+        crate::catalog_api::QueryExecuteRequest,
         // Anomaly Rules
         crate::anomaly_rules::RuleSummary,
         crate::anomaly_rules::RunResult,

@@ -54,7 +54,7 @@ pub(crate) async fn require_ready(
 // ── Re-exports ───────────────────────────────────────────────────
 // Preserves flat `api::foo` import paths used by main.rs route registration.
 
-pub use health::{health, loading, stats, catalog, queue_status, scheduler_metrics};
+pub use health::{health, loading, stats, queue_status, scheduler_metrics};
 pub use graph::{graph_nodes, graph_node_by_id, graph_force};
 pub use compute::{
     compute_pagerank, compute_communities, compute_degrees,
