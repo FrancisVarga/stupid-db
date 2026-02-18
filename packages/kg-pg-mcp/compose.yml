@@ -4,11 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8100:8100"
+      - "12312:12312"
     env_file:
       - .env
     environment:
       KG_TRANSPORT: sse
       KG_HOST: 0.0.0.0
-      KG_PORT: 8100
+      KG_PORT: 12312
     restart: unless-stopped

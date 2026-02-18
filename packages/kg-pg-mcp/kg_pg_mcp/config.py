@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Server
     transport: str = "stdio"  # stdio | sse
     host: str = "0.0.0.0"
-    port: int = 8100
+    port: int = 12312
 
     @property
     def native_dimensions(self) -> int:

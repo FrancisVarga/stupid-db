@@ -43,13 +43,13 @@ USER mcp
 # Default: SSE transport for Docker (stdio doesn't make sense in containers)
 ENV KG_TRANSPORT=sse
 ENV KG_HOST=0.0.0.0
-ENV KG_PORT=8100
+ENV KG_PORT=12312
 
-EXPOSE 8100
+EXPOSE 12312
 
 # Health check via HTTP (FastMCP SSE exposes /sse endpoint)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8100/sse', timeout=3)" || exit 1
+    CMD python -c "import httpx; httpx.get('http://localhost:12312/sse', timeout=3)" || exit 1
 
 # Run migrations then start the MCP server
 CMD ["sh", "-c", "python -m alembic upgrade head && python -m kg_pg_mcp.server"]
