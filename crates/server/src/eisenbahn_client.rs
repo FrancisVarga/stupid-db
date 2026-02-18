@@ -16,8 +16,12 @@ use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use stupid_eisenbahn::{
-    EisenbahnConfig, EisenbahnError, EventSubscriber, Message, Worker,
-    WorkerBuilder, WorkerRunner, ZmqPublisher, ZmqSubscriber,
+    EisenbahnConfig, EisenbahnError, EventSubscriber, Message, RequestSender, Worker,
+    WorkerBuilder, WorkerRunner, ZmqPublisher, ZmqRequestClient, ZmqSubscriber,
+};
+use stupid_eisenbahn::services::{
+    AgentServiceRequest, AgentServiceResponse, AthenaServiceRequest,
+    CatalogQueryRequest, CatalogQueryResponse, QueryServiceRequest, QueryServiceResponse,
 };
 use stupid_eisenbahn::topics;
 
@@ -49,6 +53,11 @@ pub struct EisenbahnClient {
     shutdown: Arc<Notify>,
     /// Broadcast sender for forwarding eisenbahn events to WebSocket clients.
     ws_broadcast: tokio::sync::broadcast::Sender<String>,
+    // Service request clients (DEALER sockets for request/reply routing).
+    query_client: Option<Arc<ZmqRequestClient>>,
+    agent_client: Option<Arc<ZmqRequestClient>>,
+    athena_client: Option<Arc<ZmqRequestClient>>,
+    catalog_client: Option<Arc<ZmqRequestClient>>,
 }
 
 impl EisenbahnClient {
@@ -79,11 +88,21 @@ impl EisenbahnClient {
             ZmqSubscriber::connect(&eisenbahn_config.broker_backend_transport()).await?,
         );
 
+        // Connect service DEALER clients for any configured service endpoints.
+        let query_client = connect_service_client(&eisenbahn_config, "query").await;
+        let agent_client = connect_service_client(&eisenbahn_config, "agent").await;
+        let athena_client = connect_service_client(&eisenbahn_config, "athena").await;
+        let catalog_client = connect_service_client(&eisenbahn_config, "catalog").await;
+
         let client = Arc::new(Self {
             publisher,
             subscriber,
             shutdown: Arc::new(Notify::new()),
             ws_broadcast,
+            query_client,
+            agent_client,
+            athena_client,
+            catalog_client,
         });
 
         Ok(client)
@@ -180,6 +199,87 @@ impl EisenbahnClient {
     #[allow(dead_code)] // Will be used when server graceful shutdown is implemented
     pub fn shutdown(&self) {
         self.shutdown.notify_waiters();
+    }
+
+    // ── Service request helpers ─────────────────────────────────────
+
+    /// Send a query request to the query-worker and get the response.
+    pub async fn query(
+        &self,
+        request: QueryServiceRequest,
+        timeout: Duration,
+    ) -> Result<QueryServiceResponse, EisenbahnError> {
+        let client = self.query_client.as_ref()
+            .ok_or_else(|| EisenbahnError::Config("query service not configured".into()))?;
+        let msg = Message::new(topics::SVC_QUERY_REQUEST, &request)?;
+        let reply = client.request(msg, timeout).await?;
+        Ok(reply.decode::<QueryServiceResponse>()?)
+    }
+
+    /// Send an agent request to the agent-worker and get the response.
+    pub async fn agent_execute(
+        &self,
+        request: AgentServiceRequest,
+        timeout: Duration,
+    ) -> Result<AgentServiceResponse, EisenbahnError> {
+        let client = self.agent_client.as_ref()
+            .ok_or_else(|| EisenbahnError::Config("agent service not configured".into()))?;
+        let msg = Message::new(topics::SVC_AGENT_REQUEST, &request)?;
+        let reply = client.request(msg, timeout).await?;
+        Ok(reply.decode::<AgentServiceResponse>()?)
+    }
+
+    /// Send an athena request and get a stream of response chunks.
+    pub async fn athena_query_stream(
+        &self,
+        request: AthenaServiceRequest,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<Message, EisenbahnError>>, EisenbahnError> {
+        let client = self.athena_client.as_ref()
+            .ok_or_else(|| EisenbahnError::Config("athena service not configured".into()))?;
+        let msg = Message::new(topics::SVC_ATHENA_REQUEST, &request)?;
+        client.request_stream(msg).await
+    }
+
+    /// Send a catalog query request.
+    pub async fn catalog_query(
+        &self,
+        request: CatalogQueryRequest,
+        timeout: Duration,
+    ) -> Result<CatalogQueryResponse, EisenbahnError> {
+        let client = self.catalog_client.as_ref()
+            .ok_or_else(|| EisenbahnError::Config("catalog service not configured".into()))?;
+        let msg = Message::new(topics::SVC_CATALOG_REQUEST, &request)?;
+        let reply = client.request(msg, timeout).await?;
+        Ok(reply.decode::<CatalogQueryResponse>()?)
+    }
+
+    /// Check if a specific service is available.
+    pub fn has_service(&self, name: &str) -> bool {
+        match name {
+            "query" => self.query_client.is_some(),
+            "agent" => self.agent_client.is_some(),
+            "athena" => self.athena_client.is_some(),
+            "catalog" => self.catalog_client.is_some(),
+            _ => false,
+        }
+    }
+}
+
+/// Connect a DEALER client to a named service, logging success or skip.
+async fn connect_service_client(
+    config: &EisenbahnConfig,
+    name: &str,
+) -> Option<Arc<ZmqRequestClient>> {
+    let transport = config.service_transport(name)?;
+    match ZmqRequestClient::connect(&transport).await {
+        Ok(client) => {
+            info!(service = %name, endpoint = %transport.endpoint(), "connected service client");
+            Some(Arc::new(client))
+        }
+        Err(e) => {
+            warn!(service = %name, error = %e, "failed to connect service client — skipping");
+            None
+        }
     }
 }
 

@@ -240,6 +240,21 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
     // Initialize PostgreSQL connection pool and run migrations.
     let pg_pool = db::init_pg_pool(&config.postgres).await;
 
+    // Optionally connect the eisenbahn messaging client (ZMQ broker integration).
+    let eb_client = if eisenbahn {
+        info!("--eisenbahn flag active — connecting to broker");
+        let eb_config = eisenbahn_client::EisenbahnClientConfig::default();
+        match eisenbahn_client::EisenbahnClient::connect(&eb_config, broadcast_tx.clone()).await {
+            Ok(client) => Some(client),
+            Err(e) => {
+                error!("failed to connect to eisenbahn broker: {} — continuing without eisenbahn", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(state::AppState {
         graph: shared_graph.clone(),
         knowledge: knowledge.clone(),
@@ -262,6 +277,7 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         athena_connections: Arc::new(RwLock::new(athena_conn_store)),
         embedder: build_embedder(config),
         session_store: Arc::new(RwLock::new(session_store)),
+        eisenbahn: eb_client.clone(),
         rule_loader,
         trigger_history: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         audit_log: stupid_rules::audit_log::AuditLog::new(),
@@ -401,19 +417,10 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         });
     }
 
-    // Optionally start eisenbahn messaging client (ZMQ broker integration).
-    if eisenbahn {
-        info!("--eisenbahn flag active — connecting to broker");
-        let eb_config = eisenbahn_client::EisenbahnClientConfig::default();
-        match eisenbahn_client::EisenbahnClient::connect(&eb_config, state.broadcast.clone()).await {
-            Ok(client) => {
-                client.start().await;
-                info!("eisenbahn client active — server registered as api-gateway worker");
-            }
-            Err(e) => {
-                error!("failed to connect to eisenbahn broker: {} — continuing without eisenbahn", e);
-            }
-        }
+    // Start the eisenbahn event loop and worker runner if connected.
+    if let Some(ref eb) = eb_client {
+        eb.start().await;
+        info!("eisenbahn client active — server registered as api-gateway worker");
     }
 
     axum::serve(listener, app).await?;

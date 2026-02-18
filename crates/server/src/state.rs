@@ -59,6 +59,8 @@ pub struct AppState {
     pub embedder: Option<Arc<dyn stupid_ingest::embedding::Embedder>>,
     /// Session store for agent chat history persistence.
     pub session_store: Arc<tokio::sync::RwLock<stupid_agent::session::SessionStore>>,
+    /// Eisenbahn messaging client for ZMQ-based service routing.
+    pub eisenbahn: Option<Arc<crate::eisenbahn_client::EisenbahnClient>>,
     /// Anomaly rule loader (filesystem-backed with hot-reload).
     pub rule_loader: stupid_rules::loader::RuleLoader,
     /// Per-rule trigger history for the `/anomaly-rules/{id}/history` endpoint.
