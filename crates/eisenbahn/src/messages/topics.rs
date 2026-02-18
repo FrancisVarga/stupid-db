@@ -30,3 +30,29 @@ pub const COMPUTE_RESULT: &str = "eisenbahn.pipeline.compute";
 
 /// Entity/edge updates flowing into the graph store.
 pub const GRAPH_UPDATE: &str = "eisenbahn.pipeline.graph";
+
+// ── Service request/reply topics ─────────────────────────────────────────
+
+/// Query service request.
+pub const SVC_QUERY_REQUEST: &str = "eisenbahn.svc.query.request";
+/// Query service response.
+pub const SVC_QUERY_RESPONSE: &str = "eisenbahn.svc.query.response";
+
+/// Agent service request.
+pub const SVC_AGENT_REQUEST: &str = "eisenbahn.svc.agent.request";
+/// Agent service response.
+pub const SVC_AGENT_RESPONSE: &str = "eisenbahn.svc.agent.response";
+
+/// Athena service request.
+pub const SVC_ATHENA_REQUEST: &str = "eisenbahn.svc.athena.request";
+/// Athena service response.
+pub const SVC_ATHENA_RESPONSE: &str = "eisenbahn.svc.athena.response";
+/// Athena streaming chunk.
+pub const SVC_ATHENA_STREAM: &str = "eisenbahn.svc.athena.stream";
+/// Athena query completion signal.
+pub const SVC_ATHENA_DONE: &str = "eisenbahn.svc.athena.done";
+
+/// Catalog query service request.
+pub const SVC_CATALOG_REQUEST: &str = "eisenbahn.svc.catalog.request";
+/// Catalog query service response.
+pub const SVC_CATALOG_RESPONSE: &str = "eisenbahn.svc.catalog.response";

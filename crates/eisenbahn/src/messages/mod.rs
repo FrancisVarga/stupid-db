@@ -7,7 +7,9 @@
 
 pub mod events;
 pub mod pipeline;
+pub mod services;
 pub mod topics;
 
 pub use events::*;
 pub use pipeline::*;
+pub use services::*;
