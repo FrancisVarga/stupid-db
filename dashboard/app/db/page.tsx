@@ -13,6 +13,7 @@ export default function DatabaseBrowserPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionSafe | null>(null);
   const [sidebarKey, setSidebarKey] = useState(0);
+  const [syncing, setSyncing] = useState(false);
 
   const loadDatabases = useCallback(() => {
     setLoading(true);
@@ -43,6 +44,17 @@ export default function DatabaseBrowserPage() {
     }
   };
 
+  const handleSyncCatalog = async () => {
+    setSyncing(true);
+    try {
+      await fetch("/api/v1/meta/catalog/sync", { method: "POST" });
+    } catch {
+      // Non-critical — catalog sync failure shouldn't alarm the user
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const totalTables = databases.reduce((sum, db) => sum + db.table_count, 0);
   const connectedCount = databases.filter((d) => d.status === "connected").length;
 
@@ -68,17 +80,31 @@ export default function DatabaseBrowserPage() {
             Database Manager
           </h1>
         </div>
-        <button
-          onClick={() => setShowAddForm(true)}
-          className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
-          style={{
-            background: "rgba(0, 240, 255, 0.1)",
-            border: "1px solid rgba(0, 240, 255, 0.3)",
-            color: "#00f0ff",
-          }}
-        >
-          + Add Connection
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSyncCatalog}
+            disabled={syncing}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80 disabled:opacity-40"
+            style={{
+              background: "rgba(168, 85, 247, 0.1)",
+              border: "1px solid rgba(168, 85, 247, 0.3)",
+              color: "#a855f7",
+            }}
+          >
+            {syncing ? "Syncing..." : "Sync Catalog"}
+          </button>
+          <button
+            onClick={() => setShowAddForm(true)}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+            style={{
+              background: "rgba(0, 240, 255, 0.1)",
+              border: "1px solid rgba(0, 240, 255, 0.3)",
+              color: "#00f0ff",
+            }}
+          >
+            + Add Connection
+          </button>
+        </div>
       </header>
 
       {/* Body: sidebar + main */}

@@ -4,6 +4,7 @@ import {
   addConnection,
   type ConnectionInput,
 } from "@/lib/db/connections";
+import { syncConnectionsToCatalogAsync } from "@/lib/db/catalog-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -53,6 +54,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       color: body.color || "#00f0ff",
       ...(hasConnectionString ? { connection_string: body.connection_string!.trim() } : {}),
     });
+
+    // Sync new connection's schema to the catalog (fire-and-forget)
+    syncConnectionsToCatalogAsync();
 
     return NextResponse.json(conn, { status: 201 });
   } catch (err) {

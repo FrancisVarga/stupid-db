@@ -5,6 +5,7 @@ import {
   getConnection,
 } from "@/lib/db/connections";
 import { invalidatePool } from "@/lib/db/client";
+import { syncConnectionsToCatalogAsync } from "@/lib/db/catalog-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,8 @@ export async function PUT(
     }
     // Invalidate cached pool so next request uses new config
     invalidatePool(id);
+    // Sync updated schema to catalog (fire-and-forget)
+    syncConnectionsToCatalogAsync();
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(
@@ -45,6 +48,8 @@ export async function DELETE(
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
     invalidatePool(id);
+    // Sync catalog to remove deleted connection's schema (fire-and-forget)
+    syncConnectionsToCatalogAsync();
     return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
