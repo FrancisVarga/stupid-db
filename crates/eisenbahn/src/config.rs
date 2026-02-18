@@ -28,6 +28,10 @@ pub struct EisenbahnConfig {
     /// Default transport settings.
     #[serde(default)]
     pub transport: TransportConfig,
+
+    /// Named service endpoints for request/reply routing.
+    #[serde(default)]
+    pub services: HashMap<String, ServiceConfig>,
 }
 
 // ── Section configs ─────────────────────────────────────────────────
@@ -161,6 +165,21 @@ impl Default for TransportConfig {
     }
 }
 
+/// Configuration for a named request/reply service endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    /// The endpoint where the service worker binds its ROUTER socket.
+    pub endpoint: String,
+
+    /// Request timeout in seconds (default: 30).
+    #[serde(default = "default_service_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_service_timeout() -> u64 {
+    30
+}
+
 // ── Loading & Validation ────────────────────────────────────────────
 
 impl EisenbahnConfig {
@@ -185,6 +204,7 @@ impl EisenbahnConfig {
             workers: HashMap::new(),
             pipeline: PipelineTopology::default(),
             transport: TransportConfig::default(),
+            services: HashMap::new(),
         }
     }
 
@@ -203,6 +223,7 @@ impl EisenbahnConfig {
                 default_host: broker_host.into(),
                 base_port: broker_port + 10,
             },
+            services: HashMap::new(),
         }
     }
 
@@ -214,6 +235,15 @@ impl EisenbahnConfig {
     /// Resolve the broker's backend transport.
     pub fn broker_backend_transport(&self) -> Transport {
         parse_endpoint_to_transport(&self.broker.backend)
+    }
+
+    /// Resolve a named service's endpoint to a [`Transport`].
+    ///
+    /// Returns `None` if the service name is not configured.
+    pub fn service_transport(&self, name: &str) -> Option<Transport> {
+        self.services
+            .get(name)
+            .map(|svc| parse_endpoint_to_transport(&svc.endpoint))
     }
 
     /// Get the topologically sorted pipeline stage order.
