@@ -46,6 +46,9 @@ use utoipa::OpenApi;
         crate::catalog_api::get_external,
         crate::catalog_api::add_external,
         crate::catalog_api::delete_external,
+        crate::catalog_api::list_databases,
+        crate::catalog_api::list_tables,
+        crate::catalog_api::list_columns,
         crate::catalog_api::create_snapshot,
         crate::catalog_api::execute_query,
         // Graph
@@ -195,6 +198,9 @@ use utoipa::OpenApi;
         crate::catalog_api::RebuildResponse,
         crate::catalog_api::SnapshotResponse,
         crate::catalog_api::QueryExecuteRequest,
+        crate::catalog_api::ExternalSourceSummary,
+        crate::catalog_api::DatabaseSummary,
+        crate::catalog_api::TableSummary,
         // Anomaly Rules
         crate::anomaly_rules::RuleSummary,
         crate::anomaly_rules::RunResult,

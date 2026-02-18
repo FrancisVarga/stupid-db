@@ -27,7 +27,7 @@ pub struct NotReadyResponse {
     pub loading: LoadingStatus,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct QueryErrorResponse {
     pub error: String,
 }
