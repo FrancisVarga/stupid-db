@@ -38,4 +38,9 @@ pub struct CliArgs {
     /// Maximum agentic loop iterations per turn
     #[arg(long, default_value = "10")]
     pub max_iterations: usize,
+
+    /// Server URL for remote mode (connects to stupid-db server instead of local LLM).
+    /// When set, CLI becomes a thin client — messages are visible in the dashboard.
+    #[arg(long)]
+    pub server: Option<String>,
 }

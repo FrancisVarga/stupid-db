@@ -34,6 +34,10 @@ pub struct CliConfig {
     /// Maximum context window tokens
     #[serde(default = "default_max_tokens")]
     pub max_context_tokens: usize,
+
+    /// Default server URL for remote mode
+    #[serde(default)]
+    pub server_url: Option<String>,
 }
 
 fn default_provider() -> String {
@@ -62,6 +66,7 @@ impl Default for CliConfig {
             ollama_url: default_ollama_url(),
             openai_base_url: default_openai_url(),
             max_context_tokens: default_max_tokens(),
+            server_url: None,
         }
     }
 }

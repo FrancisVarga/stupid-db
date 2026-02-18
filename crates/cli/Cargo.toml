@@ -23,3 +23,5 @@ dirs = { workspace = true }
 crossterm = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
