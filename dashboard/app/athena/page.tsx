@@ -286,41 +286,48 @@ function StatCard({
   );
 }
 
+function normalizeStatus(raw: string): string {
+  if (raw.startsWith("failed")) return "failed";
+  return raw;
+}
+
 function SchemaStatusBadge({ status }: { status: string }) {
+  const normalized = normalizeStatus(status);
   let bg: string;
-  let color: string;
+  let badgeColor: string;
   let pulse = false;
 
-  switch (status) {
+  switch (normalized) {
     case "ready":
       bg = "rgba(6, 214, 160, 0.1)";
-      color = "#06d6a0";
+      badgeColor = "#06d6a0";
       break;
     case "pending":
       bg = "rgba(250, 204, 21, 0.1)";
-      color = "#facc15";
+      badgeColor = "#facc15";
       pulse = true;
       break;
     case "fetching":
       bg = "rgba(59, 130, 246, 0.1)";
-      color = "#3b82f6";
+      badgeColor = "#3b82f6";
       pulse = true;
       break;
     case "error":
+    case "failed":
       bg = "rgba(255, 71, 87, 0.1)";
-      color = "#ff4757";
+      badgeColor = "#ff4757";
       break;
     default:
       bg = "rgba(100, 116, 139, 0.1)";
-      color = "#64748b";
+      badgeColor = "#64748b";
   }
 
   return (
     <span
       className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded${pulse ? " animate-pulse" : ""}`}
-      style={{ background: bg, color }}
+      style={{ background: bg, color: badgeColor }}
     >
-      {status}
+      {normalized}
     </span>
   );
 }

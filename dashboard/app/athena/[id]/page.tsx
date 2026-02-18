@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AthenaQueryPanel from "@/components/db/AthenaQueryPanel";
@@ -12,8 +12,13 @@ import {
   type AthenaSchema,
   type AthenaConnectionSafe,
   type AthenaDatabase,
-  type AthenaTable,
 } from "@/lib/db/athena-connections";
+
+/** Normalize backend status strings: "failed: ..." → "failed" */
+function normalizeStatus(raw: string): string {
+  if (raw.startsWith("failed")) return "failed";
+  return raw;
+}
 
 export default function AthenaConnectionDetailPage() {
   const params = useParams();
@@ -22,6 +27,7 @@ export default function AthenaConnectionDetailPage() {
   const [connection, setConnection] = useState<AthenaConnectionSafe | null>(null);
   const [schema, setSchema] = useState<AthenaSchema | null>(null);
   const [schemaStatus, setSchemaStatus] = useState<string>("pending");
+  const [schemaStatusRaw, setSchemaStatusRaw] = useState<string>("pending");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -38,6 +44,9 @@ export default function AthenaConnectionDetailPage() {
   // Clipboard feedback
   const [copiedTable, setCopiedTable] = useState<string | null>(null);
 
+  // Polling ref for cleanup
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     setLoading(true);
     setError(null);
@@ -48,7 +57,8 @@ export default function AthenaConnectionDetailPage() {
       .then(([conn, schemaRes]) => {
         setConnection(conn || null);
         setSchema(schemaRes.schema);
-        setSchemaStatus(schemaRes.schema_status);
+        setSchemaStatusRaw(schemaRes.schema_status);
+        setSchemaStatus(normalizeStatus(schemaRes.schema_status));
         setLoading(false);
       })
       .catch((e) => {
@@ -57,14 +67,49 @@ export default function AthenaConnectionDetailPage() {
       });
   }, [id, refreshKey]);
 
+  // Poll while status is "fetching" — the backend runs schema refresh async
+  useEffect(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    if (schemaStatus !== "fetching") return;
+
+    pollingRef.current = setInterval(() => {
+      getAthenaSchema(id)
+        .then((res) => {
+          const status = normalizeStatus(res.schema_status);
+          setSchemaStatusRaw(res.schema_status);
+          setSchemaStatus(status);
+          if (res.schema) setSchema(res.schema);
+          if (status !== "fetching" && pollingRef.current) {
+            clearInterval(pollingRef.current);
+            pollingRef.current = null;
+            setRefreshing(false);
+          }
+        })
+        .catch(() => {
+          // Ignore poll errors — will retry on next interval
+        });
+    }, 3000);
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [id, schemaStatus]);
+
   const handleRefreshSchema = useCallback(async () => {
     setRefreshing(true);
     try {
       await refreshAthenaSchema(id);
+      // Trigger re-fetch which will see "fetching" status and start polling
       setRefreshKey((k) => k + 1);
     } catch (e) {
       setError((e as Error).message);
-    } finally {
       setRefreshing(false);
     }
   }, [id]);
@@ -249,11 +294,16 @@ export default function AthenaConnectionDetailPage() {
               />
             )}
 
-            {schemaStatus === "error" && (
+            {(schemaStatus === "error" || schemaStatus === "failed") && (
               <div className="flex flex-col items-center gap-3 py-8">
                 <span className="text-xs text-red-400 font-mono text-center">
                   Schema fetch failed
                 </span>
+                {schemaStatusRaw.startsWith("failed:") && (
+                  <span className="text-[10px] text-red-400/60 font-mono text-center px-2 max-w-full break-words">
+                    {schemaStatusRaw.slice(8)}
+                  </span>
+                )}
                 <button
                   onClick={handleRefreshSchema}
                   disabled={refreshing}
@@ -519,40 +569,42 @@ function SchemaPlaceholder({
 // ── Schema status badge (reused from parent page) ──────────────────────
 
 function SchemaStatusBadge({ status }: { status: string }) {
+  const normalized = normalizeStatus(status);
   let bg: string;
-  let color: string;
+  let badgeColor: string;
   let pulse = false;
 
-  switch (status) {
+  switch (normalized) {
     case "ready":
       bg = "rgba(6, 214, 160, 0.1)";
-      color = "#06d6a0";
+      badgeColor = "#06d6a0";
       break;
     case "pending":
       bg = "rgba(250, 204, 21, 0.1)";
-      color = "#facc15";
+      badgeColor = "#facc15";
       pulse = true;
       break;
     case "fetching":
       bg = "rgba(59, 130, 246, 0.1)";
-      color = "#3b82f6";
+      badgeColor = "#3b82f6";
       pulse = true;
       break;
     case "error":
+    case "failed":
       bg = "rgba(255, 71, 87, 0.1)";
-      color = "#ff4757";
+      badgeColor = "#ff4757";
       break;
     default:
       bg = "rgba(100, 116, 139, 0.1)";
-      color = "#64748b";
+      badgeColor = "#64748b";
   }
 
   return (
     <span
       className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded${pulse ? " animate-pulse" : ""}`}
-      style={{ background: bg, color }}
+      style={{ background: bg, color: badgeColor }}
     >
-      {status}
+      {normalized}
     </span>
   );
 }
