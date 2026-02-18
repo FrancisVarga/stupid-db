@@ -177,8 +177,6 @@ async fn main() -> anyhow::Result<()> {
                     "run",
                     "--bin",
                     &worker_cfg.binary,
-                    "--package",
-                    "stupid-eisenbahn",
                     "--",
                 ],
                 &worker_cfg.env,

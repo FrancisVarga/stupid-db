@@ -42,6 +42,9 @@ impl ZmqPublisher {
     /// Use this for direct PUB/SUB without a broker (publisher binds, subscribers connect).
     #[instrument(skip_all, fields(endpoint = %transport))]
     pub async fn bind(transport: &Transport) -> Result<Self, EisenbahnError> {
+        transport
+            .ensure_ipc_dir()
+            .map_err(|e| EisenbahnError::Transport(e.to_string()))?;
         let mut socket = PubSocket::new();
         let endpoint = transport.endpoint();
         info!(endpoint = %endpoint, "binding PUB socket");

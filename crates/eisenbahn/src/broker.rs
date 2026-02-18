@@ -126,6 +126,20 @@ impl EventBroker {
     ///
     /// Returns when shutdown is signaled or an unrecoverable error occurs.
     pub async fn run(&self) -> Result<(), crate::error::EisenbahnError> {
+        // Ensure IPC socket directories exist before binding.
+        self.config
+            .frontend
+            .ensure_ipc_dir()
+            .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
+        self.config
+            .backend
+            .ensure_ipc_dir()
+            .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
+        self.config
+            .health
+            .ensure_ipc_dir()
+            .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
+
         // -- Frontend: SUB socket that publishers connect to --
         let mut frontend = SubSocket::new();
         frontend

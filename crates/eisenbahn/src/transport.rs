@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 /// Transport layer for ZeroMQ connections.
@@ -34,6 +36,22 @@ impl Transport {
             Self::Ipc(name) => format!("ipc:///tmp/stupid-db/{name}.sock"),
             Self::Tcp { host, port } => format!("tcp://{host}:{port}"),
         }
+    }
+
+    /// For IPC transports, ensure the parent directory exists.
+    ///
+    /// ZeroMQ requires the directory to exist before binding an IPC socket.
+    /// This is a no-op for TCP transports.
+    pub fn ensure_ipc_dir(&self) -> std::io::Result<()> {
+        if let Self::Ipc(_) = self {
+            let endpoint = self.endpoint();
+            // Strip the "ipc://" prefix to get the filesystem path.
+            let path = endpoint.strip_prefix("ipc://").unwrap_or(&endpoint);
+            if let Some(parent) = Path::new(path).parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        Ok(())
     }
 }
 

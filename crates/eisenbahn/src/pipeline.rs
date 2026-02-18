@@ -89,6 +89,9 @@ impl ZmqPipelineSender {
         transport: &Transport,
         config: PipelineConfig,
     ) -> Result<Self, EisenbahnError> {
+        transport
+            .ensure_ipc_dir()
+            .map_err(|e| EisenbahnError::Transport(e.to_string()))?;
         let mut socket = PushSocket::new();
         let endpoint = transport.endpoint();
         info!(endpoint = %endpoint, hwm = config.high_water_mark, "binding PUSH socket");
@@ -172,6 +175,9 @@ impl ZmqPipelineReceiver {
     pub async fn bind(
         transport: &Transport,
     ) -> Result<Self, EisenbahnError> {
+        transport
+            .ensure_ipc_dir()
+            .map_err(|e| EisenbahnError::Transport(e.to_string()))?;
         let mut socket = PullSocket::new();
         let endpoint = transport.endpoint();
         info!(endpoint = %endpoint, "binding PULL socket");
