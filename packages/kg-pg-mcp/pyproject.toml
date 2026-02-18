@@ -1,0 +1,29 @@
+[project]
+name = "kg-pg-mcp"
+version = "0.1.0"
+description = "Knowledge Graph MCP server with PostgreSQL pgvector for embedding and semantic search"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.14.5",
+    "loguru>=0.7.3",
+    "python-dotenv>=1.2.1",
+    "pydantic-settings>=2.7.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "pgvector>=0.3.6",
+    "alembic>=1.14.0",
+    "openai>=1.60.0",
+    "httpx>=0.28.0",
+    "beautifulsoup4>=4.12.0",
+    "markdownify>=0.14.1",
+    "pymupdf>=1.27.1",
+    "tiktoken>=0.8.0",
+]
+
+[project.scripts]
+kg-pg-mcp = "kg_pg_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
