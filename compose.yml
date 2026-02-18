@@ -285,8 +285,39 @@ services:
       start_period: 10s
       retries: 3
 
+  # ════════════════════════════════════════════════════════════════════
+  # Stille Post Worker (AI agent runtime for report pipelines)
+  # ════════════════════════════════════════════════════════════════════
+  stille-post-worker:
+    build:
+      context: ./services/stille-post-worker
+      dockerfile: Dockerfile
+    container_name: stille-post-worker
+    restart: unless-stopped
+    ports:
+      - "${SP_WORKER_PORT:-4100}:4100"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://${PG_USERNAME:-postgres}:${PG_PASSWORD:-}@${PG_HOST:-localhost}:${PG_PORT:-5432}/${PG_DATABASE:-stupiddb}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      API_BASE: http://stupid-db-server:39100
+      PORT: "4100"
+    volumes:
+      - sp-uploads:/app/uploads
+    depends_on:
+      stupid-db-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4100/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
 volumes:
   stupid-db-data:
   ingest-data:
   storage-data:
   segment-data:
+  sp-uploads:
