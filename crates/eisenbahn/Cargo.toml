@@ -1,0 +1,29 @@
+[package]
+name = "stupid-eisenbahn"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+zeromq = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "eisenbahn-broker"
+path = "src/bin/eisenbahn-broker.rs"
+
+[[bin]]
+name = "eisenbahn-launcher"
+path = "src/bin/eisenbahn-launcher.rs"

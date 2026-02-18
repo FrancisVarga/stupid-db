@@ -1,0 +1,72 @@
+# ─── eisenbahn.toml ─────────────────────────────────────────────────
+# Configuration for the eisenbahn messaging layer (PUB/SUB + PUSH/PULL).
+#
+# Environment variable overrides:
+#   EISENBAHN_BROKER_FRONTEND     → broker.frontend
+#   EISENBAHN_BROKER_BACKEND      → broker.backend
+#   EISENBAHN_BROKER_METRICS_PORT → broker.metrics_port
+#   EISENBAHN_TRANSPORT_KIND      → transport.kind
+#   EISENBAHN_TRANSPORT_DEFAULT_HOST → transport.default_host
+#   EISENBAHN_TRANSPORT_BASE_PORT → transport.base_port
+
+# ─── Broker ─────────────────────────────────────────────────────────
+# The central PUB/SUB message hub. Publishers connect to `frontend`,
+# subscribers connect to `backend`. The broker proxies between them.
+
+[broker]
+frontend = "ipc:///tmp/stupid-db/broker-frontend.sock"
+backend  = "ipc:///tmp/stupid-db/broker-backend.sock"
+# metrics_port = 9090  # Uncomment for Prometheus metrics endpoint
+
+# ─── Transport defaults ─────────────────────────────────────────────
+# Controls auto-assigned endpoints for workers and pipeline stages.
+#   kind = "ipc"  → Unix domain sockets (single-host, fastest)
+#   kind = "tcp"  → TCP sockets (distributed deployment)
+
+[transport]
+kind         = "ipc"
+default_host = "127.0.0.1"
+base_port    = 5560
+
+# ─── Workers ────────────────────────────────────────────────────────
+# Named worker processes that subscribe to broker events and/or
+# connect to pipeline stages. Each can be scaled horizontally.
+
+[workers.ingest]
+binary        = "stupid-ingest"
+subscriptions = ["raw.parquet", "raw.csv"]
+pipelines     = ["ingest"]
+instances     = 2
+
+[workers.ingest.env]
+RUST_LOG = "info"
+
+[workers.compute]
+binary        = "stupid-compute"
+subscriptions = ["entity.created", "entity.updated"]
+pipelines     = ["compute"]
+instances     = 1
+
+[workers.graph]
+binary        = "stupid-graph"
+subscriptions = ["edge.derived"]
+pipelines     = ["graph"]
+instances     = 1
+
+# ─── Pipeline stages ────────────────────────────────────────────────
+# DAG of processing stages connected by PUSH/PULL sockets.
+# `after` defines upstream dependencies (must complete before this stage).
+# `concurrency` sets the number of parallel PULL workers per stage.
+
+[pipeline.stages.ingest]
+concurrency = 4
+# Entry point — no `after` dependencies
+
+[pipeline.stages.compute]
+after       = ["ingest"]
+concurrency = 2
+
+[pipeline.stages.graph]
+after       = ["compute"]
+concurrency = 1
+# endpoint = "tcp://10.0.0.1:5570"  # Override for remote graph worker
