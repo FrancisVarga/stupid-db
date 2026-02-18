@@ -1,14 +1,6 @@
 ---
 name: athena-sql-generation
 description: Generate cost-aware, partition-pruned Athena SQL queries from natural language user input
-triggers:
-  - athena query
-  - athena sql
-  - sql generation
-  - historical query
-  - data exploration
-  - generate sql
-  - query data
 ---
 
 # Athena SQL Generation

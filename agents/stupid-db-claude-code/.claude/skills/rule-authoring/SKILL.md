@@ -1,14 +1,6 @@
 ---
 name: rule-authoring
 description: Complete YAML schema reference for writing rules in stupid-db — all 6 kinds with field-level detail
-triggers:
-  - write rule
-  - create rule
-  - new rule
-  - YAML schema
-  - rule template
-  - rule example
-  - authoring
 ---
 
 # Rule Authoring Guide

@@ -1,14 +1,6 @@
 ---
 name: rules-system
 description: YAML-based rules system with 6 kinds, two-pass deserialization, and extends/deep-merge
-triggers:
-  - rules
-  - anomaly rule
-  - entity schema
-  - feature config
-  - scoring config
-  - rule loader
-  - YAML rules
 ---
 
 # Rules System

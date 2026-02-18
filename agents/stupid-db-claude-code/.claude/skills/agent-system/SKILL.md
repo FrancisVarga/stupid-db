@@ -1,14 +1,6 @@
 ---
 name: agent-system
 description: LLM-powered agentic loop with tool execution, permission system, and streaming
-triggers:
-  - agent
-  - agentic loop
-  - tool runtime
-  - tool execution
-  - MCP
-  - CLI agent
-  - streaming
 ---
 
 # Agent System

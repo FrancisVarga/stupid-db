@@ -1,14 +1,6 @@
 ---
 name: storage-engine
 description: Storage abstractions including segment model, S3/local backends, and caching
-triggers:
-  - storage
-  - segment
-  - S3
-  - mmap
-  - cache
-  - eviction
-  - backend
 ---
 
 # Storage Engine
