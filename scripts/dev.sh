@@ -3,23 +3,37 @@ set -euo pipefail
 
 # stupid-db dev pipeline — build, import, and run everything
 # Usage:
-#   scripts/dev.sh                          # build (release) + start server + dashboard
+#   scripts/dev.sh                          # build (debug) + start server + dashboard
+#   scripts/dev.sh --release                # build release + start server + dashboard
+#   scripts/dev.sh --eisenbahn              # start with eisenbahn ZMQ broker + workers
 #   scripts/dev.sh --watch                  # hot reload: auto-rebuild on save + dashboard
-#   scripts/dev.sh --import "D:\w88_data"   # import folder first, then start
-#   scripts/dev.sh --import-file "path.parquet" "seg-id"  # import single file
+#   scripts/dev.sh --import <dir>           # import folder first, then start
+#   scripts/dev.sh --import-file <path> <seg-id>  # import single file
 #   scripts/dev.sh --build-only             # just build, don't run
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SERVER="$ROOT/target/release/stupid-server.exe"
-DEV_SERVER="$ROOT/target/debug/stupid-server.exe"
 DASHBOARD="$ROOT/dashboard"
 
-# Parse args
+# ── Load .env if present ────────────────────────────────────────
+if [ -f "$ROOT/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$ROOT/.env"
+    set +a
+fi
+
+# Resolve ports from env (with defaults matching core/config.rs)
+SERVER_PORT="${PORT:-3001}"
+DASHBOARD_PORT="19283"
+
+# ── Parse args ──────────────────────────────────────────────────
 IMPORT_DIR=""
 IMPORT_FILE=""
 IMPORT_SEG=""
 BUILD_ONLY=false
 WATCH_MODE=false
+EISENBAHN=false
+RELEASE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,110 +54,154 @@ while [[ $# -gt 0 ]]; do
             WATCH_MODE=true
             shift
             ;;
+        --eisenbahn)
+            EISENBAHN=true
+            shift
+            ;;
+        --release)
+            RELEASE=true
+            shift
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: scripts/dev.sh [--watch] [--import <dir>] [--import-file <path> <segment_id>] [--build-only]"
+            echo "Usage: scripts/dev.sh [--release] [--eisenbahn] [--watch] [--import <dir>] [--import-file <path> <segment_id>] [--build-only]"
             exit 1
             ;;
     esac
 done
 
-# ── Step 1: Install dashboard deps ────────────────────────────
-if [ ! -d "$DASHBOARD/node_modules" ]; then
-    echo "==> Installing dashboard dependencies..."
-    cd "$DASHBOARD"
-    npm install
-    cd "$ROOT"
+# ── Resolve binary path ────────────────────────────────────────
+if $RELEASE; then
+    BUILD_PROFILE="release"
+    SERVER_BIN="$ROOT/target/release/stupid-server"
+else
+    BUILD_PROFILE="dev"
+    SERVER_BIN="$ROOT/target/debug/stupid-server"
 fi
 
+# Append .exe on Windows/MSYS
+if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN ]]; then
+    SERVER_BIN="${SERVER_BIN}.exe"
+fi
+
+# ── Step 1: Install dashboard deps ─────────────────────────────
+if [ ! -d "$DASHBOARD/node_modules" ]; then
+    echo "==> Installing dashboard dependencies..."
+    (cd "$DASHBOARD" && npm install)
+fi
+
+# ── Build ───────────────────────────────────────────────────────
+build_rust() {
+    local args=("build")
+    if $RELEASE; then
+        args+=("--release")
+    fi
+    echo "==> Building Rust ($BUILD_PROFILE)..."
+    (cd "$ROOT" && cargo "${args[@]}")
+    echo "    Done: $SERVER_BIN"
+}
+
 if $BUILD_ONLY; then
-    echo "==> Building Rust (release)..."
-    cd "$ROOT"
-    cargo build --release
-    echo "    Done: $SERVER"
+    build_rust
     echo "==> Build complete (--build-only)"
     exit 0
 fi
 
-# ── Step 2: Import data if requested ──────────────────────────
+# ── Step 2: Import data if requested ───────────────────────────
 if [ -n "$IMPORT_DIR" ] || [ -n "$IMPORT_FILE" ]; then
-    echo "==> Building Rust (release) for import..."
-    cd "$ROOT"
-    cargo build --release
-    echo "    Done: $SERVER"
+    build_rust
 
     if [ -n "$IMPORT_DIR" ]; then
         echo "==> Importing parquet files from $IMPORT_DIR..."
-        "$SERVER" import-dir "$IMPORT_DIR"
+        "$SERVER_BIN" import-dir "$IMPORT_DIR"
     fi
 
     if [ -n "$IMPORT_FILE" ]; then
         echo "==> Importing $IMPORT_FILE as segment '$IMPORT_SEG'..."
-        "$SERVER" import "$IMPORT_FILE" "$IMPORT_SEG"
+        "$SERVER_BIN" import "$IMPORT_FILE" "$IMPORT_SEG"
     fi
 fi
 
-# ── Step 3: Start server + dashboard ─────────────────────────
+# ── Step 3: Cleanup handler ────────────────────────────────────
+PIDS=()
+
 cleanup() {
     echo ""
     echo "==> Shutting down..."
-    [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null || true
-    [ -n "${DASHBOARD_PID:-}" ] && kill "$DASHBOARD_PID" 2>/dev/null || true
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
     wait 2>/dev/null
     echo "    Done."
 }
 trap cleanup EXIT INT TERM
 
+# ── Step 4: Start services ─────────────────────────────────────
+
 if $WATCH_MODE; then
-    # ── Watch mode: cargo-watch auto-rebuilds on .rs file changes ──
+    # ── Watch mode: cargo-watch auto-rebuilds on .rs file changes
     echo "==> Starting in watch mode (auto-rebuild on save)..."
-    echo "    Incremental builds take ~3s with rust-lld + optimized profile"
-    echo ""
 
-    cd "$ROOT"
-    cargo watch -c -w crates/ --delay 1 -x 'run -- serve' &
-    SERVER_PID=$!
+    SERVE_ARGS="serve"
+    if $EISENBAHN; then
+        SERVE_ARGS="serve --eisenbahn"
+    fi
 
-    echo "==> Starting dashboard..."
-    cd "$DASHBOARD"
-    npm run dev &
-    DASHBOARD_PID=$!
+    (cd "$ROOT" && cargo watch -c -w crates/ --delay 1 -x "run -- $SERVE_ARGS") &
+    PIDS+=($!)
 
-    echo ""
-    echo "================================================"
-    echo "  stupid-db is running (WATCH MODE)"
-    echo "  API:       http://localhost:3001 (auto-rebuild)"
-    echo "  Dashboard: http://localhost:3000 (hot reload)"
-    echo "  Edit any .rs file to trigger rebuild (~3s)"
-    echo "  Press Ctrl+C to stop"
-    echo "================================================"
-    echo ""
 else
-    # ── One-shot mode: build release, then run ────────────────────
+    # ── One-shot mode: build + run ──────────────────────────────
     if [ -z "$IMPORT_DIR" ] && [ -z "$IMPORT_FILE" ]; then
-        echo "==> Building Rust (release)..."
-        cd "$ROOT"
-        cargo build --release
-        echo "    Done: $SERVER"
+        build_rust
+    fi
+
+    # Start eisenbahn broker + workers if requested
+    if $EISENBAHN; then
+        echo "==> Starting eisenbahn broker + workers..."
+        "$ROOT/target/${BUILD_PROFILE/dev/debug}/eisenbahn-launcher" --config "$ROOT/config/eisenbahn.toml" &
+        PIDS+=($!)
+        # Give broker time to bind sockets
+        sleep 2
+    fi
+
+    # Start the Rust server
+    SERVE_ARGS=("serve")
+    if $EISENBAHN; then
+        SERVE_ARGS+=("--eisenbahn")
     fi
 
     echo "==> Starting server..."
-    "$SERVER" serve &
-    SERVER_PID=$!
-
-    echo "==> Starting dashboard..."
-    cd "$DASHBOARD"
-    npm run dev &
-    DASHBOARD_PID=$!
-
-    echo ""
-    echo "================================================"
-    echo "  stupid-db is running!"
-    echo "  API:       http://localhost:3001"
-    echo "  Dashboard: http://localhost:3000"
-    echo "  Press Ctrl+C to stop"
-    echo "================================================"
-    echo ""
+    "$SERVER_BIN" "${SERVE_ARGS[@]}" &
+    PIDS+=($!)
 fi
+
+# Start the Next.js dashboard
+echo "==> Starting dashboard..."
+(cd "$DASHBOARD" && npm run dev) &
+PIDS+=($!)
+
+# ── Banner ──────────────────────────────────────────────────────
+echo ""
+echo "================================================"
+if $WATCH_MODE; then
+    echo "  stupid-db is running (WATCH MODE)"
+else
+    echo "  stupid-db is running!"
+fi
+echo ""
+echo "  API:       http://localhost:${SERVER_PORT}"
+echo "  Dashboard: http://localhost:${DASHBOARD_PORT}"
+if $EISENBAHN; then
+    echo "  Eisenbahn: http://localhost:9090/metrics"
+    echo "  ZMQ Bus:   http://localhost:${DASHBOARD_PORT}/eisenbahn"
+fi
+if $WATCH_MODE; then
+    echo ""
+    echo "  Edit any .rs file to trigger rebuild"
+fi
+echo "  Press Ctrl+C to stop"
+echo "================================================"
+echo ""
 
 wait
