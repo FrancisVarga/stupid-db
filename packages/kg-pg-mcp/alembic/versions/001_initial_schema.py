@@ -11,6 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from pgvector.sqlalchemy import Vector
 
+from kg_pg_mcp.config import settings
+
 # revision identifiers, used by Alembic.
 revision: str = "001"
 down_revision: Union[str, None] = None
@@ -47,7 +49,7 @@ def upgrade() -> None:
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("section_heading", sa.String(), nullable=True),
         sa.Column("token_count", sa.Integer(), nullable=False, server_default="0"),
-        sa.Column("embedding", Vector(1536), nullable=True),
+        sa.Column("embedding", Vector(settings.embedding_dimensions), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
 
@@ -55,6 +57,7 @@ def upgrade() -> None:
     op.create_index("ix_kb_chunks_namespace", "kb_chunks", ["namespace"])
 
     # HNSW index for fast cosine similarity search
+    # Dimensions are capped at 2000 in config (OpenAI Matryoshka truncation)
     op.execute(
         "CREATE INDEX ix_kb_chunks_embedding ON kb_chunks USING hnsw (embedding vector_cosine_ops)"
     )

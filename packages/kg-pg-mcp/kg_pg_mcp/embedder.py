@@ -12,6 +12,7 @@ class Embedder:
     def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
         self.client = AsyncOpenAI(api_key=api_key or settings.openai_api_key)
         self.model = model or settings.embedding_model
+        self.dimensions = settings.embedding_dimensions
         self._encoding: tiktoken.Encoding | None = None
 
     @property
@@ -35,10 +36,13 @@ class Embedder:
         if not texts:
             return []
 
-        response = await self.client.embeddings.create(
-            input=texts,
-            model=self.model,
-        )
+        # Pass dimensions to truncate for models that support Matryoshka
+        # (text-embedding-3-*). Keeps vectors within pgvector's 2000-dim index limit.
+        kwargs: dict = {"input": texts, "model": self.model}
+        if self.dimensions != settings.native_dimensions:
+            kwargs["dimensions"] = self.dimensions
+
+        response = await self.client.embeddings.create(**kwargs)
         # Sort by index to preserve input order
         sorted_data = sorted(response.data, key=lambda x: x.index)
         return [item.embedding for item in sorted_data]
