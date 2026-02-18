@@ -4,6 +4,8 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { UIMessage } from "ai";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   useState,
   useRef,
@@ -15,6 +17,7 @@ import type { ChatMetadata, ChatUIMessage } from "../api/ai-sdk/chat/route";
 import {
   listSessions,
   createSession,
+  getSession,
   updateSession,
   deleteSession,
   type AiSdkSession,
@@ -161,11 +164,50 @@ export default function AiSdkPage() {
     [activeSessionId, sessions],
   );
 
-  // Update model when provider changes
+  // Sync selectors when switching sessions
   useEffect(() => {
-    const models = MODELS_BY_PROVIDER[selectedProvider];
-    setSelectedModel(models[0].id);
-  }, [selectedProvider]);
+    if (!activeSessionId) return;
+    const session = sessions.find((s) => s.id === activeSessionId);
+    if (!session) return;
+    const provider = (
+      session.provider === "claude-code" ? "claude-code" : "anthropic"
+    ) as ProviderType;
+    setSelectedProvider(provider);
+    const modelList = MODELS_BY_PROVIDER[provider];
+    const matchingModel = modelList.find(
+      (m) => m.id === session.model || session.model.includes(m.id),
+    );
+    setSelectedModel(matchingModel?.id ?? modelList[0].id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId]);
+
+  // Handle user changing provider — update model list and persist
+  const handleProviderChange = useCallback(
+    (provider: ProviderType) => {
+      setSelectedProvider(provider);
+      const models = MODELS_BY_PROVIDER[provider];
+      setSelectedModel(models[0].id);
+      if (activeSessionId) {
+        updateSession(activeSessionId, { provider, model: models[0].id })
+          .then(() => setRefreshKey((k) => k + 1))
+          .catch(() => {});
+      }
+    },
+    [activeSessionId],
+  );
+
+  // Handle user changing model — persist to session
+  const handleModelChange = useCallback(
+    (model: string) => {
+      setSelectedModel(model);
+      if (activeSessionId) {
+        updateSession(activeSessionId, { model })
+          .then(() => setRefreshKey((k) => k + 1))
+          .catch(() => {});
+      }
+    },
+    [activeSessionId],
+  );
 
   const transport = useMemo(
     () =>
@@ -182,6 +224,7 @@ export default function AiSdkPage() {
 
   const {
     messages,
+    setMessages,
     sendMessage,
     status,
     stop,
@@ -191,6 +234,58 @@ export default function AiSdkPage() {
     id: activeSessionId ?? undefined,
     transport,
   });
+
+  // Load messages from DB when switching sessions
+  useEffect(() => {
+    if (!activeSessionId) {
+      setMessages([]);
+      return;
+    }
+    getSession(activeSessionId)
+      .then((session) => {
+        if (!session.messages?.length) {
+          setMessages([]);
+          return;
+        }
+        const restored = session.messages.map((m) => {
+          const rawMeta = m.metadata;
+          const meta: Record<string, unknown> | null =
+            typeof rawMeta === "string" ? JSON.parse(rawMeta) : (rawMeta as Record<string, unknown> | null);
+
+          // content may be: array (proper JSONB), string of JSON (double-encoded), or plain string
+          let parts: ChatUIMessage["parts"];
+          if (Array.isArray(m.content)) {
+            parts = m.content as ChatUIMessage["parts"];
+          } else if (typeof m.content === "string") {
+            try {
+              const parsed = JSON.parse(m.content);
+              parts = Array.isArray(parsed)
+                ? (parsed as ChatUIMessage["parts"])
+                : [{ type: "text" as const, text: m.content }];
+            } catch {
+              parts = [{ type: "text" as const, text: m.content }];
+            }
+          } else {
+            parts = [];
+          }
+
+          return {
+            id: (meta?.id as string) ?? m.id,
+            role: m.role as "user" | "assistant",
+            parts,
+            createdAt: new Date(m.created_at),
+            metadata: meta?.model
+              ? ({ model: meta.model as string } as ChatMetadata)
+              : undefined,
+          } as ChatUIMessage;
+        });
+        setMessages(restored);
+      })
+      .catch(() => {
+        setMessages([]);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId]);
 
   const isActive = status === "submitted" || status === "streaming";
 
@@ -246,13 +341,13 @@ export default function AiSdkPage() {
           <ProviderSelector
             providers={PROVIDERS}
             selected={selectedProvider}
-            onChange={setSelectedProvider}
+            onChange={handleProviderChange}
             disabled={isActive}
           />
           <ModelSelector
             models={MODELS_BY_PROVIDER[selectedProvider]}
             selected={selectedModel}
-            onChange={setSelectedModel}
+            onChange={handleModelChange}
             disabled={isActive}
           />
           <button
@@ -885,43 +980,143 @@ function ReasoningBlock({ text }: { text: string }) {
   );
 }
 
-// ── Formatted Text (basic code block detection) ──────────────────────
+// ── Formatted Text (full markdown rendering) ─────────────────────────
+
+const markdownComponents: Record<string, React.ComponentType<Record<string, unknown>>> = {
+  // Code blocks and inline code
+  pre: ({ children, ...props }: Record<string, unknown>) => (
+    <pre
+      className="my-2 p-3 rounded-lg overflow-x-auto text-xs"
+      style={{
+        background: "rgba(0, 0, 0, 0.3)",
+        border: "1px solid rgba(139, 92, 246, 0.08)",
+      }}
+      {...props}
+    >
+      {children as React.ReactNode}
+    </pre>
+  ),
+  code: ({ className, children, ...props }: Record<string, unknown>) => {
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code
+          className="px-1.5 py-0.5 rounded text-xs"
+          style={{
+            background: "rgba(139, 92, 246, 0.15)",
+            color: "#c4b5fd",
+          }}
+          {...props}
+        >
+          {children as React.ReactNode}
+        </code>
+      );
+    }
+    const lang = (className as string)?.replace("language-", "") ?? "";
+    return (
+      <>
+        {lang && (
+          <span
+            className="text-[9px] font-bold tracking-wider block mb-1"
+            style={{ color: "#7c3aed" }}
+          >
+            {lang.toUpperCase()}
+          </span>
+        )}
+        <code className="text-slate-300" {...props}>
+          {children as React.ReactNode}
+        </code>
+      </>
+    );
+  },
+  // Headings
+  h1: ({ children, ...props }: Record<string, unknown>) => (
+    <h1 className="text-lg font-bold mt-4 mb-2 text-slate-200" {...props}>{children as React.ReactNode}</h1>
+  ),
+  h2: ({ children, ...props }: Record<string, unknown>) => (
+    <h2 className="text-base font-bold mt-3 mb-1.5 text-slate-200" {...props}>{children as React.ReactNode}</h2>
+  ),
+  h3: ({ children, ...props }: Record<string, unknown>) => (
+    <h3 className="text-sm font-bold mt-2 mb-1 text-slate-300" {...props}>{children as React.ReactNode}</h3>
+  ),
+  // Lists
+  ul: ({ children, ...props }: Record<string, unknown>) => (
+    <ul className="list-disc list-inside my-1 space-y-0.5" {...props}>{children as React.ReactNode}</ul>
+  ),
+  ol: ({ children, ...props }: Record<string, unknown>) => (
+    <ol className="list-decimal list-inside my-1 space-y-0.5" {...props}>{children as React.ReactNode}</ol>
+  ),
+  li: ({ children, ...props }: Record<string, unknown>) => (
+    <li className="text-slate-300" {...props}>{children as React.ReactNode}</li>
+  ),
+  // Paragraphs & block elements
+  p: ({ children, ...props }: Record<string, unknown>) => (
+    <p className="my-1" {...props}>{children as React.ReactNode}</p>
+  ),
+  blockquote: ({ children, ...props }: Record<string, unknown>) => (
+    <blockquote
+      className="border-l-2 pl-3 my-2 italic text-slate-400"
+      style={{ borderColor: "rgba(139, 92, 246, 0.4)" }}
+      {...props}
+    >
+      {children as React.ReactNode}
+    </blockquote>
+  ),
+  // Links
+  a: ({ children, href, ...props }: Record<string, unknown>) => (
+    <a
+      href={href as string}
+      className="underline"
+      style={{ color: "#a78bfa" }}
+      target="_blank"
+      rel="noopener noreferrer"
+      {...props}
+    >
+      {children as React.ReactNode}
+    </a>
+  ),
+  // Tables
+  table: ({ children, ...props }: Record<string, unknown>) => (
+    <div className="overflow-x-auto my-2">
+      <table className="min-w-full text-xs border-collapse" {...props}>{children as React.ReactNode}</table>
+    </div>
+  ),
+  th: ({ children, ...props }: Record<string, unknown>) => (
+    <th
+      className="px-2 py-1 text-left font-semibold text-slate-300"
+      style={{ borderBottom: "1px solid rgba(139, 92, 246, 0.2)" }}
+      {...props}
+    >
+      {children as React.ReactNode}
+    </th>
+  ),
+  td: ({ children, ...props }: Record<string, unknown>) => (
+    <td
+      className="px-2 py-1 text-slate-400"
+      style={{ borderBottom: "1px solid rgba(139, 92, 246, 0.08)" }}
+      {...props}
+    >
+      {children as React.ReactNode}
+    </td>
+  ),
+  // Horizontal rule
+  hr: (props: Record<string, unknown>) => (
+    <hr className="my-3 border-0 h-px" style={{ background: "rgba(139, 92, 246, 0.15)" }} {...props} />
+  ),
+  // Strong & emphasis
+  strong: ({ children, ...props }: Record<string, unknown>) => (
+    <strong className="font-semibold text-slate-200" {...props}>{children as React.ReactNode}</strong>
+  ),
+  em: ({ children, ...props }: Record<string, unknown>) => (
+    <em className="italic text-slate-300" {...props}>{children as React.ReactNode}</em>
+  ),
+};
 
 function FormattedText({ text }: { text: string }) {
-  // Split by code fences
-  const parts = text.split(/(```[\s\S]*?```)/g);
-
   return (
-    <>
-      {parts.map((part, i) => {
-        if (part.startsWith("```") && part.endsWith("```")) {
-          const firstNewline = part.indexOf("\n");
-          const lang = part.slice(3, firstNewline).trim();
-          const code = part.slice(firstNewline + 1, -3);
-          return (
-            <pre
-              key={i}
-              className="my-2 p-3 rounded-lg overflow-x-auto text-xs"
-              style={{
-                background: "rgba(0, 0, 0, 0.3)",
-                border: "1px solid rgba(139, 92, 246, 0.08)",
-              }}
-            >
-              {lang && (
-                <span
-                  className="text-[9px] font-bold tracking-wider block mb-1"
-                  style={{ color: "#7c3aed" }}
-                >
-                  {lang.toUpperCase()}
-                </span>
-              )}
-              <code className="text-slate-300">{code}</code>
-            </pre>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {text}
+    </ReactMarkdown>
   );
 }
 

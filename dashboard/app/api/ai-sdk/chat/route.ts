@@ -135,6 +135,10 @@ export async function POST(req: Request): Promise<Response> {
     const claudeCodeProvider = createClaudeCode({
       defaultSettings: {
         cwd: projectRoot,
+        systemPrompt: { type: "preset", preset: "claude_code" },
+        settingSources: ["user", "project"],
+        permissionMode: "bypassPermissions",
+        allowedTools: ["*"],
       },
     });
 
