@@ -184,6 +184,17 @@ export default function DashboardPage() {
             Rules
           </Link>
           <Link
+            href="/stille-post"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(0, 240, 255, 0.08)",
+              border: "1px solid rgba(0, 240, 255, 0.2)",
+              color: "#00f0ff",
+            }}
+          >
+            Stille Post
+          </Link>
+          <Link
             href="/catalog"
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
             style={{
