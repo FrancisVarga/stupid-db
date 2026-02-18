@@ -7,11 +7,20 @@ import CodeEditor from "./CodeEditor";
 interface AthenaQueryPanelProps {
   connectionId: string;
   defaultDatabase?: string;
+  /** When set externally (e.g. from AI chat), overrides the editor content. */
+  externalSql?: string;
+  /** Called when a query fails — used for AI error feedback loop. */
+  onQueryError?: (error: string, sql: string) => void;
+  /** Ref to trigger execution from outside. */
+  executeRef?: React.RefObject<(() => void) | null>;
 }
 
 export default function AthenaQueryPanel({
   connectionId,
   defaultDatabase,
+  externalSql,
+  onQueryError,
+  executeRef,
 }: AthenaQueryPanelProps) {
   const [sql, setSql] = useState("");
   const [dbOverride, setDbOverride] = useState("");
@@ -28,6 +37,15 @@ export default function AthenaQueryPanel({
 
   const controllerRef = useRef<AbortController | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Pick up externally-injected SQL (from AI chat)
+  useEffect(() => {
+    if (externalSql !== undefined && externalSql !== sql) {
+      setSql(externalSql);
+    }
+    // Only react to externalSql changes, not sql
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalSql]);
 
   // Duration timer
   useEffect(() => {
@@ -69,6 +87,7 @@ export default function AthenaQueryPanel({
           if (message && state === "FAILED") {
             setError(message);
             setExecuting(false);
+            onQueryError?.(message, sql.trim());
           }
         },
         onColumns: (cols) => setColumns(cols),
@@ -81,6 +100,7 @@ export default function AthenaQueryPanel({
         onError: (msg) => {
           setError(msg);
           setExecuting(false);
+          onQueryError?.(msg, sql.trim());
         },
       },
     );
@@ -107,6 +127,18 @@ export default function AthenaQueryPanel({
       setExporting(false);
     }
   }, [connectionId, sql, dbOverride, defaultDatabase]);
+
+  // Expose execute function to parent via ref
+  useEffect(() => {
+    if (executeRef) {
+      (executeRef as React.MutableRefObject<(() => void) | null>).current = handleExecute;
+    }
+    return () => {
+      if (executeRef) {
+        (executeRef as React.MutableRefObject<(() => void) | null>).current = null;
+      }
+    };
+  }, [executeRef, handleExecute]);
 
   const hasResults = columns.length > 0;
   const showEmpty = !hasResults && !error && !executing && !status;

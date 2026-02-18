@@ -5,6 +5,8 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import AthenaQueryPanel from "@/components/db/AthenaQueryPanel";
 import AthenaQueryLogPanel from "@/components/db/AthenaQueryLog";
+import AthenaAIChat from "@/components/db/AthenaAIChat";
+import type { AthenaAIChatHandle } from "@/components/db/AthenaAIChat";
 import {
   getAthenaSchema,
   refreshAthenaSchema,
@@ -43,6 +45,25 @@ export default function AthenaConnectionDetailPage() {
 
   // Clipboard feedback
   const [copiedTable, setCopiedTable] = useState<string | null>(null);
+
+  // AI chat → query editor bridge
+  const [aiSql, setAiSql] = useState<string | undefined>(undefined);
+  const executeRef = useRef<(() => void) | null>(null);
+  const chatRef = useRef<AthenaAIChatHandle | null>(null);
+  const errorRetryCount = useRef(0);
+
+  // Error feedback: send query errors back to AI (max 3 retries)
+  const handleQueryError = useCallback((errorMsg: string, sql: string) => {
+    if (errorRetryCount.current >= 3) return;
+    errorRetryCount.current++;
+    chatRef.current?.sendErrorFeedback(errorMsg, sql);
+  }, []);
+
+  // Reset retry count when AI generates new SQL
+  const handleSqlGenerated = useCallback((sql: string) => {
+    errorRetryCount.current = 0;
+    setAiSql(sql);
+  }, []);
 
   // Polling ref for cleanup
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -368,10 +389,35 @@ export default function AthenaConnectionDetailPage() {
           </div>
 
           {rightTab === "query" ? (
-            <AthenaQueryPanel
-              connectionId={id}
-              defaultDatabase={connection.database}
-            />
+            <div className="flex-1 flex min-h-0">
+              {/* AI Chat panel (left) */}
+              <div
+                className="shrink-0 flex flex-col min-h-0"
+                style={{
+                  width: "38%",
+                  borderRight: "1px solid rgba(16, 185, 129, 0.06)",
+                }}
+              >
+                <AthenaAIChat
+                  connectionId={id}
+                  database={connection.database}
+                  schema={schema}
+                  onSqlGenerated={handleSqlGenerated}
+                  onExecuteRequest={() => executeRef.current?.()}
+                  chatRef={chatRef}
+                />
+              </div>
+              {/* SQL editor + results (right) */}
+              <div className="flex-1 min-w-0 flex flex-col">
+                <AthenaQueryPanel
+                  connectionId={id}
+                  defaultDatabase={connection.database}
+                  externalSql={aiSql}
+                  executeRef={executeRef}
+                  onQueryError={handleQueryError}
+                />
+              </div>
+            </div>
           ) : (
             <AthenaQueryLogPanel
               connectionId={id}
