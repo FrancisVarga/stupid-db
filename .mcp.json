@@ -1,0 +1,8 @@
+{
+    "mcpServers": {
+        "solomons_library": {
+            "type": "sse",
+            "url": "http://localhost:12312/sse"
+        }
+    }
+}

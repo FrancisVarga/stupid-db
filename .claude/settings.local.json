@@ -22,6 +22,28 @@
         ],
         "matcher": ""
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_FILE_PATH\" in *.env|*.env.*|*credentials*|*secrets*) echo 'BLOCKED: Cannot edit .env, credentials, or secrets files' >&2; exit 2;; esac"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_FILE_PATH\" in */dashboard/*.ts|*/dashboard/*.tsx|*/dashboard/*.js|*/dashboard/*.jsx) cd /mnt/camelot/francis/arbeit/stupid-db/dashboard && npx eslint --fix \"$CLAUDE_FILE_PATH\" 2>/dev/null || true;; esac"
+          }
+        ]
+      }
     ]
   },
   "outputStyle": "Explanatory",
