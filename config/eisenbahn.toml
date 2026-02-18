@@ -33,7 +33,7 @@ base_port    = 5560
 # connect to pipeline stages. Each can be scaled horizontally.
 
 [workers.ingest]
-binary        = "stupid-ingest"
+binary        = "ingest-worker"
 subscriptions = ["raw.parquet", "raw.csv"]
 pipelines     = ["ingest"]
 instances     = 2
@@ -42,15 +42,39 @@ instances     = 2
 RUST_LOG = "info"
 
 [workers.compute]
-binary        = "stupid-compute"
+binary        = "compute-worker"
 subscriptions = ["entity.created", "entity.updated"]
 pipelines     = ["compute"]
 instances     = 1
 
 [workers.graph]
-binary        = "stupid-graph"
+binary        = "graph-worker"
 subscriptions = ["edge.derived"]
 pipelines     = ["graph"]
+instances     = 1
+
+[workers.llm]
+binary        = "llm-worker"
+subscriptions = ["eisenbahn.compute.complete"]
+pipelines     = []
+instances     = 1
+
+[workers.agent]
+binary        = "agent-worker"
+subscriptions = ["eisenbahn.compute.complete"]
+pipelines     = []
+instances     = 1
+
+[workers.athena]
+binary        = "athena-worker"
+subscriptions = ["eisenbahn.ingest.complete"]
+pipelines     = []
+instances     = 1
+
+[workers.catalog]
+binary        = "catalog-worker"
+subscriptions = ["eisenbahn.rule.changed"]
+pipelines     = []
 instances     = 1
 
 # ─── Pipeline stages ────────────────────────────────────────────────
@@ -70,3 +94,23 @@ concurrency = 2
 after       = ["compute"]
 concurrency = 1
 # endpoint = "tcp://10.0.0.1:5570"  # Override for remote graph worker
+
+# ─── Services (DEALER/ROUTER request/reply) ────────────────────────
+# Named service endpoints for request/reply routing.
+# The server connects DEALER sockets here; workers bind ROUTER sockets.
+
+[services.query]
+endpoint     = "ipc:///tmp/stupid-db/svc-query.sock"
+timeout_secs = 30
+
+[services.agent]
+endpoint     = "ipc:///tmp/stupid-db/svc-agent.sock"
+timeout_secs = 60
+
+[services.athena]
+endpoint     = "ipc:///tmp/stupid-db/svc-athena.sock"
+timeout_secs = 120
+
+[services.catalog]
+endpoint     = "ipc:///tmp/stupid-db/svc-catalog.sock"
+timeout_secs = 30

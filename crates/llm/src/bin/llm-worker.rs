@@ -12,11 +12,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use clap::Parser;
 use tokio::sync::Notify;
-use tracing::info;
+use tracing::{info, warn};
 
 use stupid_eisenbahn::{
-    EisenbahnConfig, EisenbahnError, Worker, WorkerBuilder, WorkerRunner, ZmqPublisher,
+    EisenbahnConfig, EisenbahnError, Message, RequestHandler, Worker, WorkerBuilder, WorkerRunner,
+    ZmqPublisher, ZmqRequestServer,
 };
+use stupid_eisenbahn::services::{QueryServiceRequest, ServiceError};
 use stupid_eisenbahn::topics;
 
 // ── CLI ─────────────────────────────────────────────────────────────
@@ -42,12 +44,61 @@ struct Cli {
 
 struct LlmWorker {
     shutdown: Arc<Notify>,
+    request_server: Option<Arc<ZmqRequestServer>>,
 }
 
 #[async_trait]
 impl Worker for LlmWorker {
     async fn start(&self) -> Result<(), EisenbahnError> {
         info!("llm worker started");
+
+        if let Some(server) = &self.request_server {
+            let server = server.clone();
+            let shutdown = self.shutdown.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        result = server.recv_request() => {
+                            match result {
+                                Ok((token, msg)) => {
+                                    info!(topic = %msg.topic, correlation_id = %msg.correlation_id, "received query service request");
+                                    match msg.decode::<QueryServiceRequest>() {
+                                        Ok(req) => {
+                                            info!(question = %req.question, "query request");
+                                            // TODO: Wire actual QueryGenerator + Catalog + Graph
+                                            let error = ServiceError {
+                                                code: 503,
+                                                message: "query execution not yet wired".into(),
+                                            };
+                                            let reply = Message::with_correlation(
+                                                topics::SVC_QUERY_RESPONSE,
+                                                &error,
+                                                msg.correlation_id,
+                                            ).unwrap();
+                                            if let Err(e) = server.send_reply(token, reply).await {
+                                                warn!(error = %e, "failed to send query reply");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "failed to decode query request");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "query request server recv error");
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                            }
+                        }
+                        _ = shutdown.notified() => {
+                            info!("query request handler shutting down");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -96,8 +147,17 @@ async fn main() -> anyhow::Result<()> {
 
     let shutdown = Arc::new(Notify::new());
 
+    let request_server = if let Some(transport) = config.service_transport("query") {
+        info!(endpoint = %transport.endpoint(), "binding query service ROUTER socket");
+        Some(Arc::new(ZmqRequestServer::bind(&transport).await?))
+    } else {
+        info!("no query service endpoint configured — request handling disabled");
+        None
+    };
+
     let worker = Arc::new(LlmWorker {
         shutdown: shutdown.clone(),
+        request_server,
     });
 
     let runner_config = WorkerBuilder::new("llm-worker")
