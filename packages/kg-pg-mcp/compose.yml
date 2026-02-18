@@ -5,10 +5,18 @@ services:
       dockerfile: Dockerfile
     ports:
       - "12312:12312"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
       KG_TRANSPORT: sse
       KG_HOST: 0.0.0.0
       KG_PORT: 12312
+      # Override localhost → host.docker.internal for container→host DB access
+      KG_DATABASE_URL: postgresql+asyncpg://postgres:postgres@host.docker.internal:46432/solomons_library
+      # Skills provider — comma-separated JSON list of paths inside the container
+      KG_SKILLS_ROOTS: '["/skills"]'
+    volumes:
+      - ../../.claude/skills:/skills:ro
     restart: unless-stopped

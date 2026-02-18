@@ -5,6 +5,7 @@ DATABASE_URL and other variables. Example: KG_DATABASE_URL, KG_OPENAI_API_KEY.
 """
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,13 +44,23 @@ class Settings(BaseSettings):
     chunk_size: int = 512  # tokens
     chunk_overlap: int = 50  # tokens
 
+    # Embedding batching
+    embedding_batch_size: int = 100  # max chunks per embedding API call
+
     # Namespace
     default_namespace: str = "default"
+
+    # Background tasks (Docket)
+    docket_url: str = "memory://"  # memory:// or redis://localhost:6379
+
+    # Skills
+    skills_roots: list[str] = []  # paths to scan for SKILL.md directories
+    skills_supporting_files: Literal["template", "resources"] = "template"
 
     # Server
     transport: str = "stdio"  # stdio | sse
     host: str = "0.0.0.0"
-    port: int = 12312
+    port: int = 12313
 
     @property
     def native_dimensions(self) -> int:

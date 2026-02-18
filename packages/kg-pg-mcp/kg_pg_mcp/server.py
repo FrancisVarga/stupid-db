@@ -1,12 +1,16 @@
-"""FastMCP server with knowledge embedding and search tools."""
+"""FastMCP server with knowledge embedding, search tools, and skills provider."""
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastmcp import Context, FastMCP
+from fastmcp.dependencies import Progress
+from fastmcp.server.providers.skills import SkillsDirectoryProvider
 from loguru import logger
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,10 +24,31 @@ from kg_pg_mcp.file_reader import read_file
 from kg_pg_mcp.models import Base, KBChunk, KBDocument
 from kg_pg_mcp.parsers import ParseResult, detect_content_type, parse_content
 
+# Configure Docket backend before FastMCP init picks it up
+os.environ.setdefault("FASTMCP_DOCKET_URL", settings.docket_url)
+
+
+_embedder: Embedder | None = None
+_chunker: Chunker | None = None
+
+
+def get_embedder() -> Embedder:
+    global _embedder
+    if _embedder is None:
+        _embedder = Embedder()
+    return _embedder
+
+
+def get_chunker() -> Chunker:
+    global _chunker
+    if _chunker is None:
+        _chunker = Chunker()
+    return _chunker
+
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
-    """Manage database and embedder lifecycle."""
+    """Manage database lifecycle."""
     logger.info("Starting kg-pg-mcp server")
 
     # Create tables if they don't exist
@@ -32,10 +57,7 @@ async def lifespan(server: FastMCP):
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
 
-    embedder = Embedder()
-    chunker = Chunker()
-
-    yield {"embedder": embedder, "chunker": chunker}
+    yield {}
 
     await dispose_engine()
     logger.info("kg-pg-mcp server stopped")
@@ -46,7 +68,25 @@ mcp = FastMCP(
     instructions="Knowledge Graph MCP server. Embed text, URLs, and files into a PostgreSQL vector database. Search with semantic similarity and metadata filters. Use namespaces to isolate different knowledge domains.",
     version="0.1.0",
     lifespan=lifespan,
+    tasks=True,
 )
+
+
+# ── Skills Provider ─────────────────────────────────
+
+if settings.skills_roots:
+    roots = [Path(r).expanduser().resolve() for r in settings.skills_roots]
+    valid_roots = [r for r in roots if r.is_dir()]
+    if valid_roots:
+        mcp.add_provider(
+            SkillsDirectoryProvider(
+                roots=valid_roots,
+                supporting_files=settings.skills_supporting_files,
+            )
+        )
+        logger.info(f"Skills provider loaded: {len(valid_roots)} root(s)")
+    else:
+        logger.warning(f"Skills roots configured but none exist: {settings.skills_roots}")
 
 
 # ── Helpers ──────────────────────────────────────────
@@ -63,6 +103,7 @@ async def _store_document(
     category: str | None,
     metadata: dict | None,
     ctx: Context | None = None,
+    progress: Any | None = None,
 ) -> dict[str, Any]:
     """Chunk, embed, and store a parsed document."""
     chunks = chunker.chunk(parsed.text)
@@ -71,15 +112,17 @@ async def _store_document(
     if ctx:
         await ctx.info(f"Chunked into {len(chunks)} pieces ({total_tokens} tokens)")
 
-    # Batch embed all chunks
+    # Set up progress tracking
+    if progress:
+        await progress.set_total(len(chunks))
+        await progress.set_message("Embedding chunks")
+
+    # Batch embed all chunks (auto-batched for large documents)
     texts = [c.content for c in chunks]
-    if ctx:
-        await ctx.report_progress(0, len(chunks), "Embedding chunks")
+    embeddings = await embedder.embed_texts(texts, progress=progress)
 
-    embeddings = await embedder.embed_texts(texts)
-
-    if ctx:
-        await ctx.report_progress(len(chunks), len(chunks), "Storing")
+    if progress:
+        await progress.set_message("Storing in database")
 
     # Create document record
     doc = KBDocument(
@@ -122,10 +165,11 @@ async def _store_document(
 # ── MCP Tools ────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(task=True)
 async def embed_text(
     text: str,
     ctx: Context,
+    progress: Progress = Progress(),
     namespace: str | None = None,
     category: str | None = None,
     title: str | None = None,
@@ -141,23 +185,25 @@ async def embed_text(
         metadata: Optional JSON metadata to store with the document.
     """
     ns = namespace or settings.default_namespace
-    embedder: Embedder = ctx.lifespan_context["embedder"]
-    chunker: Chunker = ctx.lifespan_context["chunker"]
+    embedder = get_embedder()
+    chunker = get_chunker()
 
     parsed = ParseResult(text=text, title=title)
 
-    async with get_session_factory()() as session:
+    async with progress, get_session_factory()() as session:
         return await _store_document(
             session, embedder, chunker, parsed,
             source_type="text", source_ref=None,
-            namespace=ns, category=category, metadata=metadata, ctx=ctx,
+            namespace=ns, category=category, metadata=metadata,
+            ctx=ctx, progress=progress,
         )
 
 
-@mcp.tool()
+@mcp.tool(task=True)
 async def embed_url(
     url: str,
     ctx: Context,
+    progress: Progress = Progress(),
     namespace: str | None = None,
     category: str | None = None,
     metadata: dict | None = None,
@@ -175,8 +221,8 @@ async def embed_url(
         content: Pre-extracted content (skips fetching if provided).
     """
     ns = namespace or settings.default_namespace
-    embedder: Embedder = ctx.lifespan_context["embedder"]
-    chunker: Chunker = ctx.lifespan_context["chunker"]
+    embedder = get_embedder()
+    chunker = get_chunker()
 
     if content:
         parsed = await parse_content(content, content_type="text", source_path=url)
@@ -186,18 +232,20 @@ async def embed_url(
         ct = detect_content_type(content_type=result.content_type)
         parsed = await parse_content(result.content, content_type=ct, source_path=url)
 
-    async with get_session_factory()() as session:
+    async with progress, get_session_factory()() as session:
         return await _store_document(
             session, embedder, chunker, parsed,
             source_type="url", source_ref=url,
-            namespace=ns, category=category, metadata=metadata, ctx=ctx,
+            namespace=ns, category=category, metadata=metadata,
+            ctx=ctx, progress=progress,
         )
 
 
-@mcp.tool()
+@mcp.tool(task=True)
 async def embed_file(
     file_path: str,
     ctx: Context,
+    progress: Progress = Progress(),
     namespace: str | None = None,
     category: str | None = None,
     metadata: dict | None = None,
@@ -215,8 +263,8 @@ async def embed_file(
         content: Pre-extracted content (skips file reading if provided).
     """
     ns = namespace or settings.default_namespace
-    embedder: Embedder = ctx.lifespan_context["embedder"]
-    chunker: Chunker = ctx.lifespan_context["chunker"]
+    embedder = get_embedder()
+    chunker = get_chunker()
 
     if content:
         ct = detect_content_type(path=file_path)
@@ -226,11 +274,12 @@ async def embed_file(
         result = await read_file(file_path)
         parsed = await parse_content(result.content, content_type=result.content_type, source_path=file_path)
 
-    async with get_session_factory()() as session:
+    async with progress, get_session_factory()() as session:
         return await _store_document(
             session, embedder, chunker, parsed,
             source_type="file", source_ref=file_path,
-            namespace=ns, category=category, metadata=metadata, ctx=ctx,
+            namespace=ns, category=category, metadata=metadata,
+            ctx=ctx, progress=progress,
         )
 
 
@@ -253,7 +302,7 @@ async def search(
         metadata_filter: JSON filter applied to document metadata.
     """
     ns = namespace or settings.default_namespace
-    embedder: Embedder = ctx.lifespan_context["embedder"]
+    embedder = get_embedder()
 
     query_embedding = await embedder.embed_query(query)
 
