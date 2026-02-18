@@ -3,6 +3,7 @@
 //! SRP: NL query execution via LLM-generated query plans.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::Json;
@@ -46,6 +47,30 @@ pub async fn query(
     State(state): State<Arc<AppState>>,
     Json(req): Json<QueryRequest>,
 ) -> Result<Json<QueryResponse>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
+    // Route through eisenbahn if available.
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::QueryServiceRequest {
+            question: req.question.clone(),
+        };
+        let resp = eb
+            .query(svc_req, Duration::from_secs(30))
+            .await
+            .map_err(|e| eb_error(e))?;
+        let plan = serde_json::from_value(resp.plan).map_err(|e| {
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                Json(QueryErrorResponse {
+                    error: format!("Failed to decode query plan from service: {e}"),
+                }),
+            )
+        })?;
+        return Ok(Json(QueryResponse {
+            question: req.question,
+            plan,
+            results: resp.results,
+        }));
+    }
+
     // Require data to be loaded before accepting queries.
     if !state.loading.is_ready().await {
         return Err((
@@ -94,4 +119,13 @@ pub async fn query(
         plan: result.plan,
         results: result.results,
     }))
+}
+
+/// Map an eisenbahn error to an HTTP error response.
+fn eb_error(e: stupid_eisenbahn::EisenbahnError) -> (axum::http::StatusCode, Json<QueryErrorResponse>) {
+    let status = match &e {
+        stupid_eisenbahn::EisenbahnError::Timeout(_) => axum::http::StatusCode::GATEWAY_TIMEOUT,
+        _ => axum::http::StatusCode::BAD_GATEWAY,
+    };
+    (status, Json(QueryErrorResponse { error: e.to_string() }))
 }

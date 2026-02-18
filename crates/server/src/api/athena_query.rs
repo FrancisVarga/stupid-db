@@ -58,6 +58,45 @@ pub async fn athena_query_sse(
     Sse<impl futures::Stream<Item = Result<Event, Infallible>>>,
     (axum::http::StatusCode, Json<QueryErrorResponse>),
 > {
+    // Route through eisenbahn if available.
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::AthenaServiceRequest::Query {
+            connection_id: id.clone(),
+            sql: req.sql.clone(),
+            database: req.database.clone(),
+        };
+        let mut zmq_rx = eb
+            .athena_query_stream(svc_req)
+            .await
+            .map_err(|e| eb_athena_error(e))?;
+
+        // Bridge the ZMQ stream to SSE events via a channel.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
+        tokio::spawn(async move {
+            while let Some(result) = zmq_rx.recv().await {
+                let event = match result {
+                    Ok(msg) => {
+                        // Decode AthenaServiceResponse and map to SSE event types.
+                        match msg.decode::<stupid_eisenbahn::services::AthenaServiceResponse>() {
+                            Ok(resp) => athena_response_to_sse(resp),
+                            Err(_) => Event::default()
+                                .event("error")
+                                .data(r#"{"message":"failed to decode service response"}"#),
+                        }
+                    }
+                    Err(e) => Event::default()
+                        .event("error")
+                        .data(serde_json::json!({"message": e.to_string()}).to_string()),
+                };
+                if tx.send(Ok(event)).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let stream = ReceiverStream::new(rx);
+        return Ok(Sse::new(stream));
+    }
+
     // 1. Get credentials and connection config.
     let store = state.athena_connections.read().await;
     let creds = match store.get_credentials(&id) {
@@ -431,6 +470,64 @@ pub async fn athena_query_parquet(
     axum::response::Response,
     (axum::http::StatusCode, Json<QueryErrorResponse>),
 > {
+    // Route through eisenbahn if available.
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::AthenaServiceRequest::QueryParquet {
+            connection_id: id.clone(),
+            sql: req.sql.clone(),
+            database: req.database.clone(),
+        };
+        let mut zmq_rx = eb
+            .athena_query_stream(svc_req)
+            .await
+            .map_err(|e| eb_athena_error(e))?;
+
+        // Collect all parquet bytes from the stream.
+        let mut parquet_bytes: Option<Vec<u8>> = None;
+        while let Some(result) = zmq_rx.recv().await {
+            match result {
+                Ok(msg) => {
+                    if let Ok(resp) = msg.decode::<stupid_eisenbahn::services::AthenaServiceResponse>() {
+                        match resp {
+                            stupid_eisenbahn::services::AthenaServiceResponse::Parquet { data } => {
+                                parquet_bytes = Some(data);
+                            }
+                            stupid_eisenbahn::services::AthenaServiceResponse::Error { message } => {
+                                return Err((
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(QueryErrorResponse { error: message }),
+                                ));
+                            }
+                            _ => {} // Skip status/done chunks
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err((
+                        axum::http::StatusCode::BAD_GATEWAY,
+                        Json(QueryErrorResponse { error: e.to_string() }),
+                    ));
+                }
+            }
+        }
+
+        let bytes = parquet_bytes.ok_or_else(|| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(QueryErrorResponse { error: "No parquet data received from service".into() }),
+            )
+        })?;
+
+        let filename = format!("{}.parquet", uuid::Uuid::new_v4());
+        return Ok(axum::response::Response::builder()
+            .status(200)
+            .header("Content-Type", "application/vnd.apache.parquet")
+            .header("Content-Disposition", format!("attachment; filename=\"{filename}\""))
+            .header("Content-Length", bytes.len().to_string())
+            .body(axum::body::Body::from(bytes))
+            .unwrap());
+    }
+
     // 1. Get credentials and connection config.
     let store = state.athena_connections.read().await;
     let creds = match store.get_credentials(&id) {
@@ -596,6 +693,20 @@ pub async fn athena_connections_schema_refresh(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
+    // Route through eisenbahn if available (fire-and-forget style).
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::AthenaServiceRequest::SchemaRefresh {
+            connection_id: id.clone(),
+        };
+        // Use a short timeout — the refresh happens async on the worker side.
+        let _resp = eb
+            .athena_query_stream(svc_req)
+            .await
+            .map_err(|e| eb_athena_error(e))?;
+        // Don't wait for the full stream — the worker does the work async.
+        return Ok(Json(serde_json::json!({ "status": "fetching", "message": "Schema refresh started via eisenbahn" })));
+    }
+
     // Get credentials and connection config.
     let (creds, conn) = {
         let store = state.athena_connections.read().await;
@@ -761,4 +872,62 @@ pub async fn athena_connections_query_log(
         entries,
         summary,
     }))
+}
+
+// ── Eisenbahn helpers ────────────────────────────────────────
+
+/// Map an eisenbahn error to an HTTP error response for Athena endpoints.
+fn eb_athena_error(e: stupid_eisenbahn::EisenbahnError) -> (axum::http::StatusCode, Json<QueryErrorResponse>) {
+    let status = match &e {
+        stupid_eisenbahn::EisenbahnError::Timeout(_) => axum::http::StatusCode::GATEWAY_TIMEOUT,
+        _ => axum::http::StatusCode::BAD_GATEWAY,
+    };
+    (status, Json(QueryErrorResponse { error: e.to_string() }))
+}
+
+/// Convert an AthenaServiceResponse to an SSE Event.
+fn athena_response_to_sse(resp: stupid_eisenbahn::services::AthenaServiceResponse) -> Event {
+    use stupid_eisenbahn::services::AthenaServiceResponse;
+    match resp {
+        AthenaServiceResponse::Status { state, stats } => {
+            Event::default().event("status").data(
+                serde_json::json!({ "state": state, "stats": stats }).to_string(),
+            )
+        }
+        AthenaServiceResponse::Columns { columns } => {
+            let cols: Vec<serde_json::Value> = columns
+                .iter()
+                .map(|c| serde_json::json!({ "name": c.name, "type": c.data_type }))
+                .collect();
+            Event::default()
+                .event("columns")
+                .data(serde_json::json!({ "columns": cols }).to_string())
+        }
+        AthenaServiceResponse::Rows { rows } => {
+            Event::default()
+                .event("rows")
+                .data(serde_json::json!({ "rows": rows }).to_string())
+        }
+        AthenaServiceResponse::Done { total_rows } => {
+            Event::default()
+                .event("done")
+                .data(serde_json::json!({ "total_rows": total_rows }).to_string())
+        }
+        AthenaServiceResponse::Error { message } => {
+            Event::default()
+                .event("error")
+                .data(serde_json::json!({ "message": message }).to_string())
+        }
+        AthenaServiceResponse::SchemaRefreshed { status } => {
+            Event::default()
+                .event("done")
+                .data(serde_json::json!({ "status": status }).to_string())
+        }
+        AthenaServiceResponse::Parquet { .. } => {
+            // Parquet data shouldn't appear in SSE stream, but handle gracefully.
+            Event::default()
+                .event("error")
+                .data(r#"{"message":"unexpected parquet data in SSE stream"}"#)
+        }
+    }
 }

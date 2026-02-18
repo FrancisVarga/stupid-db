@@ -4,6 +4,7 @@
 //! SRP: agent/team lifecycle and session management.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, Sse};
@@ -77,6 +78,26 @@ pub async fn agents_execute(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AgentExecuteRequest>,
 ) -> Result<Json<stupid_agent::AgentResponse>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
+    // Route through eisenbahn if available.
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::AgentServiceRequest::Execute {
+            agent_name: req.agent_name.clone(),
+            task: req.task.clone(),
+            context: req.context.clone(),
+        };
+        let resp = eb
+            .agent_execute(svc_req, Duration::from_secs(60))
+            .await
+            .map_err(|e| eb_agent_error(e))?;
+        return Ok(Json(stupid_agent::AgentResponse {
+            agent_name: req.agent_name,
+            output: resp.output,
+            status: parse_execution_status(&resp.status),
+            execution_time_ms: resp.elapsed_ms,
+            tokens_used: None,
+        }));
+    }
+
     let executor = state.agent_executor.as_ref().ok_or_else(|| {
         (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -127,6 +148,38 @@ pub async fn agents_chat(
     Sse<impl futures::Stream<Item = Result<Event, Infallible>>>,
     (axum::http::StatusCode, Json<QueryErrorResponse>),
 > {
+    // Route through eisenbahn if available.
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::AgentServiceRequest::Execute {
+            agent_name: req.agent_name.clone(),
+            task: req.task.clone(),
+            context: req.context.clone(),
+        };
+        let result = eb.agent_execute(svc_req, Duration::from_secs(60)).await;
+        let events = match result {
+            Ok(resp) => {
+                let agent_resp = stupid_agent::AgentResponse {
+                    agent_name: req.agent_name,
+                    output: resp.output,
+                    status: parse_execution_status(&resp.status),
+                    execution_time_ms: resp.elapsed_ms,
+                    tokens_used: None,
+                };
+                let data = serde_json::to_string(&agent_resp).unwrap_or_default();
+                vec![
+                    Ok(Event::default().event("agent_response").data(data)),
+                    Ok(Event::default().event("done").data("[DONE]")),
+                ]
+            }
+            Err(e) => {
+                vec![Ok(Event::default()
+                    .event("error")
+                    .data(serde_json::json!({"error": e.to_string()}).to_string()))]
+            }
+        };
+        return Ok(Sse::new(stream::iter(events)));
+    }
+
     let executor = state.agent_executor.as_ref().ok_or_else(|| {
         (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -201,6 +254,38 @@ pub async fn teams_execute(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TeamExecuteRequest>,
 ) -> Result<Json<stupid_agent::TeamResponse>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
+    // Route through eisenbahn if available.
+    if let Some(ref eb) = state.eisenbahn {
+        let svc_req = stupid_eisenbahn::services::AgentServiceRequest::TeamExecute {
+            task: req.task.clone(),
+            strategy: format!("{:?}", req.strategy).to_lowercase(),
+            context: req.context.clone(),
+        };
+        let resp = eb
+            .agent_execute(svc_req, Duration::from_secs(60))
+            .await
+            .map_err(|e| eb_agent_error(e))?;
+        // Convert team_outputs JSON array into HashMap<String, String>
+        let outputs: std::collections::HashMap<String, String> = resp
+            .team_outputs
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| {
+                let agent = v.get("agent").and_then(|a| a.as_str())?.to_string();
+                let output = v.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+                Some((agent, output))
+            })
+            .collect();
+        return Ok(Json(stupid_agent::TeamResponse {
+            task: req.task,
+            outputs,
+            status: parse_execution_status(&resp.status),
+            execution_time_ms: resp.elapsed_ms,
+            agents_used: Vec::new(),
+            strategy: req.strategy,
+        }));
+    }
+
     let executor = state.agent_executor.as_ref().ok_or_else(|| {
         (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -477,14 +562,6 @@ pub async fn sessions_execute_agent(
     Path(id): Path<String>,
     Json(req): Json<SessionExecuteAgentRequest>,
 ) -> Result<Json<SessionExecuteResponse<stupid_agent::AgentResponse>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
-    let executor = state.agent_executor.as_ref().ok_or_else(|| {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(QueryErrorResponse {
-                error: "Agent system not configured.".into(),
-            }),
-        )
-    })?;
 
     // Append user message
     let user_msg = stupid_agent::session::SessionMessage {
@@ -538,18 +615,51 @@ pub async fn sessions_execute_agent(
         Some(&req.context)
     };
 
-    // Execute with history
-    let result = executor
-        .execute_with_history(&req.agent_name, &req.task, &history, context, req.max_history)
-        .await
-        .map_err(|e| {
+    // Execute: route through eisenbahn if available, else direct call.
+    let result = if let Some(ref eb) = state.eisenbahn {
+        let history_json: Vec<serde_json::Value> = history
+            .iter()
+            .map(|m| serde_json::json!({ "role": format!("{:?}", m.role).to_lowercase(), "content": m.content }))
+            .collect();
+        let svc_req = stupid_eisenbahn::services::AgentServiceRequest::ExecuteWithHistory {
+            agent_name: req.agent_name.clone(),
+            task: req.task.clone(),
+            history: history_json,
+            context: req.context.clone(),
+            max_history: req.max_history,
+        };
+        let resp = eb
+            .agent_execute(svc_req, Duration::from_secs(60))
+            .await
+            .map_err(|e| eb_agent_error(e))?;
+        stupid_agent::AgentResponse {
+            agent_name: req.agent_name,
+            output: resp.output,
+            status: parse_execution_status(&resp.status),
+            execution_time_ms: resp.elapsed_ms,
+            tokens_used: None,
+        }
+    } else {
+        let executor = state.agent_executor.as_ref().ok_or_else(|| {
             (
-                axum::http::StatusCode::BAD_REQUEST,
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 Json(QueryErrorResponse {
-                    error: e.to_string(),
+                    error: "Agent system not configured.".into(),
                 }),
             )
         })?;
+        executor
+            .execute_with_history(&req.agent_name, &req.task, &history, context, req.max_history)
+            .await
+            .map_err(|e| {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(QueryErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+            })?
+    };
 
     // Append agent response
     let agent_msg = stupid_agent::session::SessionMessage {
@@ -757,14 +867,6 @@ pub async fn sessions_execute(
     Path(id): Path<String>,
     Json(req): Json<SessionExecuteRequest>,
 ) -> Result<Json<SessionExecuteResponse<stupid_agent::AgentResponse>>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
-    let executor = state.agent_executor.as_ref().ok_or_else(|| {
-        (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(QueryErrorResponse {
-                error: "Agent system not configured.".into(),
-            }),
-        )
-    })?;
 
     // Append user message
     let user_msg = stupid_agent::session::SessionMessage {
@@ -818,18 +920,50 @@ pub async fn sessions_execute(
         Some(&req.context)
     };
 
-    // Execute directly (no agent routing)
-    let result = executor
-        .execute_direct(&req.task, &history, context, req.max_history)
-        .await
-        .map_err(|e| {
+    // Execute: route through eisenbahn if available, else direct call.
+    let result = if let Some(ref eb) = state.eisenbahn {
+        let history_json: Vec<serde_json::Value> = history
+            .iter()
+            .map(|m| serde_json::json!({ "role": format!("{:?}", m.role).to_lowercase(), "content": m.content }))
+            .collect();
+        let svc_req = stupid_eisenbahn::services::AgentServiceRequest::ExecuteDirect {
+            task: req.task.clone(),
+            history: history_json,
+            context: req.context.clone(),
+            max_history: req.max_history,
+        };
+        let resp = eb
+            .agent_execute(svc_req, Duration::from_secs(60))
+            .await
+            .map_err(|e| eb_agent_error(e))?;
+        stupid_agent::AgentResponse {
+            agent_name: "assistant".to_string(),
+            output: resp.output,
+            status: parse_execution_status(&resp.status),
+            execution_time_ms: resp.elapsed_ms,
+            tokens_used: None,
+        }
+    } else {
+        let executor = state.agent_executor.as_ref().ok_or_else(|| {
             (
-                axum::http::StatusCode::BAD_REQUEST,
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 Json(QueryErrorResponse {
-                    error: e.to_string(),
+                    error: "Agent system not configured.".into(),
                 }),
             )
         })?;
+        executor
+            .execute_direct(&req.task, &history, context, req.max_history)
+            .await
+            .map_err(|e| {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(QueryErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+            })?
+    };
 
     // Append assistant response
     let agent_msg = stupid_agent::session::SessionMessage {
@@ -1076,4 +1210,25 @@ pub async fn sessions_stream(
     });
 
     Ok(Sse::new(sse_stream))
+}
+
+// ── Eisenbahn helpers ────────────────────────────────────────
+
+/// Map an eisenbahn error to an HTTP error response for agent endpoints.
+fn eb_agent_error(e: stupid_eisenbahn::EisenbahnError) -> (axum::http::StatusCode, Json<QueryErrorResponse>) {
+    let status = match &e {
+        stupid_eisenbahn::EisenbahnError::Timeout(_) => axum::http::StatusCode::GATEWAY_TIMEOUT,
+        _ => axum::http::StatusCode::BAD_GATEWAY,
+    };
+    (status, Json(QueryErrorResponse { error: e.to_string() }))
+}
+
+/// Parse a status string from eisenbahn into an ExecutionStatus.
+fn parse_execution_status(s: &str) -> stupid_agent::ExecutionStatus {
+    match s {
+        "success" => stupid_agent::ExecutionStatus::Success,
+        "timeout" => stupid_agent::ExecutionStatus::Timeout,
+        "partial" => stupid_agent::ExecutionStatus::Partial,
+        _ => stupid_agent::ExecutionStatus::Error,
+    }
 }
