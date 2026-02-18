@@ -122,16 +122,25 @@ async fn main() -> anyhow::Result<()> {
     // ── Step 1: Spawn the broker ─────────────────────────────────────
     tracing::info!("starting eisenbahn-broker");
     let broker_color = format!("{BOLD}\x1b[96m"); // bold bright cyan
+
+    // Build broker args, passing metrics_port from config if set.
+    let metrics_port_str = config.broker.metrics_port.map(|p| p.to_string());
+    let mut broker_args: Vec<&str> = vec![
+        "run",
+        "--bin",
+        "eisenbahn-broker",
+        "--package",
+        "stupid-eisenbahn",
+        "--",
+    ];
+    if let Some(ref port) = metrics_port_str {
+        broker_args.push("--metrics-port");
+        broker_args.push(port);
+    }
+
     let broker_child = spawn_process(
         "cargo",
-        &[
-            "run",
-            "--bin",
-            "eisenbahn-broker",
-            "--package",
-            "stupid-eisenbahn",
-            "--",
-        ],
+        &broker_args,
         &HashMap::new(),
         "broker",
         &broker_color,
