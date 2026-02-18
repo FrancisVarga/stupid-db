@@ -2,6 +2,7 @@ mod anomaly_rules;
 mod api;
 mod catalog_api;
 mod db;
+mod eisenbahn_client;
 mod vector_store;
 mod rules;
 mod athena_connections;
@@ -168,7 +169,7 @@ fn build_embedder(config: &stupid_core::Config) -> Option<Arc<dyn stupid_ingest:
     }
 }
 
-async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow::Result<()> {
+async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn: bool) -> anyhow::Result<()> {
     config.log_summary();
 
     // LLM init is config-based and fast — keep it synchronous.
@@ -400,6 +401,21 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>) -> anyhow
         });
     }
 
+    // Optionally start eisenbahn messaging client (ZMQ broker integration).
+    if eisenbahn {
+        info!("--eisenbahn flag active — connecting to broker");
+        let eb_config = eisenbahn_client::EisenbahnClientConfig::default();
+        match eisenbahn_client::EisenbahnClient::connect(&eb_config, state.broadcast.clone()).await {
+            Ok(client) => {
+                client.start().await;
+                info!("eisenbahn client active — server registered as api-gateway worker");
+            }
+            Err(e) => {
+                error!("failed to connect to eisenbahn broker: {} — continuing without eisenbahn", e);
+            }
+        }
+    }
+
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -438,8 +454,9 @@ async fn main() -> anyhow::Result<()> {
             export::export(&config, do_segments, do_graph).await?;
         }
         Some("serve") => {
-            let segment_id = args.get(2).map(|s| s.as_str());
-            serve(&config, segment_id).await?;
+            let eisenbahn = args.iter().any(|a| a == "--eisenbahn");
+            let segment_id = args.iter().skip(2).find(|a| !a.starts_with("--")).map(|s| s.as_str());
+            serve(&config, segment_id, eisenbahn).await?;
         }
         _ => {
             println!("stupid-db v0.1.0");
@@ -448,7 +465,7 @@ async fn main() -> anyhow::Result<()> {
             println!("  import-dir <directory>               Import all parquet files recursively");
             println!("  import-s3 <s3-prefix>                Import parquet files from S3");
             println!("  export [--segments|--graph|--all]     Export to S3 (default: --all)");
-            println!("  serve [segment_id]                   Start HTTP server (all segments if omitted)");
+            println!("  serve [segment_id] [--eisenbahn]     Start HTTP server (--eisenbahn enables ZMQ broker)");
         }
     }
 

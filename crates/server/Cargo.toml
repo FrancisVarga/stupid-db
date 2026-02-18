@@ -39,6 +39,7 @@ hex = "0.4"
 url = { workspace = true }
 urlencoding = "2"
 stupid-storage = { path = "../storage" }
+stupid-eisenbahn = { path = "../eisenbahn" }
 stupid-queue = { path = "../queue" }
 stupid-athena = { path = "../athena" }
 aws-sdk-athena = { workspace = true }
