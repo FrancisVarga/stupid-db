@@ -476,14 +476,36 @@ pub async fn fetch_schema(
                     r.rows
                         .iter()
                         .filter_map(|row| {
-                            let col_name = row.first()?.clone();
-                            if col_name.is_empty() || col_name.starts_with('#') {
+                            let raw = row.first()?.clone();
+                            if raw.is_empty() || raw.starts_with('#') {
                                 return None;
                             }
-                            let data_type = row.get(1).cloned().unwrap_or_default();
-                            let comment = row.get(2).and_then(|c| {
-                                if c.is_empty() { None } else { Some(c.clone()) }
-                            });
+
+                            // Athena DESCRIBE returns a single cell per row with
+                            // tab-delimited "col_name\tdata_type\tcomment".
+                            // Fall back to multi-column access if no tabs found.
+                            let (col_name, data_type, comment) = if raw.contains('\t') {
+                                let mut parts = raw.splitn(3, '\t');
+                                let name = parts.next().unwrap_or("").trim().to_string();
+                                let dtype = parts.next().unwrap_or("").trim().to_string();
+                                let cmt = parts.next()
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty());
+                                (name, dtype, cmt)
+                            } else {
+                                let name = raw.trim().to_string();
+                                let dtype = row.get(1).map(|s| s.trim().to_string()).unwrap_or_default();
+                                let cmt = row.get(2).and_then(|c| {
+                                    let t = c.trim();
+                                    if t.is_empty() { None } else { Some(t.to_string()) }
+                                });
+                                (name, dtype, cmt)
+                            };
+
+                            if col_name.is_empty() {
+                                return None;
+                            }
+
                             Some(AthenaColumn {
                                 name: col_name,
                                 data_type,
