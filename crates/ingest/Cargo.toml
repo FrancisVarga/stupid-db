@@ -20,3 +20,10 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 pdf-extract = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[[bin]]
+name = "ingest-worker"
+path = "src/bin/ingest-worker.rs"

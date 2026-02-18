@@ -15,6 +15,14 @@ tracing = { workspace = true }
 cron = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "rules-worker"
+path = "src/bin/rules-worker.rs"
 
 [dev-dependencies]
 tempfile = "3"

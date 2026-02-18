@@ -14,3 +14,14 @@ tracing = { workspace = true }
 zstd = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[[bin]]
+name = "segment-worker"
+path = "src/bin/segment-worker.rs"

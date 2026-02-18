@@ -31,3 +31,11 @@ arrow = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "athena-worker"
+path = "src/bin/athena-worker.rs"

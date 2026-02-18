@@ -7,11 +7,20 @@ edition.workspace = true
 stupid-core = { path = "../core" }
 stupid-graph = { path = "../graph" }
 stupid-rules = { path = "../rules" }
+stupid-eisenbahn = { path = "../eisenbahn" }
 rayon = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "compute-worker"
+path = "src/bin/compute-worker.rs"

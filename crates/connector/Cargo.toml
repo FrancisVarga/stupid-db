@@ -8,3 +8,13 @@ stupid-core = { path = "../core" }
 stupid-graph = { path = "../graph" }
 stupid-rules = { path = "../rules" }
 tracing = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "connector-worker"
+path = "src/bin/connector-worker.rs"

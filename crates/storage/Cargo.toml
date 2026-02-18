@@ -46,3 +46,10 @@ uuid = { workspace = true }
 
 # Filesystem
 walkdir = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[[bin]]
+name = "storage-worker"
+path = "src/bin/storage-worker.rs"

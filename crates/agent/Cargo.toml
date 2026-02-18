@@ -16,3 +16,10 @@ futures = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[[bin]]
+name = "agent-worker"
+path = "src/bin/agent-worker.rs"

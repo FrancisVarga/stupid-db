@@ -17,3 +17,11 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
+stupid-eisenbahn = { path = "../eisenbahn" }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "llm-worker"
+path = "src/bin/llm-worker.rs"
