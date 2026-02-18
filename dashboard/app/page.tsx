@@ -129,6 +129,17 @@ export default function DashboardPage() {
             Queue
           </Link>
           <Link
+            href="/eisenbahn"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(244, 114, 182, 0.08)",
+              border: "1px solid rgba(244, 114, 182, 0.2)",
+              color: "#f472b6",
+            }}
+          >
+            Eisenbahn
+          </Link>
+          <Link
             href="/db"
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
             style={{
