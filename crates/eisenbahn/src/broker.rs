@@ -140,6 +140,20 @@ impl EventBroker {
             .ensure_ipc_dir()
             .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
 
+        // Remove stale socket files from previous runs to avoid EADDRINUSE.
+        self.config
+            .frontend
+            .remove_stale_socket()
+            .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
+        self.config
+            .backend
+            .remove_stale_socket()
+            .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
+        self.config
+            .health
+            .remove_stale_socket()
+            .map_err(|e| crate::error::EisenbahnError::Config(e.to_string()))?;
+
         // -- Frontend: SUB socket that publishers connect to --
         let mut frontend = SubSocket::new();
         frontend

@@ -45,6 +45,9 @@ impl ZmqPublisher {
         transport
             .ensure_ipc_dir()
             .map_err(|e| EisenbahnError::Transport(e.to_string()))?;
+        transport
+            .remove_stale_socket()
+            .map_err(|e| EisenbahnError::Transport(e.to_string()))?;
         let mut socket = PubSocket::new();
         let endpoint = transport.endpoint();
         info!(endpoint = %endpoint, "binding PUB socket");

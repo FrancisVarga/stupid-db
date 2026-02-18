@@ -53,6 +53,26 @@ impl Transport {
         }
         Ok(())
     }
+
+    /// Remove a stale IPC socket file left over from a previous run.
+    ///
+    /// ZeroMQ IPC sockets are regular files — if the process exits without
+    /// cleanup, the `.sock` file persists and causes `EADDRINUSE` on next bind.
+    /// This is a no-op for TCP transports or if the file doesn't exist.
+    pub fn remove_stale_socket(&self) -> std::io::Result<()> {
+        if let Self::Ipc(_) = self {
+            let endpoint = self.endpoint();
+            let path = endpoint.strip_prefix("ipc://").unwrap_or(&endpoint);
+            match std::fs::remove_file(path) {
+                Ok(()) => {
+                    tracing::debug!(path, "removed stale IPC socket");
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for Transport {
