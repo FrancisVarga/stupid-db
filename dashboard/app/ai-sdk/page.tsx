@@ -12,6 +12,35 @@ import {
   useMemo,
 } from "react";
 import type { ChatMetadata, ChatUIMessage } from "../api/ai-sdk/chat/route";
+import {
+  listSessions,
+  createSession,
+  updateSession,
+  deleteSession,
+  type AiSdkSession,
+} from "@/lib/ai-sdk/sessions";
+import ToolCallBlock from "@/components/ai-sdk/ToolCallBlock";
+import type { ToolCallBlockProps } from "@/components/ai-sdk/ToolCallBlock";
+import MemoryPanel from "@/components/ai-sdk/MemoryPanel";
+
+// ── Tool invocation state mapping ──────────────────────────────────────
+
+function mapToolState(sdkState: string): ToolCallBlockProps["state"] {
+  switch (sdkState) {
+    case "input-streaming":
+      return "partial-call";
+    case "input-available":
+    case "approval-requested":
+    case "approval-responded":
+      return "call";
+    case "output-available":
+    case "output-error":
+    case "output-denied":
+      return "result";
+    default:
+      return "call";
+  }
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 
@@ -46,8 +75,91 @@ export default function AiSdkPage() {
   );
   const [input, setInput] = useState("");
   const [files, setFiles] = useState<FileList | undefined>(undefined);
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // ── Session state ───────────────────────────────────────────────────
+  const [sessions, setSessions] = useState<AiSdkSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Load sessions on mount
+  useEffect(() => {
+    loadSessions();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Refresh sessions when refreshKey changes (refreshKey pattern)
+  useEffect(() => {
+    if (refreshKey === 0) return;
+    listSessions().then(setSessions).catch(() => {});
+  }, [refreshKey]);
+
+  const loadSessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      const list = await listSessions();
+      setSessions(list);
+      if (list.length > 0 && !activeSessionId) {
+        setActiveSessionId(list[0].id);
+      }
+    } catch {
+      // DB may not be available yet
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [activeSessionId]);
+
+  const handleNewSession = useCallback(async () => {
+    try {
+      const session = await createSession({
+        provider: selectedProvider,
+        model: selectedModel,
+      });
+      setActiveSessionId(session.id);
+      setRefreshKey((k) => k + 1);
+    } catch (err) {
+      console.error("Failed to create session:", err);
+    }
+  }, [selectedProvider, selectedModel]);
+
+  const handleSelectSession = useCallback((id: string) => {
+    setActiveSessionId(id);
+  }, []);
+
+  const handleRenameSession = useCallback(
+    async (id: string, title: string) => {
+      try {
+        await updateSession(id, { title });
+        setRefreshKey((k) => k + 1);
+      } catch (err) {
+        console.error("Failed to rename session:", err);
+      }
+    },
+    [],
+  );
+
+  const handleDeleteSession = useCallback(
+    async (id: string) => {
+      try {
+        await deleteSession(id);
+        if (activeSessionId === id) {
+          const remaining = sessions.filter((s) => s.id !== id);
+          if (remaining.length > 0) {
+            setActiveSessionId(remaining[0].id);
+          } else {
+            setActiveSessionId(null);
+          }
+        }
+        setRefreshKey((k) => k + 1);
+      } catch (err) {
+        console.error("Failed to delete session:", err);
+      }
+    },
+    [activeSessionId, sessions],
+  );
 
   // Update model when provider changes
   useEffect(() => {
@@ -59,9 +171,13 @@ export default function AiSdkPage() {
     () =>
       new DefaultChatTransport({
         api: "/api/ai-sdk/chat",
-        body: { model: selectedModel, provider: selectedProvider },
+        body: {
+          model: selectedModel,
+          provider: selectedProvider,
+          sessionId: activeSessionId,
+        },
       }),
-    [selectedModel, selectedProvider],
+    [selectedModel, selectedProvider, activeSessionId],
   );
 
   const {
@@ -71,7 +187,10 @@ export default function AiSdkPage() {
     stop,
     regenerate,
     error,
-  } = useChat<ChatUIMessage>({ transport });
+  } = useChat<ChatUIMessage>({
+    id: activeSessionId ?? undefined,
+    transport,
+  });
 
   const isActive = status === "submitted" || status === "streaming";
 
@@ -136,152 +255,369 @@ export default function AiSdkPage() {
             onChange={setSelectedModel}
             disabled={isActive}
           />
+          <button
+            onClick={() => setMemoryPanelOpen((v) => !v)}
+            className="text-[10px] font-mono font-bold tracking-wider uppercase px-2 py-1 rounded transition-all"
+            style={{
+              background: memoryPanelOpen
+                ? "rgba(139, 92, 246, 0.15)"
+                : "rgba(139, 92, 246, 0.05)",
+              border: "1px solid rgba(139, 92, 246, 0.15)",
+              color: memoryPanelOpen ? "#a78bfa" : "#64748b",
+            }}
+          >
+            Memory
+          </button>
         </div>
       </header>
 
-      {/* Chat area */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {messages.length === 0 && <EmptyState />}
+      <MemoryPanel
+        open={memoryPanelOpen}
+        onClose={() => setMemoryPanelOpen(false)}
+      />
 
-        {messages.map((msg) => (
-          <MessageRow key={msg.id} message={msg} />
-        ))}
+      {/* Body: sidebar + chat */}
+      <div className="flex-1 flex min-h-0">
+        {/* Session Sidebar */}
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          loading={sessionsLoading}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+          onRenameSession={handleRenameSession}
+          onDeleteSession={handleDeleteSession}
+        />
 
-        {isActive && messages.length > 0 && (
-          <div className="flex items-center gap-3 px-4 py-3">
-            <Spinner />
-            <span className="text-xs text-slate-500 animate-pulse font-mono">
-              {status === "submitted"
-                ? "Sending..."
-                : "Streaming response..."}
-            </span>
+        {/* Chat Area */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Messages */}
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {messages.length === 0 && <EmptyState />}
+
+            {messages.map((msg) => (
+              <MessageRow key={msg.id} message={msg} />
+            ))}
+
+            {isActive && messages.length > 0 && (
+              <div className="flex items-center gap-3 px-4 py-3">
+                <Spinner />
+                <span className="text-xs text-slate-500 animate-pulse font-mono">
+                  {status === "submitted"
+                    ? "Sending..."
+                    : "Streaming response..."}
+                </span>
+              </div>
+            )}
+
+            {error && (
+              <div
+                className="mx-4 px-4 py-3 rounded-lg text-xs font-mono"
+                style={{
+                  background: "rgba(239, 68, 68, 0.08)",
+                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                  color: "#f87171",
+                }}
+              >
+                <span className="font-bold">Error:</span> Something went wrong.
+                <button
+                  onClick={() => regenerate()}
+                  className="ml-3 underline hover:no-underline"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
-        )}
 
-        {error && (
-          <div
-            className="mx-4 px-4 py-3 rounded-lg text-xs font-mono"
+          {/* Input bar */}
+          <form
+            onSubmit={handleSubmit}
+            className="px-6 py-4 shrink-0"
             style={{
-              background: "rgba(239, 68, 68, 0.08)",
-              border: "1px solid rgba(239, 68, 68, 0.2)",
-              color: "#f87171",
+              borderTop: "1px solid rgba(139, 92, 246, 0.08)",
+              background:
+                "linear-gradient(0deg, rgba(139, 92, 246, 0.02) 0%, transparent 100%)",
             }}
           >
-            <span className="font-bold">Error:</span> Something went wrong.
-            <button
-              onClick={() => regenerate()}
-              className="ml-3 underline hover:no-underline"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input bar */}
-      <form
-        onSubmit={handleSubmit}
-        className="px-6 py-4 shrink-0"
-        style={{
-          borderTop: "1px solid rgba(139, 92, 246, 0.08)",
-          background:
-            "linear-gradient(0deg, rgba(139, 92, 246, 0.02) 0%, transparent 100%)",
-        }}
-      >
-        <div
-          className="flex items-center gap-3 rounded-xl px-4 py-3"
-          style={{
-            background: "rgba(139, 92, 246, 0.03)",
-            border: "1px solid rgba(139, 92, 246, 0.1)",
-          }}
-        >
-          {/* File attachment button */}
-          <label
-            className="cursor-pointer text-slate-500 hover:text-slate-300 transition-colors shrink-0"
-            title="Attach files"
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-            </svg>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files?.length) setFiles(e.target.files);
+            <div
+              className="flex items-center gap-3 rounded-xl px-4 py-3"
+              style={{
+                background: "rgba(139, 92, 246, 0.03)",
+                border: "1px solid rgba(139, 92, 246, 0.1)",
               }}
-            />
-          </label>
+            >
+              {/* File attachment button */}
+              <label
+                className="cursor-pointer text-slate-500 hover:text-slate-300 transition-colors shrink-0"
+                title="Attach files"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.length) setFiles(e.target.files);
+                  }}
+                />
+              </label>
 
-          {/* File pills */}
-          {files && files.length > 0 && (
-            <div className="flex gap-1.5 shrink-0">
-              {Array.from(files).map((f, i) => (
-                <span
-                  key={i}
-                  className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+              {/* File pills */}
+              {files && files.length > 0 && (
+                <div className="flex gap-1.5 shrink-0">
+                  {Array.from(files).map((f, i) => (
+                    <span
+                      key={i}
+                      className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                      style={{
+                        background: "rgba(139, 92, 246, 0.1)",
+                        color: "#a78bfa",
+                        border: "1px solid rgba(139, 92, 246, 0.2)",
+                      }}
+                    >
+                      {f.name}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask Claude anything..."
+                disabled={isActive}
+                className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-600 outline-none font-mono"
+              />
+
+              {isActive ? (
+                <button
+                  type="button"
+                  onClick={() => stop()}
+                  className="px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all"
                   style={{
-                    background: "rgba(139, 92, 246, 0.1)",
-                    color: "#a78bfa",
-                    border: "1px solid rgba(139, 92, 246, 0.2)",
+                    background: "rgba(239, 68, 68, 0.15)",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    color: "#f87171",
                   }}
                 >
-                  {f.name}
-                </span>
-              ))}
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!input.trim() && !files?.length}
+                  className="px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all disabled:opacity-30"
+                  style={{
+                    background: "rgba(139, 92, 246, 0.15)",
+                    border: "1px solid rgba(139, 92, 246, 0.3)",
+                    color: "#8b5cf6",
+                  }}
+                >
+                  Send
+                </button>
+              )}
             </div>
-          )}
-
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask Claude anything..."
-            disabled={isActive}
-            className="flex-1 bg-transparent text-sm text-slate-200 placeholder:text-slate-600 outline-none font-mono"
-          />
-
-          {isActive ? (
-            <button
-              type="button"
-              onClick={() => stop()}
-              className="px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all"
-              style={{
-                background: "rgba(239, 68, 68, 0.15)",
-                border: "1px solid rgba(239, 68, 68, 0.3)",
-                color: "#f87171",
-              }}
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!input.trim() && !files?.length}
-              className="px-4 py-1.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all disabled:opacity-30"
-              style={{
-                background: "rgba(139, 92, 246, 0.15)",
-                border: "1px solid rgba(139, 92, 246, 0.3)",
-                color: "#8b5cf6",
-              }}
-            >
-              Send
-            </button>
-          )}
+          </form>
         </div>
-      </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function relativeTime(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+// ── Session Sidebar ─────────────────────────────────────────────────
+
+function SessionSidebar({
+  sessions,
+  activeSessionId,
+  loading,
+  onSelectSession,
+  onNewSession,
+  onRenameSession,
+  onDeleteSession,
+}: {
+  sessions: AiSdkSession[];
+  activeSessionId: string | null;
+  loading: boolean;
+  onSelectSession: (id: string) => void;
+  onNewSession: () => void;
+  onRenameSession: (id: string, title: string) => void;
+  onDeleteSession: (id: string) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const startRename = (id: string, currentTitle: string) => {
+    setEditingId(id);
+    setEditTitle(currentTitle);
+  };
+
+  const commitRename = (id: string) => {
+    if (editTitle.trim()) {
+      onRenameSession(id, editTitle.trim());
+    }
+    setEditingId(null);
+  };
+
+  return (
+    <div
+      className="w-60 shrink-0 flex flex-col overflow-hidden"
+      style={{
+        borderRight: "1px solid rgba(139, 92, 246, 0.06)",
+        background: "rgba(0, 0, 0, 0.15)",
+      }}
+    >
+      {/* New session button */}
+      <button
+        onClick={onNewSession}
+        className="m-3 px-3 py-2 rounded-lg text-xs font-bold tracking-wider uppercase transition-all hover:opacity-90"
+        style={{
+          background: "rgba(139, 92, 246, 0.1)",
+          border: "1px solid rgba(139, 92, 246, 0.2)",
+          color: "#8b5cf6",
+        }}
+      >
+        + New Chat
+      </button>
+
+      {/* Loading */}
+      {loading && (
+        <div className="px-3 py-4 text-center">
+          <span className="text-slate-600 text-xs font-mono animate-pulse">
+            Loading sessions...
+          </span>
+        </div>
+      )}
+
+      {/* Session list */}
+      <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-1">
+        {sessions.map((s) => {
+          const isActive = s.id === activeSessionId;
+          const isEditing = s.id === editingId;
+          const isConfirmingDelete = s.id === confirmDeleteId;
+
+          return (
+            <div
+              key={s.id}
+              className="group rounded-lg px-3 py-2.5 cursor-pointer transition-all"
+              style={{
+                background: isActive
+                  ? "rgba(139, 92, 246, 0.06)"
+                  : "transparent",
+                borderLeft: isActive
+                  ? "2px solid #8b5cf6"
+                  : "2px solid transparent",
+              }}
+              onClick={() => !isEditing && onSelectSession(s.id)}
+            >
+              {isEditing ? (
+                <input
+                  autoFocus
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  onBlur={() => commitRename(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename(s.id);
+                    if (e.key === "Escape") setEditingId(null);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full bg-transparent text-xs text-slate-200 font-mono outline-none px-1 py-0.5 rounded"
+                  style={{
+                    border: "1px solid rgba(139, 92, 246, 0.3)",
+                  }}
+                />
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-300 font-mono truncate flex-1">
+                      {s.title}
+                    </span>
+                    {/* Hover actions */}
+                    <div className="hidden group-hover:flex items-center gap-1 ml-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startRename(s.id, s.title);
+                        }}
+                        className="text-[9px] text-slate-500 hover:text-slate-300 px-1"
+                        title="Rename"
+                      >
+                        &#9998;
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (isConfirmingDelete) {
+                            onDeleteSession(s.id);
+                            setConfirmDeleteId(null);
+                          } else {
+                            setConfirmDeleteId(s.id);
+                            setTimeout(() => setConfirmDeleteId(null), 3000);
+                          }
+                        }}
+                        className="text-[9px] px-1"
+                        style={{
+                          color: isConfirmingDelete ? "#ff4757" : "#64748b",
+                        }}
+                        title={
+                          isConfirmingDelete
+                            ? "Click again to confirm"
+                            : "Delete"
+                        }
+                      >
+                        &#10005;
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span
+                      className="text-[9px] font-mono px-1 rounded"
+                      style={{
+                        background: "rgba(139, 92, 246, 0.08)",
+                        color: "#64748b",
+                      }}
+                    >
+                      {s.model.replace("claude-", "")}
+                    </span>
+                    <span className="text-[9px] text-slate-600 font-mono ml-auto">
+                      {relativeTime(s.updated_at)}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -463,6 +799,25 @@ function MessageRow({ message }: { message: UIMessage }) {
                 src={part.url}
                 alt="Generated"
                 className="max-w-full rounded-lg my-2"
+              />
+            );
+          }
+
+          if (part.type === "dynamic-tool") {
+            return (
+              <ToolCallBlock
+                key={`${part.toolCallId}-${i}`}
+                toolName={part.toolName}
+                toolCallId={part.toolCallId}
+                args={(part.input as Record<string, unknown>) ?? {}}
+                result={
+                  part.state === "output-available"
+                    ? part.output
+                    : part.state === "output-error"
+                      ? part.errorText
+                      : undefined
+                }
+                state={mapToolState(part.state)}
               />
             );
           }
