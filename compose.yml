@@ -1,4 +1,36 @@
+# ── compose.yml ────────────────────────────────────────────────────
+# Full stupid-db stack: monolith server, eisenbahn distributed workers,
+# dashboard, and agent.
+#
+# Usage:
+#   docker compose up -d                       # start all
+#   docker compose up broker compute graph     # start subset
+#   docker compose --profile eisenbahn up -d   # start eisenbahn workers only
+#   docker compose logs -f compute             # tail logs
+
+# ── Shared defaults for eisenbahn workers ──────────────────────────
+x-worker-defaults: &worker-defaults
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.worker
+  restart: unless-stopped
+  networks:
+    - default
+  environment: &worker-env
+    RUST_LOG: info
+    EISENBAHN_TRANSPORT: tcp
+    EISENBAHN_CONFIG: /app/config/eisenbahn.toml
+    EISENBAHN_BROKER_HOST: broker
+    EISENBAHN_FRONTEND_PORT: "5555"
+    EISENBAHN_BACKEND_PORT: "5556"
+  depends_on:
+    broker:
+      condition: service_healthy
+
 services:
+  # ════════════════════════════════════════════════════════════════════
+  # Monolith server (existing)
+  # ════════════════════════════════════════════════════════════════════
   stupid-db-server:
     build:
       context: .
@@ -49,6 +81,190 @@ services:
       start_period: 10s
       retries: 3
 
+  # ════════════════════════════════════════════════════════════════════
+  # Eisenbahn distributed workers
+  # ════════════════════════════════════════════════════════════════════
+
+  # ── Broker ────────────────────────────────────────────────────────
+  broker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: eisenbahn-broker
+    container_name: eisenbahn-broker
+    restart: unless-stopped
+    ports:
+      - "5555:5555"   # frontend (publishers connect)
+      - "5556:5556"   # backend (subscribers connect)
+      - "5557:5557"   # health check
+      - "9090:9090"   # metrics
+    environment:
+      RUST_LOG: info
+      EISENBAHN_TRANSPORT: tcp
+      EISENBAHN_HOST: "0.0.0.0"
+      EISENBAHN_FRONTEND_PORT: "5555"
+      EISENBAHN_BACKEND_PORT: "5556"
+      EISENBAHN_HEALTH_PORT: "5557"
+      EISENBAHN_METRICS_PORT: "9090"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ── Compute Worker ────────────────────────────────────────────────
+  compute:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: compute-worker
+    container_name: eisenbahn-compute
+    environment:
+      <<: *worker-env
+      COMPUTE_HEALTH_INTERVAL: "30"
+
+  # ── Ingest Worker ─────────────────────────────────────────────────
+  ingest:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: ingest-worker
+    container_name: eisenbahn-ingest
+    volumes:
+      - ingest-data:/data
+    environment:
+      <<: *worker-env
+      INGEST_DATA_DIR: /data
+
+  # ── Graph Worker ──────────────────────────────────────────────────
+  graph:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: graph-worker
+    container_name: eisenbahn-graph
+
+  # ── Storage Worker ────────────────────────────────────────────────
+  storage:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: storage-worker
+    container_name: eisenbahn-storage
+    volumes:
+      - storage-data:/data
+    environment:
+      <<: *worker-env
+      STORAGE_DATA_DIR: /data
+
+  # ── Rules Worker ──────────────────────────────────────────────────
+  rules:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: rules-worker
+    container_name: eisenbahn-rules
+
+  # ── LLM Worker ───────────────────────────────────────────────────
+  llm:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: llm-worker
+    container_name: eisenbahn-llm
+    environment:
+      <<: *worker-env
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
+  # ── Notify Worker ─────────────────────────────────────────────────
+  notify:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: notify-worker
+    container_name: eisenbahn-notify
+
+  # ── Agent Worker ──────────────────────────────────────────────────
+  agent:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: agent-worker
+    container_name: eisenbahn-agent
+
+  # ── Segment Worker ───────────────────────────────────────────────
+  segment:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: segment-worker
+    container_name: eisenbahn-segment
+    volumes:
+      - segment-data:/data
+    environment:
+      <<: *worker-env
+      SEGMENT_DATA_DIR: /data
+
+  # ── Catalog Worker ───────────────────────────────────────────────
+  catalog:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: catalog-worker
+    container_name: eisenbahn-catalog
+
+  # ── Athena Worker ────────────────────────────────────────────────
+  athena:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: athena-worker
+    container_name: eisenbahn-athena
+    environment:
+      <<: *worker-env
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+
+  # ── Connector Worker ─────────────────────────────────────────────
+  connector:
+    <<: *worker-defaults
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        BINARY_NAME: connector-worker
+    container_name: eisenbahn-connector
+
+  # ════════════════════════════════════════════════════════════════════
+  # Dashboard
+  # ════════════════════════════════════════════════════════════════════
   dashboard:
     build:
       context: ./dashboard
@@ -71,3 +287,6 @@ services:
 
 volumes:
   stupid-db-data:
+  ingest-data:
+  storage-data:
+  segment-data:

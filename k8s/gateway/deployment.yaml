@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eisenbahn-gateway
+  namespace: eisenbahn
+  labels:
+    app.kubernetes.io/name: eisenbahn-gateway
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: stupid-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: eisenbahn-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: eisenbahn-gateway
+        app.kubernetes.io/component: gateway
+        app.kubernetes.io/part-of: stupid-db
+    spec:
+      containers:
+        - name: server
+          image: stupid-db/server:latest
+          args: ["--eisenbahn"]
+          ports:
+            - name: http
+              containerPort: 39100
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "39100"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: DATA_DIR
+              value: /data
+            - name: RUST_LOG
+              value: "info"
+          envFrom:
+            - configMapRef:
+                name: eisenbahn-config
+          volumeMounts:
+            - name: config
+              mountPath: /etc/eisenbahn
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: rules
+              mountPath: /data/rules
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: config
+          configMap:
+            name: eisenbahn-config
+            items:
+              - key: eisenbahn.toml
+                path: eisenbahn.toml
+        - name: data
+          emptyDir: {}
+        - name: rules
+          emptyDir: {}

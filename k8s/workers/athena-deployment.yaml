@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: athena-worker
+  namespace: eisenbahn
+  labels:
+    app.kubernetes.io/name: athena-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: stupid-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: athena-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: athena-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: stupid-db
+    spec:
+      containers:
+        - name: worker
+          image: stupid-db/athena-worker:latest
+          envFrom:
+            - configMapRef:
+                name: eisenbahn-config
+          env:
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: eisenbahn-secrets
+                  key: AWS_REGION
+                  optional: true
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: eisenbahn-secrets
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eisenbahn-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/eisenbahn
+              readOnly: true
+          livenessProbe:
+            tcpSocket:
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: config
+          configMap:
+            name: eisenbahn-config
+            items:
+              - key: eisenbahn.toml
+                path: eisenbahn.toml

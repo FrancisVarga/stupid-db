@@ -36,6 +36,12 @@ docs/
 .env.*
 !.env.example
 
+# Node modules (dashboard has separate build context)
+node_modules/
+
+# Beads issue tracking
+.beads/
+
 # OS
 Thumbs.db
 .DS_Store

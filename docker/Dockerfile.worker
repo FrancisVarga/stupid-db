@@ -1,0 +1,86 @@
+# ── Parameterized Rust worker Dockerfile ────────────────────────────
+# Builds any eisenbahn worker binary from the Cargo workspace.
+#
+# Usage:
+#   docker build -f docker/Dockerfile.worker \
+#     --build-arg BINARY_NAME=compute-worker \
+#     -t stupid-db/compute-worker .
+#
+#   docker build -f docker/Dockerfile.worker \
+#     --build-arg BINARY_NAME=eisenbahn-broker \
+#     -t stupid-db/eisenbahn-broker .
+
+# ── Stage 1: Chef base ────────────────────────────────────────────
+FROM rust:1.83-slim-bookworm AS chef
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-chef --locked
+WORKDIR /app
+
+# ── Stage 2: Planner ──────────────────────────────────────────────
+# Analyze workspace and generate a dependency recipe.
+FROM chef AS planner
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 3: Builder ──────────────────────────────────────────────
+# Build dependencies from recipe (cached), then compile all binaries.
+FROM chef AS builder
+
+ARG BINARY_NAME=compute-worker
+
+# Build dependencies first (cached until Cargo.toml changes)
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy source and build the target binary
+COPY . .
+RUN cargo build --release --bin ${BINARY_NAME}
+
+# ── Stage 4: Runtime ──────────────────────────────────────────────
+# Minimal runtime image with just the binary.
+FROM debian:bookworm-slim AS runtime
+
+ARG BINARY_NAME=compute-worker
+
+# curl for healthcheck, ca-certificates for HTTPS (AWS, LLM APIs)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for security
+RUN useradd --system --uid 1000 --create-home appuser
+
+WORKDIR /app
+
+# Copy the compiled binary and rename to a fixed path for CMD
+COPY --from=builder /app/target/release/${BINARY_NAME} ./worker
+
+# Copy config directory (eisenbahn.toml, rules, etc.)
+COPY --chown=appuser:appuser config/ /app/config/
+COPY --chown=appuser:appuser data/rules/ /app/data/rules/
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
+
+# Default environment
+ENV RUST_LOG=info
+ENV EISENBAHN_CONFIG=/app/config/eisenbahn.toml
+ENV EISENBAHN_TRANSPORT=tcp
+ENV EISENBAHN_HOST=0.0.0.0
+
+# Health check port (workers expose health via ZMQ REP socket;
+# broker exposes metrics HTTP endpoint)
+ENV EISENBAHN_METRICS_PORT=9090
+EXPOSE 9090
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -sf http://localhost:${EISENBAHN_METRICS_PORT}/health || exit 1
+
+CMD ["./worker"]

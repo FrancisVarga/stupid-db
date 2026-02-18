@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connector-worker
+  namespace: eisenbahn
+  labels:
+    app.kubernetes.io/name: connector-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: stupid-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: connector-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: connector-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: stupid-db
+    spec:
+      containers:
+        - name: worker
+          image: stupid-db/connector-worker:latest
+          envFrom:
+            - configMapRef:
+                name: eisenbahn-config
+          volumeMounts:
+            - name: config
+              mountPath: /etc/eisenbahn
+              readOnly: true
+          livenessProbe:
+            tcpSocket:
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: config
+          configMap:
+            name: eisenbahn-config
+            items:
+              - key: eisenbahn.toml
+                path: eisenbahn.toml

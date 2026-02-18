@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eisenbahn-dashboard
+  namespace: eisenbahn
+  labels:
+    app.kubernetes.io/name: eisenbahn-dashboard
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: stupid-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: eisenbahn-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: eisenbahn-dashboard
+        app.kubernetes.io/component: dashboard
+        app.kubernetes.io/part-of: stupid-db
+    spec:
+      containers:
+        - name: dashboard
+          image: stupid-db/dashboard:latest
+          ports:
+            - name: http
+              containerPort: 39300
+              protocol: TCP
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              value: "http://eisenbahn-gateway.eisenbahn.svc.cluster.local:39100"
+            - name: PORT
+              value: "39300"
+            - name: HOSTNAME
+              value: "0.0.0.0"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: eisenbahn
+  labels:
+    app.kubernetes.io/part-of: stupid-db
+    app.kubernetes.io/managed-by: kustomize

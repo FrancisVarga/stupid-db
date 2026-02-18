@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: eisenbahn-broker
+  namespace: eisenbahn
+  labels:
+    app.kubernetes.io/name: eisenbahn-broker
+    app.kubernetes.io/component: broker
+    app.kubernetes.io/part-of: stupid-db
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: eisenbahn-broker
+  ports:
+    - name: frontend
+      port: 5555
+      targetPort: frontend
+      protocol: TCP
+    - name: backend
+      port: 5556
+      targetPort: backend
+      protocol: TCP
+    - name: health
+      port: 5557
+      targetPort: health
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
