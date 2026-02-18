@@ -330,7 +330,31 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         .route("/athena-connections/{id}/query/parquet", post(api::athena_query_parquet))
         .route("/athena-connections/{id}/schema", get(api::athena_connections_schema))
         .route("/athena-connections/{id}/schema/refresh", post(api::athena_connections_schema_refresh))
-        .route("/athena-connections/{id}/query-log", get(api::athena_connections_query_log));
+        .route("/athena-connections/{id}/query-log", get(api::athena_connections_query_log))
+        // Stille Post: pipeline CRUD
+        .route("/sp/pipelines", get(api::sp_pipelines_list).post(api::sp_pipelines_create))
+        .route("/sp/pipelines/{id}", get(api::sp_pipelines_get).put(api::sp_pipelines_update).delete(api::sp_pipelines_delete))
+        // Stille Post: delivery CRUD
+        .route("/sp/deliveries", get(api::sp_deliveries_list).post(api::sp_deliveries_create))
+        .route("/sp/deliveries/{id}", axum::routing::put(api::sp_deliveries_update).delete(api::sp_deliveries_delete))
+        .route("/sp/deliveries/{id}/test", post(api::sp_deliveries_test))
+        // Stille Post: data source CRUD
+        .route("/sp/data-sources", get(api::sp_data_sources_list).post(api::sp_data_sources_create))
+        .route("/sp/data-sources/{id}", get(api::sp_data_sources_get).put(api::sp_data_sources_update).delete(api::sp_data_sources_delete))
+        .route("/sp/data-sources/{id}/test", post(api::sp_data_sources_test))
+        .route("/sp/data-sources/upload", post(api::sp_data_sources_upload)
+            .layer(DefaultBodyLimit::max(100 * 1024 * 1024)))
+        // Stille Post: schedule CRUD
+        .route("/sp/schedules", get(api::sp_schedules_list).post(api::sp_schedules_create))
+        .route("/sp/schedules/{id}", axum::routing::put(api::sp_schedules_update).delete(api::sp_schedules_delete))
+        // Stille Post: agent CRUD
+        .route("/sp/agents", get(api::sp_agents_list).post(api::sp_agents_create))
+        .route("/sp/agents/{id}", get(api::sp_agents_get).put(api::sp_agents_update).delete(api::sp_agents_delete))
+        // Stille Post: runs and reports
+        .route("/sp/runs", get(api::sp_runs_list).post(api::sp_runs_create))
+        .route("/sp/runs/{id}", get(api::sp_runs_get).delete(api::sp_runs_delete))
+        .route("/sp/reports", get(api::sp_reports_list))
+        .route("/sp/reports/{id}", get(api::sp_reports_get));
 
     let app = app
         .route("/embeddings/upload", post(api::embedding::upload)
