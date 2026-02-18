@@ -1,0 +1,14 @@
+services:
+  kg-pg-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8100:8100"
+    env_file:
+      - .env
+    environment:
+      KG_TRANSPORT: sse
+      KG_HOST: 0.0.0.0
+      KG_PORT: 8100
+    restart: unless-stopped
