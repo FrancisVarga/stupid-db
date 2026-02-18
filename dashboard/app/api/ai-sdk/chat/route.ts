@@ -12,6 +12,8 @@ import sql from "@/lib/db/ai-sdk";
 import { ensureAiSdkTables } from "@/lib/db/ai-sdk-migrate";
 import { dbQueryTool } from "@/lib/ai-sdk/tools/db-query";
 import { memoryTool } from "@/lib/ai-sdk/tools/memory";
+import { createPgQueryTool } from "@/lib/ai-sdk/tools/pg-query";
+import { buildSchemaContext } from "@/lib/ai-sdk/schema-context";
 
 export const maxDuration = 60;
 
@@ -109,11 +111,13 @@ export async function POST(req: Request): Promise<Response> {
     model: requestedModel,
     provider: requestedProvider,
     sessionId: requestedSessionId,
+    dbConnectionId,
   } = (await req.json()) as {
     messages: UIMessage[];
     model?: string;
     provider?: ProviderType;
     sessionId?: string;
+    dbConnectionId?: string;
   };
 
   // Determine provider
@@ -193,11 +197,32 @@ export async function POST(req: Request): Promise<Response> {
     : "";
   const memories = userText ? await searchMemories(userText) : [];
 
+  // Build schema context if a database connection is specified
+  let schemaPrompt = "";
+  if (dbConnectionId) {
+    try {
+      const schemaText = await buildSchemaContext(dbConnectionId);
+      schemaPrompt = `\n\n<database_schema>\nYou have access to a PostgreSQL database. Use the pg_query tool to execute SELECT queries.\n${schemaText}\n</database_schema>`;
+    } catch {
+      // If schema fetch fails, continue without schema context
+    }
+  }
+
+  // Assemble tools — add pg_query when a database connection is active
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = {
+    db_query: dbQueryTool,
+    memory: memoryTool,
+  };
+  if (dbConnectionId) {
+    tools.pg_query = createPgQueryTool(dbConnectionId);
+  }
+
   const result = streamText({
     model: modelInstance,
-    system: buildSystemPrompt(memories),
+    system: buildSystemPrompt(memories) + schemaPrompt,
     messages: await convertToModelMessages(messages),
-    tools: { db_query: dbQueryTool, memory: memoryTool },
+    tools,
     stopWhen: stepCountIs(5),
     onFinish: async ({ text, toolCalls, usage, finishReason }) => {
       // Persist the assistant response after streaming completes

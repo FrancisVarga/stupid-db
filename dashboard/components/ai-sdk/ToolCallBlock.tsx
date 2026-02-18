@@ -17,6 +17,7 @@ export interface ToolCallBlockProps {
 const TOOL_COLORS: Record<string, string> = {
   db_query: "#06b6d4",   // cyan
   memory: "#a855f7",     // purple
+  pg_query: "#10b981",   // emerald
 };
 
 const DEFAULT_TOOL_COLOR = "#64748b";
@@ -30,6 +31,7 @@ function getToolColor(toolName: string): string {
 const TOOL_LABELS: Record<string, string> = {
   db_query: "Database Query",
   memory: "Memory",
+  pg_query: "SQL Query",
 };
 
 function getToolLabel(toolName: string): string {
@@ -308,6 +310,8 @@ function getToolIcon(toolName: string): string {
   switch (toolName) {
     case "db_query":
       return "\u26A1"; // lightning
+    case "pg_query":
+      return "\uD83D\uDDC3"; // card file box (database)
     case "memory":
       return "\uD83E\uDDE0"; // brain
     default:
