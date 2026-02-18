@@ -1,8 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { getPool } from "@/lib/db/client";
 
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
 const MAX_ROWS = 100;
 
 /**
@@ -30,6 +29,9 @@ interface PgQueryResult {
  * Factory that creates a pg_query tool bound to a specific connection ID.
  * The AI only supplies the `sql` parameter; the connection is fixed at the
  * route level so the model cannot target arbitrary databases.
+ *
+ * Executes queries directly via the connection pool instead of making an
+ * HTTP self-call, avoiding port mismatch issues in dev.
  */
 export function createPgQueryTool(connectionId: string) {
   return tool({
@@ -40,8 +42,8 @@ export function createPgQueryTool(connectionId: string) {
     inputSchema: z.object({
       sql: z.string().describe("The SQL SELECT query to execute"),
     }),
-    execute: async ({ sql }): Promise<PgQueryResult> => {
-      if (!isSelectOnly(sql)) {
+    execute: async ({ sql: query }): Promise<PgQueryResult> => {
+      if (!isSelectOnly(query)) {
         return {
           error:
             "Only SELECT queries are allowed. Please rewrite as a SELECT query.",
@@ -49,34 +51,23 @@ export function createPgQueryTool(connectionId: string) {
       }
 
       try {
-        const res = await fetch(
-          `${SITE_URL}/api/v1/${encodeURIComponent(connectionId)}/query`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sql, params: [] }),
-          },
-        );
+        const pool = await getPool(connectionId);
+        const start = performance.now();
+        const rows = await pool.unsafe(query);
+        const duration_ms = performance.now() - start;
 
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          return { error: `Query failed (${res.status}): ${text || res.statusText}` };
+        let columns: string[] = [];
+        if (rows.length > 0) {
+          columns = Object.keys(rows[0] as Record<string, unknown>);
         }
 
-        const result = (await res.json()) as {
-          columns: string[];
-          rows: Record<string, unknown>[];
-          row_count: number;
-          duration_ms: number;
-        };
-
-        const truncated = result.row_count > MAX_ROWS;
+        const truncated = rows.length > MAX_ROWS;
         return {
-          columns: result.columns,
-          rows: result.rows.slice(0, MAX_ROWS),
-          rowCount: result.row_count,
+          columns,
+          rows: (rows as unknown as Record<string, unknown>[]).slice(0, MAX_ROWS),
+          rowCount: rows.length,
           truncated,
-          duration_ms: result.duration_ms,
+          duration_ms: Math.round(duration_ms * 100) / 100,
         };
       } catch (error) {
         return {
