@@ -190,12 +190,12 @@ function OverviewTab({ agent, stats }: { agent: AgentDetail; stats: TelemetrySta
       {stats && (
         <div className="grid grid-cols-5 gap-3">
           <StatCard label="Executions" value={formatNumber(stats.total_executions)} accent="#00f0ff" />
-          <StatCard label="Avg Latency" value={`${Math.round(stats.avg_latency_ms)}ms`} accent="#a855f7" />
-          <StatCard label="P95 Latency" value={`${Math.round(stats.p95_latency_ms)}ms`} accent="#f472b6" />
+          <StatCard label="Avg Latency" value={`${Math.round(stats.avg_latency_ms ?? 0)}ms`} accent="#a855f7" />
+          <StatCard label="P95 Latency" value={`${Math.round(stats.p95_latency_ms ?? 0)}ms`} accent="#f472b6" />
           <StatCard
             label="Error Rate"
-            value={`${(stats.error_rate * 100).toFixed(1)}%`}
-            accent={stats.error_rate > 0.1 ? "#ff4757" : "#06d6a0"}
+            value={`${((stats.error_rate ?? 0) * 100).toFixed(1)}%`}
+            accent={(stats.error_rate ?? 0) > 0.1 ? "#ff4757" : "#06d6a0"}
           />
           <StatCard label="Total Tokens" value={formatNumber(stats.total_tokens)} accent="#fbbf24" />
         </div>
@@ -325,7 +325,8 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatNumber(n: number): string {
+function formatNumber(n: number | undefined | null): string {
+  if (n == null) return "0";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
