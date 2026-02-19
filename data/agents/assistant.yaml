@@ -1,0 +1,22 @@
+name: assistant
+description: Default assistant for general questions
+tier: specialist
+tags:
+- internal
+- default
+group: null
+provider:
+  type: anthropic
+  model: claude-sonnet-4-5-20250929
+  api_key_env: ANTHROPIC_API_KEY
+  base_url: null
+  anthropic:
+    version: 2023-06-01
+execution:
+  temperature: 0.1
+  max_tokens: 4096
+  top_p: null
+  timeout_seconds: 120
+system_prompt: You are a helpful AI assistant. Answer questions clearly and concisely.
+skills: []
+skill_refs: []

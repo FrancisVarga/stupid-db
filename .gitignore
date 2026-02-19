@@ -2,13 +2,17 @@
 /target/
 Cargo.lock
 
-# Data (parquet segments are large — only track rule YAML configs)
+# Data (parquet segments are large — only track rule/agent YAML configs)
+# Runtime-generated dirs (large/ephemeral — do not track)
 /data/cache/
 /data/segments/
 /data/sqs/
 /data/catalog/
 /data/embeddings/
 /data/agent-sessions/
+/data/telemetry/
+/data/ingestion/
+/data/stille-post/
 
 # Node / TypeScript
 node_modules/
