@@ -1,0 +1,10 @@
+export const dynamic = "force-dynamic";
+import { ingestionProxy } from "@/lib/ingestionProxy";
+
+export async function GET(req: Request): Promise<Response> {
+  return ingestionProxy("/api/ingestion/jobs", req);
+}
+
+export async function POST(req: Request): Promise<Response> {
+  return ingestionProxy("/api/ingestion/jobs", req, { forwardBody: true });
+}

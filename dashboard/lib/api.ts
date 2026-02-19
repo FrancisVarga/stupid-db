@@ -919,3 +919,179 @@ export async function updatePrompt(name: string, content: string, description?: 
   });
   return res.json();
 }
+
+// ── Ingestion ───────────────────────────────────────────────
+
+export interface IngestionSource {
+  id: string;
+  name: string;
+  source_type: "parquet" | "directory" | "s3" | "csv_json" | "push" | "queue";
+  config_json: Record<string, unknown>;
+  zmq_granularity: "summary" | "batched";
+  schedule_json?: { cron: string; timezone: string };
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  last_run_at?: string;
+  next_run_at?: string;
+}
+
+export interface IngestionJob {
+  id: string;
+  source_id?: string;
+  source_name: string;
+  trigger_kind: "manual" | "scheduled" | "push" | "watch";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  docs_processed: number;
+  docs_total?: number;
+  created_at: string;
+  completed_at?: string;
+  duration_ms?: number;
+  error?: string;
+  segment_ids: string[];
+}
+
+export interface CreateIngestionSource {
+  name: string;
+  source_type: IngestionSource["source_type"];
+  config_json: Record<string, unknown>;
+  zmq_granularity?: "summary" | "batched";
+  schedule_json?: { cron: string; timezone: string };
+  enabled?: boolean;
+}
+
+// Sources
+
+export async function fetchIngestionSources(): Promise<IngestionSource[]> {
+  const res = await checkedFetch(`${API_BASE}/api/ingestion/sources`, {
+    cache: "no-store",
+  });
+  return res.json();
+}
+
+export async function createIngestionSource(
+  data: CreateIngestionSource,
+): Promise<IngestionSource> {
+  const res = await checkedFetch(`${API_BASE}/api/ingestion/sources`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
+export async function updateIngestionSource(
+  id: string,
+  data: Partial<CreateIngestionSource>,
+): Promise<IngestionSource> {
+  const res = await checkedFetch(
+    `${API_BASE}/api/ingestion/sources/${encodeURIComponent(id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    },
+  );
+  return res.json();
+}
+
+export async function deleteIngestionSource(id: string): Promise<void> {
+  await checkedFetch(
+    `${API_BASE}/api/ingestion/sources/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function triggerIngestionJob(
+  sourceId: string,
+): Promise<IngestionJob> {
+  const res = await checkedFetch(`${API_BASE}/api/ingestion/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_id: sourceId }),
+  });
+  return res.json();
+}
+
+// Jobs
+
+export async function fetchIngestionJobs(): Promise<IngestionJob[]> {
+  const res = await checkedFetch(`${API_BASE}/api/ingestion/jobs`, {
+    cache: "no-store",
+  });
+  return res.json();
+}
+
+export async function fetchIngestionJob(id: string): Promise<IngestionJob> {
+  const res = await checkedFetch(
+    `${API_BASE}/api/ingestion/jobs/${encodeURIComponent(id)}`,
+    { cache: "no-store" },
+  );
+  return res.json();
+}
+
+export async function cancelIngestionJob(id: string): Promise<void> {
+  await checkedFetch(
+    `${API_BASE}/api/ingestion/jobs/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );
+}
+
+export function streamIngestionJob(id: string): EventSource {
+  return new EventSource(
+    `${API_BASE}/api/ingestion/jobs/${encodeURIComponent(id)}/stream`,
+  );
+}
+
+// File upload
+
+export async function uploadIngestionFile(
+  sourceId: string,
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<IngestionJob> {
+  if (onProgress) {
+    // Use XMLHttpRequest for progress tracking
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append("file", file);
+
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) onProgress((e.loaded / e.total) * 100);
+      });
+
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(JSON.parse(xhr.responseText));
+        } else {
+          reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`));
+        }
+      });
+
+      xhr.addEventListener("error", () =>
+        reject(new Error(`Cannot connect to backend at ${API_BASE}`)),
+      );
+      xhr.addEventListener("timeout", () =>
+        reject(new Error("Upload timed out after 600s")),
+      );
+
+      xhr.open(
+        "POST",
+        `${API_BASE}/api/ingestion/upload?source_id=${encodeURIComponent(sourceId)}`,
+      );
+      xhr.timeout = 600_000;
+      xhr.send(formData);
+    });
+  }
+
+  // Simple path without progress
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await checkedFetch(
+    `${API_BASE}/api/ingestion/upload?source_id=${encodeURIComponent(sourceId)}`,
+    { method: "POST", body: formData },
+    600_000,
+  );
+  return res.json();
+}

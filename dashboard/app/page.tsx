@@ -217,6 +217,17 @@ export default function DashboardPage() {
             Catalog
           </Link>
           <Link
+            href="/ingestion"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(20, 184, 166, 0.08)",
+              border: "1px solid rgba(20, 184, 166, 0.2)",
+              color: "#14b8a6",
+            }}
+          >
+            Ingestion
+          </Link>
+          <Link
             href="/assistant"
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
             style={{
