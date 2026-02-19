@@ -18,7 +18,7 @@ use stupid_eisenbahn::{
     EisenbahnConfig, EisenbahnError, Message, RequestHandler, Worker, WorkerBuilder, WorkerRunner,
     ZmqPublisher, ZmqRequestServer,
 };
-use stupid_eisenbahn::services::{AthenaServiceRequest, ServiceError};
+use stupid_eisenbahn::services::{AthenaServiceRequest, AthenaServiceResponse};
 use stupid_eisenbahn::topics;
 
 // ── CLI ─────────────────────────────────────────────────────────────
@@ -77,13 +77,12 @@ impl Worker for AthenaWorker {
                                             };
                                             info!(variant = %variant, "athena request");
                                             // TODO: Wire actual Athena SDK — streaming replies will come later
-                                            let error = ServiceError {
-                                                code: 503,
+                                            let error_resp = AthenaServiceResponse::Error {
                                                 message: "athena query execution not yet wired".into(),
                                             };
                                             let reply = Message::with_correlation(
                                                 topics::SVC_ATHENA_RESPONSE,
-                                                &error,
+                                                &error_resp,
                                                 msg.correlation_id,
                                             ).unwrap();
                                             if let Err(e) = server.send_reply(token, reply).await {

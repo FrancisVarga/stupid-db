@@ -58,43 +58,113 @@ pub async fn athena_query_sse(
     Sse<impl futures::Stream<Item = Result<Event, Infallible>>>,
     (axum::http::StatusCode, Json<QueryErrorResponse>),
 > {
-    // Route through eisenbahn if available.
+    // Route through eisenbahn if available AND the athena service is configured.
     if let Some(ref eb) = state.eisenbahn {
-        let svc_req = stupid_eisenbahn::services::AthenaServiceRequest::Query {
-            connection_id: id.clone(),
-            sql: req.sql.clone(),
-            database: req.database.clone(),
-        };
-        let mut zmq_rx = eb
-            .athena_query_stream(svc_req)
-            .await
-            .map_err(|e| eb_athena_error(e))?;
+        if eb.has_service("athena") {
+            let svc_req = stupid_eisenbahn::services::AthenaServiceRequest::Query {
+                connection_id: id.clone(),
+                sql: req.sql.clone(),
+                database: req.database.clone(),
+            };
+            let mut zmq_rx = eb
+                .athena_query_stream(svc_req)
+                .await
+                .map_err(|e| eb_athena_error(e))?;
 
-        // Bridge the ZMQ stream to SSE events via a channel.
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
-        tokio::spawn(async move {
-            while let Some(result) = zmq_rx.recv().await {
-                let event = match result {
-                    Ok(msg) => {
-                        // Decode AthenaServiceResponse and map to SSE event types.
-                        match msg.decode::<stupid_eisenbahn::services::AthenaServiceResponse>() {
-                            Ok(resp) => athena_response_to_sse(resp),
-                            Err(_) => Event::default()
-                                .event("error")
-                                .data(r#"{"message":"failed to decode service response"}"#),
+            // Bridge the ZMQ stream to SSE events via a channel.
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
+            let state_for_log = state.clone();
+            let log_conn_id = id.clone();
+            let log_sql = req.sql.clone();
+            let log_db = req.database.clone().unwrap_or_default();
+            let wall_start = std::time::Instant::now();
+            tokio::spawn(async move {
+                let mut total_rows: Option<u64> = None;
+                let mut data_scanned: i64 = 0;
+                let mut exec_time_ms: i64 = 0;
+                let mut outcome = crate::athena_query_log::QueryOutcome::Failed;
+                let mut error_message: Option<String> = None;
+                let query_execution_id: Option<String> = None;
+
+                while let Some(result) = zmq_rx.recv().await {
+                    let event = match result {
+                        Ok(msg) => {
+                            // Decode AthenaServiceResponse and map to SSE event types.
+                            match msg.decode::<stupid_eisenbahn::services::AthenaServiceResponse>() {
+                                Ok(resp) => {
+                                    // Track stats for query log.
+                                    match &resp {
+                                        stupid_eisenbahn::services::AthenaServiceResponse::Done { total_rows: tr } => {
+                                            total_rows = *tr;
+                                            outcome = crate::athena_query_log::QueryOutcome::Succeeded;
+                                        }
+                                        stupid_eisenbahn::services::AthenaServiceResponse::Error { message } => {
+                                            error_message = Some(message.clone());
+                                            outcome = crate::athena_query_log::QueryOutcome::Failed;
+                                        }
+                                        stupid_eisenbahn::services::AthenaServiceResponse::Status { state, stats } => {
+                                            if let Some(stats) = stats {
+                                                if let Some(scanned) = stats.get("data_scanned_bytes").and_then(|v| v.as_i64()) {
+                                                    data_scanned = scanned;
+                                                }
+                                                if let Some(exec) = stats.get("execution_time_ms").and_then(|v| v.as_i64()) {
+                                                    exec_time_ms = exec;
+                                                }
+                                            }
+                                            if state == "SUCCEEDED" {
+                                                outcome = crate::athena_query_log::QueryOutcome::Succeeded;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    athena_response_to_sse(resp)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "failed to decode athena service response");
+                                    error_message = Some(format!("failed to decode service response: {}", e));
+                                    Event::default()
+                                        .event("error")
+                                        .data(serde_json::json!({"message": format!("failed to decode service response: {}", e)}).to_string())
+                                }
+                            }
                         }
+                        Err(e) => {
+                            error_message = Some(e.to_string());
+                            Event::default()
+                                .event("error")
+                                .data(serde_json::json!({"message": e.to_string()}).to_string())
+                        }
+                    };
+                    if tx.send(Ok(event)).await.is_err() {
+                        break;
                     }
-                    Err(e) => Event::default()
-                        .event("error")
-                        .data(serde_json::json!({"message": e.to_string()}).to_string()),
-                };
-                if tx.send(Ok(event)).await.is_err() {
-                    break;
                 }
-            }
-        });
-        let stream = ReceiverStream::new(rx);
-        return Ok(Sse::new(stream));
+
+                // Log query to audit log.
+                let now = chrono::Utc::now();
+                state_for_log.athena_query_log.append(crate::athena_query_log::AthenaQueryLogEntry {
+                    entry_id: 0,
+                    connection_id: log_conn_id,
+                    query_execution_id,
+                    source: crate::athena_query_log::QuerySource::UserQuery,
+                    sql: log_sql,
+                    database: log_db,
+                    workgroup: String::new(),
+                    outcome,
+                    error_message,
+                    data_scanned_bytes: data_scanned,
+                    engine_execution_time_ms: exec_time_ms,
+                    total_rows,
+                    estimated_cost_usd: crate::athena_query_log::calculate_query_cost(data_scanned),
+                    started_at: now,
+                    completed_at: now,
+                    wall_clock_ms: wall_start.elapsed().as_millis() as i64,
+                });
+            });
+            let stream = ReceiverStream::new(rx);
+            return Ok(Sse::new(stream));
+        }
+        // If athena service not configured, fall through to direct SDK path.
     }
 
     // 1. Get credentials and connection config.
