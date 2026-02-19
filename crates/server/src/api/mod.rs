@@ -67,6 +67,8 @@ pub use query::query;
 pub use agents::{
     agents_list, agents_execute, agents_chat,
     agents_get, agents_create, agents_update, agents_delete, agents_reload,
+    bundeswehr_overview,
+    skills_list, skills_get, skills_create, skills_update, skills_delete,
     teams_execute, teams_strategies,
     sessions_list, sessions_create, sessions_get, sessions_update, sessions_delete,
     sessions_execute_agent, sessions_execute_team, sessions_execute,
