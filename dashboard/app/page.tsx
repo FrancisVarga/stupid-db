@@ -228,6 +228,17 @@ export default function DashboardPage() {
             Assistant
           </Link>
           <Link
+            href="/villa-kunterbunt"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(0, 240, 255, 0.08)",
+              border: "1px solid rgba(0, 240, 255, 0.2)",
+              color: "#00f0ff",
+            }}
+          >
+            Villa Kunterbunt
+          </Link>
+          <Link
             href="/ai-sdk"
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
             style={{
