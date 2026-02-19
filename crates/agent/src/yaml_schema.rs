@@ -47,9 +47,13 @@ pub struct AgentYamlConfig {
     #[serde(default)]
     pub system_prompt: String,
 
-    /// Reusable prompt fragments.
+    /// Reusable prompt fragments (embedded inline).
     #[serde(default)]
     pub skills: Vec<SkillConfig>,
+
+    /// References to standalone skill files by name.
+    #[serde(default)]
+    pub skill_refs: Vec<String>,
 }
 
 // ── Provider configuration (tagged enum) ──────────────────────────
@@ -236,6 +240,79 @@ pub struct SkillConfig {
     pub prompt: String,
 }
 
+// ── Standalone skill config ───────────────────────────────────────
+
+/// A standalone skill definition loaded from `data/bundeswehr/skills/*.yml`.
+///
+/// Richer than embedded [`SkillConfig`]: includes description, tags, and
+/// version for discovery and cross-agent reuse via `skill_refs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillYamlConfig {
+    /// Unique skill name (used as the reference key in `skill_refs`).
+    pub name: String,
+
+    /// Human-readable description.
+    #[serde(default)]
+    pub description: String,
+
+    /// The prompt text for this skill.
+    pub prompt: String,
+
+    /// Searchable tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+
+    /// Semver version string.
+    #[serde(default = "default_skill_version")]
+    pub version: String,
+}
+
+fn default_skill_version() -> String {
+    "1.0.0".to_string()
+}
+
+/// Load a single standalone skill from a YAML file.
+pub fn load_skill(path: &Path) -> Result<SkillYamlConfig, YamlAgentError> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| YamlAgentError::Io(path.to_path_buf(), e))?;
+    let config: SkillYamlConfig = serde_yaml::from_str(&content)
+        .map_err(|e| YamlAgentError::Parse(path.to_path_buf(), e))?;
+    Ok(config)
+}
+
+/// Load all standalone skills from a directory and validate name uniqueness.
+pub fn load_skills(
+    dir: &Path,
+) -> Result<Vec<SkillYamlConfig>, YamlAgentError> {
+    let mut skills = Vec::new();
+
+    if !dir.exists() {
+        return Err(YamlAgentError::DirNotFound(dir.to_path_buf()));
+    }
+
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| YamlAgentError::Io(dir.to_path_buf(), e))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        if !matches!(ext, Some("yaml" | "yml")) {
+            continue;
+        }
+        skills.push(load_skill(&path)?);
+    }
+
+    // Validate name uniqueness.
+    let mut seen = std::collections::HashSet::new();
+    for skill in &skills {
+        if !seen.insert(&skill.name) {
+            return Err(YamlAgentError::DuplicateSkillName(skill.name.clone()));
+        }
+    }
+
+    Ok(skills)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 impl ProviderConfig {
@@ -323,6 +400,8 @@ pub enum YamlAgentError {
     Io(std::path::PathBuf, std::io::Error),
     #[error("YAML parse error in {0}: {1}")]
     Parse(std::path::PathBuf, serde_yaml::Error),
+    #[error("duplicate skill name: {0}")]
+    DuplicateSkillName(String),
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -496,6 +575,134 @@ provider:
         assert_eq!(agents.len(), 2);
         assert_eq!(agents[0].name, "agent-one");
         assert_eq!(agents[1].name, "agent-two");
+    }
+
+    #[test]
+    fn test_skill_refs_parsing() {
+        let yaml = r#"
+name: ref-agent
+provider:
+  type: anthropic
+  model: claude-sonnet-4-5-20250929
+skill_refs:
+  - summarize
+  - translate
+skills:
+  - name: inline-skill
+    prompt: "Do something inline."
+"#;
+        let config: AgentYamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.skill_refs, vec!["summarize", "translate"]);
+        assert_eq!(config.skills.len(), 1);
+        assert_eq!(config.skills[0].name, "inline-skill");
+    }
+
+    #[test]
+    fn test_skill_refs_default_empty() {
+        let yaml = r#"
+name: no-refs
+provider:
+  type: ollama
+  model: llama3.1
+"#;
+        let config: AgentYamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.skill_refs.is_empty());
+    }
+
+    #[test]
+    fn test_standalone_skill_parsing() {
+        let yaml = r#"
+name: summarize
+description: "Summarize text concisely"
+prompt: "Please summarize the following text."
+tags:
+  - nlp
+  - text
+version: "1.2.0"
+"#;
+        let config: SkillYamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.name, "summarize");
+        assert_eq!(config.description, "Summarize text concisely");
+        assert_eq!(config.prompt, "Please summarize the following text.");
+        assert_eq!(config.tags, vec!["nlp", "text"]);
+        assert_eq!(config.version, "1.2.0");
+    }
+
+    #[test]
+    fn test_standalone_skill_defaults() {
+        let yaml = r#"
+name: minimal-skill
+prompt: "Do the thing."
+"#;
+        let config: SkillYamlConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.name, "minimal-skill");
+        assert_eq!(config.description, "");
+        assert!(config.tags.is_empty());
+        assert_eq!(config.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_load_skill_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("summarize.yml");
+        std::fs::write(
+            &path,
+            r#"
+name: summarize
+description: Summarize text
+prompt: "Summarize the following."
+tags: [nlp]
+"#,
+        )
+        .unwrap();
+
+        let skill = load_skill(&path).unwrap();
+        assert_eq!(skill.name, "summarize");
+        assert_eq!(skill.tags, vec!["nlp"]);
+        assert_eq!(skill.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_load_skills_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.yml"),
+            "name: alpha\nprompt: do alpha\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.yaml"),
+            "name: beta\nprompt: do beta\n",
+        )
+        .unwrap();
+        // Non-YAML file should be ignored.
+        std::fs::write(dir.path().join("readme.txt"), "ignore me").unwrap();
+
+        let skills = load_skills(dir.path()).unwrap();
+        assert_eq!(skills.len(), 2);
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"alpha"));
+        assert!(names.contains(&"beta"));
+    }
+
+    #[test]
+    fn test_load_skills_duplicate_name_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.yml"),
+            "name: same\nprompt: first\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.yml"),
+            "name: same\nprompt: second\n",
+        )
+        .unwrap();
+
+        let result = load_skills(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("duplicate skill name: same"));
     }
 
     #[test]

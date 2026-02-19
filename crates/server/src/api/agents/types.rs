@@ -62,6 +62,7 @@ impl CreateAgentRequest {
             execution: Default::default(),
             system_prompt: self.system_prompt.unwrap_or_default(),
             skills,
+            skill_refs: Vec::new(),
         })
     }
 }
