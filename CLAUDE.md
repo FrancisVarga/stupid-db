@@ -2,6 +2,7 @@
 
 ## Behavioral Rules (Always Enforced)
 
+- Add under a ## Code Navigation section in CLAUDE.md\n\nWhen exploring code, prefer LSP-based tools over grep/glob when available. User has expressed a preference for LSP-first analysis.
 - When creating many github issues using gh cli batch them with & its much faster than creating them one by one. For example: `gh issue create -t "Issue Title" -b "Issue Body" &` (repeat for each issue)
 - ALWAYS prefer editing an existing file to creating a new one
 - NEVER proactively create documentation files (\*.md) or README files unless explicitly requested
@@ -10,8 +11,6 @@
 - NEVER commit secrets, credentials, or .env files
 - ALWAYS batch ALL file reads/writes/edits in ONE message
 - ALWAYS batch ALL terminal operations in ONE Bash message (note: if one parallel call fails, siblings may cascade-fail — re-run unfailed queries in next batch)
-- **ALWAYS preserve data for reuse** in reports/emails (see Data Reusability below)
-- When analyzing code or exploring the codebase, use LSP and project-specific tools first, not raw grep/bash. Check for existing project utilities before reaching for generic CLI tools.
 - When modifying file paths or moving files, always fix ALL cross-references and imports across the entire codebase. Never create copies of files as a workaround — fix the actual path references instead.
 - ALWAYS store project-related memories in `.claude/memory/` folder — not in project root or other locations
 
