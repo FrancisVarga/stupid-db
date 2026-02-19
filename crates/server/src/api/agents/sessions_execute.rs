@@ -132,17 +132,36 @@ pub async fn sessions_execute_agent(
                 }),
             )
         })?;
-        executor
+        // Try executor's pre-loaded agents; fall back to AgentStore for CRUD-created agents.
+        match executor
             .execute_with_history(&req.agent_name, &req.task, &history, context, req.max_history)
             .await
-            .map_err(|e| {
-                (
+        {
+            Ok(r) => r,
+            Err(stupid_agent::executor::AgentExecutionError::AgentNotFound(_)) => {
+                tracing::info!(agent = %req.agent_name, "agent not in executor, falling back to AgentStore (session)");
+                let config = super::execute::resolve_from_agent_store(&state, &req.agent_name).await?;
+                executor
+                    .execute_with_config(&config, &req.task, context)
+                    .await
+                    .map_err(|e| {
+                        (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            Json(QueryErrorResponse {
+                                error: e.to_string(),
+                            }),
+                        )
+                    })?
+            }
+            Err(e) => {
+                return Err((
                     axum::http::StatusCode::BAD_REQUEST,
                     Json(QueryErrorResponse {
                         error: e.to_string(),
                     }),
-                )
-            })?
+                ));
+            }
+        }
     };
 
     // Append agent response

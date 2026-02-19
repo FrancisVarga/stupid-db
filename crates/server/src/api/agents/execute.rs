@@ -77,8 +77,10 @@ pub async fn agents_execute(
     let result = match executor.execute(&req.agent_name, &req.task, context).await {
         Ok(r) => r,
         Err(stupid_agent::executor::AgentExecutionError::AgentNotFound(_)) => {
+            tracing::info!(agent = %req.agent_name, "agent not in executor, falling back to AgentStore");
             // Look up in AgentStore (YAML-backed CRUD store).
             let config = resolve_from_agent_store(&state, &req.agent_name).await?;
+            tracing::info!(agent = %config.name, "resolved agent from AgentStore, executing with config");
             executor
                 .execute_with_config(&config, &req.task, context)
                 .await
@@ -299,11 +301,27 @@ pub async fn teams_strategies() -> Json<serde_json::Value> {
 
 /// Look up an agent in the YAML-backed AgentStore and convert to an AgentConfig
 /// usable by `AgentExecutor::execute_with_config`.
-async fn resolve_from_agent_store(
+///
+/// Resolution order:
+/// 1. In-memory AgentStore (fastest, populated at startup)
+/// 2. Direct file load from `data/agents/` and `data/bundeswehr/agents/` (fallback)
+pub async fn resolve_from_agent_store(
     state: &AppState,
     agent_name: &str,
 ) -> Result<stupid_agent::config::AgentConfig, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
-    let store = state.agent_store.as_ref().ok_or_else(|| {
+    // 1. Try in-memory store first.
+    if let Some(store) = state.agent_store.as_ref() {
+        if let Some(yaml_config) = store.get(agent_name).await {
+            return Ok(stupid_agent::config::AgentConfig::from(yaml_config));
+        }
+        tracing::warn!(agent = agent_name, "agent not found in AgentStore memory, trying disk fallback");
+    } else {
+        tracing::warn!(agent = agent_name, "AgentStore not available, trying disk fallback");
+    }
+
+    // 2. Disk fallback: try loading YAML directly from known directories.
+    let yaml_config = resolve_agent_from_disk(&state.data_dir, agent_name).ok_or_else(|| {
+        tracing::warn!(agent = agent_name, "agent not found on disk either");
         (
             axum::http::StatusCode::BAD_REQUEST,
             Json(QueryErrorResponse {
@@ -311,13 +329,42 @@ async fn resolve_from_agent_store(
             }),
         )
     })?;
-    let yaml_config = store.get(agent_name).await.ok_or_else(|| {
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(QueryErrorResponse {
-                error: format!("agent not found: {}", agent_name),
-            }),
-        )
-    })?;
+    tracing::info!(agent = agent_name, "resolved agent from disk fallback");
     Ok(stupid_agent::config::AgentConfig::from(yaml_config))
+}
+
+/// Try to load an agent YAML config directly from disk.
+/// Checks `{data_dir}/agents/` and `{data_dir}/bundeswehr/agents/`.
+fn resolve_agent_from_disk(
+    data_dir: &std::path::Path,
+    agent_name: &str,
+) -> Option<stupid_agent::yaml_schema::AgentYamlConfig> {
+    let candidates = [
+        data_dir.join("agents").join(format!("{}.yaml", agent_name)),
+        data_dir.join("agents").join(format!("{}.yml", agent_name)),
+        data_dir.join("bundeswehr").join("agents").join(format!("{}.yaml", agent_name)),
+        data_dir.join("bundeswehr").join("agents").join(format!("{}.yml", agent_name)),
+    ];
+    for path in &candidates {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            match serde_yaml::from_str::<stupid_agent::yaml_schema::AgentYamlConfig>(&content) {
+                Ok(config) if config.name == agent_name => {
+                    tracing::info!(path = %path.display(), "loaded agent from disk");
+                    return Some(config);
+                }
+                Ok(config) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        expected = agent_name,
+                        found = %config.name,
+                        "agent name mismatch in YAML file"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to parse agent YAML");
+                }
+            }
+        }
+    }
+    None
 }

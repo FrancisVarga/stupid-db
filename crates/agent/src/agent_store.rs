@@ -31,7 +31,8 @@ impl AgentStore {
 
         let agents = load_all(agents_dir)?;
         let count = agents.len();
-        info!(path = %agents_dir.display(), count, "agent store initialized");
+        let names: Vec<_> = agents.keys().collect();
+        info!(path = %agents_dir.display(), count, ?names, "agent store initialized");
 
         Ok(Self {
             dir: agents_dir.to_path_buf(),
@@ -48,7 +49,12 @@ impl AgentStore {
     /// Get a single agent by name.
     pub async fn get(&self, name: &str) -> Option<AgentYamlConfig> {
         let map = self.agents.read().await;
-        map.get(name).cloned()
+        let result = map.get(name).cloned();
+        if result.is_none() {
+            let available: Vec<_> = map.keys().collect();
+            tracing::debug!(requested = name, ?available, "agent store lookup miss");
+        }
+        result
     }
 
     /// Create a new agent (writes .yaml file to disk).

@@ -213,7 +213,7 @@ mod tests {
         let yaml = r#"
 name: test-yaml-agent
 description: "Loaded from YAML"
-tier: Lead
+tier: lead
 provider:
   type: ollama
   model: llama3.1
@@ -282,7 +282,7 @@ provider:
 system_prompt: "Agent A"
 ---
 name: agent-b
-tier: Architect
+tier: architect
 provider:
   type: anthropic
   model: claude-sonnet-4-5-20250929
@@ -342,7 +342,7 @@ system_prompt: "YAML prompt."
         let yaml = r#"
 name: convert-test
 description: "Testing From impl"
-tier: Architect
+tier: architect
 provider:
   type: ollama
   model: llama3.1

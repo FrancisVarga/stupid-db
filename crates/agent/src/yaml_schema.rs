@@ -415,7 +415,7 @@ mod tests {
         let yaml = r#"
 name: test-agent
 description: A test agent
-tier: Specialist
+tier: specialist
 provider:
   type: anthropic
   model: claude-sonnet-4-5-20250929
@@ -467,7 +467,7 @@ provider:
     fn test_gemini_config() {
         let yaml = r#"
 name: gemini-agent
-tier: Specialist
+tier: specialist
 provider:
   type: gemini
   model: gemini-2.0-flash

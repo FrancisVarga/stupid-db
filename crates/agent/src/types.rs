@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Agent tier in the hierarchy.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentTier {
     /// System architect — cross-cutting design
     Architect,
