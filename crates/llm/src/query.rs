@@ -35,6 +35,11 @@ impl QueryGenerator {
         }
     }
 
+    /// Borrow the underlying LLM provider for reuse by other subsystems.
+    pub fn provider(&self) -> &dyn LlmProvider {
+        &*self.provider
+    }
+
     /// Build from config, creating the appropriate provider.
     pub fn from_config(
         llm_config: &stupid_core::config::LlmConfig,

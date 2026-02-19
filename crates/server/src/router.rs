@@ -125,6 +125,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/prompts/{name}",
             get(api::prompts_get).put(api::prompts_update),
         )
+        // Villa layout engine
+        .route("/api/villa/suggest", post(api::villa_suggest))
         .route("/ws", get(live::ws_upgrade));
 
     let app = app

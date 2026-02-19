@@ -16,6 +16,7 @@ pub(crate) mod prompts;
 mod query;
 pub(crate) mod stille_post;
 pub(crate) mod telemetry;
+pub(crate) mod villa;
 
 use axum::Json;
 use serde::Serialize;
@@ -108,3 +109,4 @@ pub use agent_groups::{
     agent_groups_add_agent, agent_groups_remove_agent,
 };
 pub use prompts::{prompts_list, prompts_get, prompts_update};
+pub use villa::suggest::suggest as villa_suggest;
