@@ -173,6 +173,17 @@ export default function DashboardPage() {
             Agents
           </Link>
           <Link
+            href="/bundeswehr"
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
+            style={{
+              background: "rgba(251, 191, 36, 0.08)",
+              border: "1px solid rgba(251, 191, 36, 0.2)",
+              color: "#fbbf24",
+            }}
+          >
+            Bundeswehr
+          </Link>
+          <Link
             href="/anomaly-rules"
             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium tracking-wide hover:opacity-80 transition-opacity"
             style={{

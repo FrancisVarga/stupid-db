@@ -651,3 +651,152 @@ export async function deleteEmbeddingDocument(id: string): Promise<void> {
     { method: "DELETE" }
   );
 }
+
+// ── Bundeswehr: Agent Management ────────────────────────────
+
+// Types
+export interface AgentDetail {
+  name: string;
+  description: string;
+  tier: "architect" | "lead" | "specialist";
+  tags: string[];
+  group: string | null;
+  provider: {
+    type: string;
+    model: string;
+  };
+  system_prompt: string;
+  skills: { name: string; prompt: string }[];
+}
+
+export interface AgentSummary {
+  name: string;
+  tier: string;
+  description: string;
+}
+
+export interface TelemetryEvent {
+  id: string;
+  agent_name: string;
+  timestamp: string;
+  latency_ms: number;
+  tokens_used: number;
+  status: "success" | "error" | "timeout";
+  provider: string;
+  model: string;
+  error_message?: string;
+  task_preview?: string;
+}
+
+export interface TelemetryStat {
+  agent_name: string;
+  total_executions: number;
+  success_count: number;
+  error_count: number;
+  timeout_count: number;
+  avg_latency_ms: number;
+  p95_latency_ms: number;
+  total_tokens: number;
+  error_rate: number;
+}
+
+export interface AgentGroup {
+  name: string;
+  description: string;
+  color: string;
+  agent_names: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+// Agent CRUD
+export async function fetchAgentDetail(name: string): Promise<AgentDetail> {
+  const res = await checkedFetch(`${API_BASE}/api/agents/${encodeURIComponent(name)}`);
+  return res.json();
+}
+
+export async function createAgent(config: Partial<AgentDetail>): Promise<AgentDetail> {
+  const res = await checkedFetch(`${API_BASE}/api/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  return res.json();
+}
+
+export async function updateAgent(name: string, config: Partial<AgentDetail>): Promise<AgentDetail> {
+  const res = await checkedFetch(`${API_BASE}/api/agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  return res.json();
+}
+
+export async function deleteAgent(name: string): Promise<void> {
+  await checkedFetch(`${API_BASE}/api/agents/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export async function reloadAgents(): Promise<void> {
+  await checkedFetch(`${API_BASE}/api/agents/reload`, { method: "POST" });
+}
+
+// Telemetry
+export async function fetchAgentTelemetry(name: string, limit = 50): Promise<TelemetryEvent[]> {
+  const res = await checkedFetch(`${API_BASE}/api/telemetry/${encodeURIComponent(name)}?limit=${limit}`);
+  const data = await res.json();
+  return data.events;
+}
+
+export async function fetchAgentStats(name: string): Promise<TelemetryStat> {
+  const res = await checkedFetch(`${API_BASE}/api/telemetry/${encodeURIComponent(name)}/stats`);
+  return res.json();
+}
+
+export async function fetchTelemetryOverview(): Promise<TelemetryStat[]> {
+  const res = await checkedFetch(`${API_BASE}/api/telemetry/overview`);
+  const data = await res.json();
+  return data.agents;
+}
+
+// Groups
+export async function fetchGroups(): Promise<AgentGroup[]> {
+  const res = await checkedFetch(`${API_BASE}/api/agent-groups`);
+  const data = await res.json();
+  return data.groups;
+}
+
+export async function createGroup(name: string, description?: string, color?: string): Promise<AgentGroup> {
+  const res = await checkedFetch(`${API_BASE}/api/agent-groups`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description, color }),
+  });
+  return res.json();
+}
+
+export async function updateGroup(name: string, updates: { description?: string; color?: string }): Promise<AgentGroup> {
+  const res = await checkedFetch(`${API_BASE}/api/agent-groups/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  return res.json();
+}
+
+export async function deleteGroup(name: string): Promise<void> {
+  await checkedFetch(`${API_BASE}/api/agent-groups/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export async function addAgentToGroup(groupName: string, agentName: string): Promise<AgentGroup> {
+  const res = await checkedFetch(`${API_BASE}/api/agent-groups/${encodeURIComponent(groupName)}/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_name: agentName }),
+  });
+  return res.json();
+}
+
+export async function removeAgentFromGroup(groupName: string, agentName: string): Promise<void> {
+  await checkedFetch(`${API_BASE}/api/agent-groups/${encodeURIComponent(groupName)}/${encodeURIComponent(agentName)}`, { method: "DELETE" });
+}
