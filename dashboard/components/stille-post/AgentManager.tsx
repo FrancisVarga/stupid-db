@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import AgentCreatorChat from "./AgentCreatorChat";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -146,6 +147,9 @@ export default function AgentManager({ refreshKey }: AgentManagerProps) {
   const [form, setForm] = useState<AgentFormData>({ ...EMPTY_FORM });
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // AI Creator
+  const [aiCreatorOpen, setAiCreatorOpen] = useState(false);
 
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
@@ -312,14 +316,47 @@ export default function AgentManager({ refreshKey }: AgentManagerProps) {
 
   return (
     <div>
+      {/* AI Creator overlay */}
+      {aiCreatorOpen && (
+        <AgentCreatorChat
+          onClose={() => setAiCreatorOpen(false)}
+          onSave={async (config) => {
+            const res = await fetch("/api/stille-post/agents", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(config),
+            });
+            if (!res.ok) {
+              alert("Failed to save agent: " + (await res.text()));
+              return;
+            }
+            setAiCreatorOpen(false);
+            fetchAgents();
+          }}
+        />
+      )}
+
       {/* Header row */}
       <div className="flex items-center justify-between mb-4">
         <div className="text-xs font-mono text-slate-500">
           {agents.length} agent{agents.length !== 1 ? "s" : ""}
         </div>
-        <button onClick={openCreate} style={btnPrimary}>
-          + New Agent
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAiCreatorOpen(true)}
+            className="px-3 py-2 text-xs font-semibold rounded transition-colors"
+            style={{
+              background: `linear-gradient(135deg, ${GREEN}15, ${CYAN}15)`,
+              border: `1px solid ${GREEN}44`,
+              color: GREEN,
+            }}
+          >
+            AI Create
+          </button>
+          <button onClick={openCreate} style={btnPrimary}>
+            + New Agent
+          </button>
+        </div>
       </div>
 
       {/* Agent table */}

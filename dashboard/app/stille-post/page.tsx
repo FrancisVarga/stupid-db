@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Link from "next/link";
 import AgentManager from "@/components/stille-post/AgentManager";
 import DataSourceManager from "@/components/stille-post/DataSourceManager";
@@ -24,9 +24,79 @@ type Tab = (typeof TABS)[number];
 export default function StillePostPage() {
   const [activeTab, setActiveTab] = useState<Tab>("Agents");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleExport() {
+    const res = await fetch("/api/stille-post/export");
+    if (!res.ok) {
+      const body = await res.text();
+      let msg = body;
+      try { msg = JSON.parse(body).error || body; } catch { /* use raw */ }
+      return alert("Export failed: " + msg);
+    }
+    const yaml = await res.text();
+    const blob = new Blob([yaml], { type: "application/x-yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `stille-post-export-${new Date().toISOString().slice(0, 10)}.yml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleImport(file: File) {
+    setImporting(true);
+    try {
+      const yaml = await file.text();
+      const res = await fetch("/api/stille-post/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml, overwrite: false }),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        let msg = body;
+        try {
+          const parsed = JSON.parse(body);
+          msg = parsed.error || body;
+        } catch {
+          // body isn't JSON, use as-is
+        }
+        alert("Import failed: " + msg);
+        return;
+      }
+      const result = await res.json();
+      const summary = [
+        result.created?.length && `${result.created.length} created`,
+        result.updated?.length && `${result.updated.length} updated`,
+        result.skipped?.length && `${result.skipped.length} skipped`,
+        result.errors?.length && `${result.errors.length} errors`,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      alert(`Import complete: ${summary}`);
+      setRefreshKey((k) => k + 1);
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
 
   return (
     <div className="h-screen flex flex-col">
+      {/* Hidden file input for import */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".yml,.yaml"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleImport(f);
+        }}
+      />
+
       {/* Header */}
       <header
         className="px-6 py-3 flex items-center justify-between shrink-0"
@@ -54,6 +124,31 @@ export default function StillePostPage() {
             stupid-db{" "}
             <span style={{ color: "#06d6a0" }}>/ Stille Post</span>
           </h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExport}
+            className="px-3 py-1.5 text-xs font-mono uppercase tracking-wider rounded transition-colors"
+            style={{
+              border: "1px solid rgba(0, 240, 255, 0.2)",
+              color: "#00f0ff",
+              background: "rgba(0, 240, 255, 0.05)",
+            }}
+          >
+            Export YAML
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="px-3 py-1.5 text-xs font-mono uppercase tracking-wider rounded transition-colors"
+            style={{
+              border: "1px solid rgba(6, 214, 160, 0.2)",
+              color: importing ? "#475569" : "#06d6a0",
+              background: "rgba(6, 214, 160, 0.05)",
+            }}
+          >
+            {importing ? "Importing..." : "Import YAML"}
+          </button>
         </div>
       </header>
 
