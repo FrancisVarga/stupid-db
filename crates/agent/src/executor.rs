@@ -85,6 +85,54 @@ impl AgentExecutor {
         })
     }
 
+    /// Execute using an externally-provided config (e.g. from AgentStore fallback).
+    pub async fn execute_with_config(
+        &self,
+        config: &AgentConfig,
+        task: &str,
+        context: Option<&serde_json::Value>,
+    ) -> Result<AgentResponse, AgentExecutionError> {
+        let start = Instant::now();
+
+        info!(agent = config.name, "executing agent task (external config)");
+
+        let mut system_content = config.system_prompt.clone();
+        if let Some(ctx) = context {
+            if !ctx.is_null() {
+                system_content.push_str("\n\n## Additional Context\n");
+                system_content.push_str(&serde_json::to_string_pretty(ctx).unwrap_or_default());
+            }
+        }
+
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: system_content,
+            },
+            Message {
+                role: Role::User,
+                content: task.to_string(),
+            },
+        ];
+
+        let output = self
+            .provider
+            .complete(messages, self.temperature, self.max_tokens)
+            .await
+            .map_err(AgentExecutionError::LlmError)?;
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+        info!(agent = config.name, elapsed_ms, "agent execution complete");
+
+        Ok(AgentResponse {
+            agent_name: config.name.clone(),
+            status: ExecutionStatus::Success,
+            output,
+            execution_time_ms: elapsed_ms,
+            tokens_used: None,
+        })
+    }
+
     /// Execute an agent with conversation history for context continuity.
     pub async fn execute_with_history(
         &self,
@@ -273,6 +321,11 @@ impl AgentExecutor {
     /// Check if an agent exists.
     pub fn has_agent(&self, name: &str) -> bool {
         self.agents.contains_key(name)
+    }
+
+    /// Register an agent at runtime (e.g. from AgentStore fallback).
+    pub fn register_agent(&mut self, config: AgentConfig) {
+        self.agents.insert(config.name.clone(), config);
     }
 }
 

@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 use super::super::QueryErrorResponse;
 use super::types::{
-    eb_agent_error, parse_execution_status,
+    parse_execution_status,
     SessionExecuteAgentRequest, SessionExecuteTeamRequest,
     SessionExecuteRequest, SessionExecuteResponse,
 };
@@ -92,8 +92,8 @@ pub async fn sessions_execute_agent(
         Some(&req.context)
     };
 
-    // Execute: route through eisenbahn if available, else direct call.
-    let result = if let Some(ref eb) = state.eisenbahn {
+    // Execute: route through eisenbahn if available; fall back to direct call on error.
+    let eb_result = if let Some(ref eb) = state.eisenbahn {
         let history_json: Vec<serde_json::Value> = history
             .iter()
             .map(|m| serde_json::json!({ "role": format!("{:?}", m.role).to_lowercase(), "content": m.content }))
@@ -105,17 +105,24 @@ pub async fn sessions_execute_agent(
             context: req.context.clone(),
             max_history: req.max_history,
         };
-        let resp = eb
-            .agent_execute(svc_req, Duration::from_secs(60))
-            .await
-            .map_err(|e| eb_agent_error(e))?;
-        stupid_agent::AgentResponse {
-            agent_name: req.agent_name,
-            output: resp.output,
-            status: parse_execution_status(&resp.status),
-            execution_time_ms: resp.elapsed_ms,
-            tokens_used: None,
+        match eb.agent_execute(svc_req, Duration::from_secs(60)).await {
+            Ok(resp) => Some(stupid_agent::AgentResponse {
+                agent_name: req.agent_name.clone(),
+                output: resp.output,
+                status: parse_execution_status(&resp.status),
+                execution_time_ms: resp.elapsed_ms,
+                tokens_used: None,
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, "eisenbahn session agent execution failed, falling back to direct executor");
+                None
+            }
         }
+    } else {
+        None
+    };
+    let result = if let Some(r) = eb_result {
+        r
     } else {
         let executor = state.agent_executor.as_ref().ok_or_else(|| {
             (
@@ -373,8 +380,8 @@ pub async fn sessions_execute(
         Some(&req.context)
     };
 
-    // Execute: route through eisenbahn if available, else direct call.
-    let result = if let Some(ref eb) = state.eisenbahn {
+    // Execute: route through eisenbahn if available; fall back to direct call on error.
+    let eb_result = if let Some(ref eb) = state.eisenbahn {
         let history_json: Vec<serde_json::Value> = history
             .iter()
             .map(|m| serde_json::json!({ "role": format!("{:?}", m.role).to_lowercase(), "content": m.content }))
@@ -385,17 +392,24 @@ pub async fn sessions_execute(
             context: req.context.clone(),
             max_history: req.max_history,
         };
-        let resp = eb
-            .agent_execute(svc_req, Duration::from_secs(60))
-            .await
-            .map_err(|e| eb_agent_error(e))?;
-        stupid_agent::AgentResponse {
-            agent_name: "assistant".to_string(),
-            output: resp.output,
-            status: parse_execution_status(&resp.status),
-            execution_time_ms: resp.elapsed_ms,
-            tokens_used: None,
+        match eb.agent_execute(svc_req, Duration::from_secs(60)).await {
+            Ok(resp) => Some(stupid_agent::AgentResponse {
+                agent_name: "assistant".to_string(),
+                output: resp.output,
+                status: parse_execution_status(&resp.status),
+                execution_time_ms: resp.elapsed_ms,
+                tokens_used: None,
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, "eisenbahn direct execution failed, falling back to direct executor");
+                None
+            }
         }
+    } else {
+        None
+    };
+    let result = if let Some(r) = eb_result {
+        r
     } else {
         let executor = state.agent_executor.as_ref().ok_or_else(|| {
             (

@@ -35,24 +35,27 @@ pub async fn agents_execute(
     State(state): State<Arc<AppState>>,
     Json(req): Json<AgentExecuteRequest>,
 ) -> Result<Json<stupid_agent::AgentResponse>, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
-    // Route through eisenbahn if available.
+    // Route through eisenbahn if available; fall back to direct execution on error.
     if let Some(ref eb) = state.eisenbahn {
         let svc_req = stupid_eisenbahn::services::AgentServiceRequest::Execute {
             agent_name: req.agent_name.clone(),
             task: req.task.clone(),
             context: req.context.clone(),
         };
-        let resp = eb
-            .agent_execute(svc_req, Duration::from_secs(60))
-            .await
-            .map_err(|e| eb_agent_error(e))?;
-        return Ok(Json(stupid_agent::AgentResponse {
-            agent_name: req.agent_name,
-            output: resp.output,
-            status: parse_execution_status(&resp.status),
-            execution_time_ms: resp.elapsed_ms,
-            tokens_used: None,
-        }));
+        match eb.agent_execute(svc_req, Duration::from_secs(60)).await {
+            Ok(resp) => {
+                return Ok(Json(stupid_agent::AgentResponse {
+                    agent_name: req.agent_name,
+                    output: resp.output,
+                    status: parse_execution_status(&resp.status),
+                    execution_time_ms: resp.elapsed_ms,
+                    tokens_used: None,
+                }));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "eisenbahn agent execution failed, falling back to direct executor");
+            }
+        }
     }
 
     let executor = state.agent_executor.as_ref().ok_or_else(|| {
@@ -70,17 +73,33 @@ pub async fn agents_execute(
         Some(&req.context)
     };
 
-    let result = executor
-        .execute(&req.agent_name, &req.task, context)
-        .await
-        .map_err(|e| {
-            (
+    // Try the pre-loaded executor first; fall back to AgentStore for CRUD-created agents.
+    let result = match executor.execute(&req.agent_name, &req.task, context).await {
+        Ok(r) => r,
+        Err(stupid_agent::executor::AgentExecutionError::AgentNotFound(_)) => {
+            // Look up in AgentStore (YAML-backed CRUD store).
+            let config = resolve_from_agent_store(&state, &req.agent_name).await?;
+            executor
+                .execute_with_config(&config, &req.task, context)
+                .await
+                .map_err(|e| {
+                    (
+                        axum::http::StatusCode::BAD_REQUEST,
+                        Json(QueryErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                })?
+        }
+        Err(e) => {
+            return Err((
                 axum::http::StatusCode::BAD_REQUEST,
                 Json(QueryErrorResponse {
                     error: e.to_string(),
                 }),
-            )
-        })?;
+            ));
+        }
+    };
 
     Ok(Json(result))
 }
@@ -105,15 +124,14 @@ pub async fn agents_chat(
     Sse<impl futures::Stream<Item = Result<Event, Infallible>>>,
     (axum::http::StatusCode, Json<QueryErrorResponse>),
 > {
-    // Route through eisenbahn if available.
+    // Route through eisenbahn if available; fall back to direct execution on error.
     if let Some(ref eb) = state.eisenbahn {
         let svc_req = stupid_eisenbahn::services::AgentServiceRequest::Execute {
             agent_name: req.agent_name.clone(),
             task: req.task.clone(),
             context: req.context.clone(),
         };
-        let result = eb.agent_execute(svc_req, Duration::from_secs(60)).await;
-        let events = match result {
+        match eb.agent_execute(svc_req, Duration::from_secs(60)).await {
             Ok(resp) => {
                 let agent_resp = stupid_agent::AgentResponse {
                     agent_name: req.agent_name,
@@ -123,18 +141,16 @@ pub async fn agents_chat(
                     tokens_used: None,
                 };
                 let data = serde_json::to_string(&agent_resp).unwrap_or_default();
-                vec![
+                let events = vec![
                     Ok(Event::default().event("agent_response").data(data)),
                     Ok(Event::default().event("done").data("[DONE]")),
-                ]
+                ];
+                return Ok(Sse::new(stream::iter(events)));
             }
             Err(e) => {
-                vec![Ok(Event::default()
-                    .event("error")
-                    .data(serde_json::json!({"error": e.to_string()}).to_string()))]
+                tracing::warn!(error = %e, "eisenbahn agent chat failed, falling back to direct executor");
             }
-        };
-        return Ok(Sse::new(stream::iter(events)));
+        }
     }
 
     let executor = state.agent_executor.as_ref().ok_or_else(|| {
@@ -152,10 +168,19 @@ pub async fn agents_chat(
         Some(&req.context)
     };
 
-    // Execute agent and stream the response
-    let result = executor
-        .execute(&req.agent_name, &req.task, context)
-        .await;
+    // Execute agent; fall back to AgentStore for CRUD-created agents.
+    let result = match executor.execute(&req.agent_name, &req.task, context).await {
+        Ok(r) => Ok(r),
+        Err(stupid_agent::executor::AgentExecutionError::AgentNotFound(_)) => {
+            match resolve_from_agent_store(&state, &req.agent_name).await {
+                Ok(config) => executor.execute_with_config(&config, &req.task, context).await,
+                Err(_) => Err(stupid_agent::executor::AgentExecutionError::AgentNotFound(
+                    req.agent_name.clone(),
+                )),
+            }
+        }
+        other => other,
+    };
 
     let events = match result {
         Ok(response) => {
@@ -268,4 +293,31 @@ pub async fn teams_execute(
 pub async fn teams_strategies() -> Json<serde_json::Value> {
     let strategies = stupid_agent::TeamExecutor::strategies();
     Json(serde_json::json!({ "strategies": strategies }))
+}
+
+// ── Helpers ───────────────────────────────────────────────────
+
+/// Look up an agent in the YAML-backed AgentStore and convert to an AgentConfig
+/// usable by `AgentExecutor::execute_with_config`.
+async fn resolve_from_agent_store(
+    state: &AppState,
+    agent_name: &str,
+) -> Result<stupid_agent::config::AgentConfig, (axum::http::StatusCode, Json<QueryErrorResponse>)> {
+    let store = state.agent_store.as_ref().ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(QueryErrorResponse {
+                error: format!("agent not found: {}", agent_name),
+            }),
+        )
+    })?;
+    let yaml_config = store.get(agent_name).await.ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(QueryErrorResponse {
+                error: format!("agent not found: {}", agent_name),
+            }),
+        )
+    })?;
+    Ok(stupid_agent::config::AgentConfig::from(yaml_config))
 }
