@@ -106,6 +106,9 @@ aws-sdk-athena = "1"
 aws-sdk-s3 = "1"
 aws-types = "1"
 
+# Ordered maps
+indexmap = { version = "2", features = ["serde"] }
+
 # Messaging
 zeromq = "0.4"
 

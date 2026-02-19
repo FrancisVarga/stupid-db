@@ -179,6 +179,7 @@ pub async fn build_app_state(config: &stupid_core::Config, eisenbahn: bool) -> a
         telemetry_store: Arc::new(RwLock::new(telemetry_store)),
         agent_store,
         skill_store,
+        ingestion_jobs: crate::ingestion::IngestionJobStore::new(),
     });
 
     let ctx = StartupContext {
@@ -264,6 +265,12 @@ pub fn spawn_background_tasks(
         tokio::spawn(async move {
             queue::spawn_queue_consumers(queue_state).await;
         });
+    }
+
+    // Spawn ingestion scheduler (cron-based polling for due sources).
+    {
+        let sched_state = state.clone();
+        tokio::spawn(crate::ingestion::scheduler::run_ingestion_scheduler(sched_state));
     }
 
     Ok(())

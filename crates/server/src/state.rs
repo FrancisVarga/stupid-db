@@ -79,6 +79,8 @@ pub struct AppState {
     pub agent_store: Option<Arc<stupid_agent::AgentStore>>,
     /// Mutable skill store with CRUD and hot-reload (YAML-backed).
     pub skill_store: Option<Arc<stupid_agent::SkillStore>>,
+    /// In-memory store for active and recent ingestion jobs.
+    pub ingestion_jobs: crate::ingestion::IngestionJobStore,
 }
 
 /// Lock-free atomic counters for queue consumer observability.

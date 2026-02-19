@@ -18,6 +18,7 @@ mod credential_store;
 mod export;
 mod graph_ops;
 mod import;
+mod ingestion;
 mod live;
 mod queue;
 mod queue_connections;

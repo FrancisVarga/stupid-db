@@ -48,9 +48,20 @@ aws-credential-types = { version = "1" }
 tokio-stream = "0.1"
 sqlx = { workspace = true }
 pgvector = { workspace = true }
+indexmap = { workspace = true }
+cron = "0.12"
+redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+aws-sdk-sqs = { version = "1", optional = true }
+async-nats = { version = "0.38", optional = true }
 utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
 utoipa-scalar = { workspace = true }
+
+[features]
+default = []
+queue-redis = ["dep:redis"]
+queue-sqs = ["dep:aws-sdk-sqs"]
+queue-nats = ["dep:async-nats"]
 
 [dev-dependencies]
 tempfile = "3"
