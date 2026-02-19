@@ -2,6 +2,8 @@
 //!
 //! Subscribes to events:
 //! - `eisenbahn.compute.complete` — triggers graph update from computed features
+//! - `eisenbahn.ingest.complete` — notifies graph that new data is available
+//! - `eisenbahn.ingest.source_registered` — registers new data sources in the graph
 //!
 //! Pipeline flow: PULL from compute → update graph store
 //!
@@ -16,6 +18,7 @@ use clap::Parser;
 use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
+use stupid_eisenbahn::events::{IngestComplete, IngestSourceRegistered};
 use stupid_eisenbahn::msg_pipeline::GraphUpdate;
 use stupid_eisenbahn::topics;
 use stupid_eisenbahn::{
@@ -84,6 +87,27 @@ impl GraphWorker {
                     "compute complete — awaiting graph updates"
                 );
             }
+            topics::INGEST_COMPLETE => {
+                let event: IngestComplete =
+                    msg.decode().map_err(EisenbahnError::Deserialization)?;
+                info!(
+                    source = %event.source,
+                    records = event.record_count,
+                    "ingest complete — graph may need refresh"
+                );
+                // TODO: trigger graph refresh or entity re-extraction
+            }
+            topics::INGEST_SOURCE_REGISTERED => {
+                let event: IngestSourceRegistered =
+                    msg.decode().map_err(EisenbahnError::Deserialization)?;
+                info!(
+                    source_id = %event.source_id,
+                    name = %event.name,
+                    source_type = ?event.source_type,
+                    "new ingestion source registered"
+                );
+                // TODO: register source as a graph entity
+            }
             other => {
                 warn!(topic = %other, "unexpected event topic");
             }
@@ -144,7 +168,13 @@ impl Worker for GraphWorker {
         self.subscriber
             .subscribe(topics::COMPUTE_COMPLETE)
             .await?;
-        info!("graph worker started — subscribed to compute.complete");
+        self.subscriber
+            .subscribe(topics::INGEST_COMPLETE)
+            .await?;
+        self.subscriber
+            .subscribe(topics::INGEST_SOURCE_REGISTERED)
+            .await?;
+        info!("graph worker started — subscribed to compute.complete, ingest.complete, ingest.source_registered");
         Ok(())
     }
 
@@ -219,6 +249,8 @@ async fn main() -> anyhow::Result<()> {
         .health_interval(Duration::from_secs(cli.health_interval))
         .shutdown_timeout(Duration::from_secs(cli.shutdown_timeout))
         .subscribe(topics::COMPUTE_COMPLETE)
+        .subscribe(topics::INGEST_COMPLETE)
+        .subscribe(topics::INGEST_SOURCE_REGISTERED)
         .build();
 
     info!("graph-worker starting");

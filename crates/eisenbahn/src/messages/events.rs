@@ -3,7 +3,68 @@
 //! These are the inner payloads carried by [`Message`](crate::Message) envelopes.
 //! Each type represents a specific event that components publish via PUB/SUB.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// The type of ingestion source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestSourceType {
+    Parquet,
+    Directory,
+    S3,
+    CsvJson,
+    Push,
+    Queue,
+}
+
+/// Emitted when an ingest job begins processing a source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IngestStarted {
+    /// Unique identifier for this ingest job.
+    pub job_id: Uuid,
+    /// Data source identifier (e.g. file path, stream name).
+    pub source: String,
+    /// Type of the ingestion source.
+    pub source_type: IngestSourceType,
+    /// Segment IDs targeted by this ingest job.
+    pub segment_ids: Vec<String>,
+    /// Estimated total records (if known).
+    pub estimated_records: Option<u64>,
+    /// When the ingest job started.
+    pub started_at: DateTime<Utc>,
+}
+
+/// Emitted after each record batch is processed during ingest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IngestRecordBatch {
+    /// Ingest job this batch belongs to.
+    pub job_id: Uuid,
+    /// Zero-based index of this batch within the job.
+    pub batch_index: u64,
+    /// Number of records in this batch.
+    pub batch_record_count: u64,
+    /// Cumulative records processed so far in the job.
+    pub cumulative_records: u64,
+    /// Total records expected (if known).
+    pub total_records: Option<u64>,
+    /// Segment currently being written to.
+    pub current_segment: String,
+}
+
+/// Emitted when a new ingestion source is registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IngestSourceRegistered {
+    /// Unique identifier for the registered source.
+    pub source_id: Uuid,
+    /// Human-readable name for the source.
+    pub name: String,
+    /// Type of the ingestion source.
+    pub source_type: IngestSourceType,
+    /// Source-specific configuration.
+    pub config: serde_json::Value,
+}
 
 /// Emitted when an ingest batch finishes processing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14,6 +75,18 @@ pub struct IngestComplete {
     pub record_count: u64,
     /// Wall-clock duration of the ingest in milliseconds.
     pub duration_ms: u64,
+    /// Unique identifier for the ingest job (if tracked).
+    #[serde(default)]
+    pub job_id: Option<Uuid>,
+    /// Number of segments written during the ingest.
+    #[serde(default)]
+    pub total_segments: u64,
+    /// Error message if the ingest failed.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Type of the ingestion source (if known).
+    #[serde(default)]
+    pub source_type: Option<IngestSourceType>,
 }
 
 /// Emitted when an anomaly rule fires above its threshold.
@@ -92,8 +165,85 @@ mod tests {
             source: "data/sample.parquet".into(),
             record_count: 42_000,
             duration_ms: 1234,
+            job_id: None,
+            total_segments: 0,
+            error: None,
+            source_type: None,
         };
         assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn roundtrip_ingest_complete_with_new_fields() {
+        let msg = IngestComplete {
+            source: "data/sample.parquet".into(),
+            record_count: 42_000,
+            duration_ms: 1234,
+            job_id: Some(Uuid::new_v4()),
+            total_segments: 3,
+            error: None,
+            source_type: Some(IngestSourceType::Parquet),
+        };
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn roundtrip_ingest_started() {
+        let msg = IngestStarted {
+            job_id: Uuid::new_v4(),
+            source: "data/sample.parquet".into(),
+            source_type: IngestSourceType::Parquet,
+            segment_ids: vec!["seg-001".into(), "seg-002".into()],
+            estimated_records: Some(100_000),
+            started_at: Utc::now(),
+        };
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn roundtrip_ingest_record_batch() {
+        let msg = IngestRecordBatch {
+            job_id: Uuid::new_v4(),
+            batch_index: 5,
+            batch_record_count: 1_000,
+            cumulative_records: 6_000,
+            total_records: Some(10_000),
+            current_segment: "seg-001".into(),
+        };
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn roundtrip_ingest_source_registered() {
+        let msg = IngestSourceRegistered {
+            source_id: Uuid::new_v4(),
+            name: "daily-parquet-feed".into(),
+            source_type: IngestSourceType::Directory,
+            config: serde_json::json!({"path": "/data/feed", "pattern": "*.parquet"}),
+        };
+        assert_eq!(roundtrip(&msg), msg);
+    }
+
+    #[test]
+    fn ingest_source_type_serde_snake_case() {
+        // Verify that IngestSourceType serializes/deserializes as snake_case
+        let json = serde_json::to_string(&IngestSourceType::CsvJson).unwrap();
+        assert_eq!(json, "\"csv_json\"");
+        let parsed: IngestSourceType = serde_json::from_str("\"csv_json\"").unwrap();
+        assert_eq!(parsed, IngestSourceType::CsvJson);
+    }
+
+    #[test]
+    fn ingest_complete_backward_compat() {
+        // Old messages without new fields should deserialize with defaults
+        let old_json = r#"{"source":"test.parquet","record_count":100,"duration_ms":50}"#;
+        let parsed: IngestComplete = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.source, "test.parquet");
+        assert_eq!(parsed.record_count, 100);
+        assert_eq!(parsed.job_id, None);
+        assert_eq!(parsed.total_segments, 0);
+        assert_eq!(parsed.error, None);
+        assert_eq!(parsed.source_type, None);
     }
 
     #[test]

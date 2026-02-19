@@ -62,6 +62,10 @@ impl IngestWorker {
             source: source.to_string(),
             record_count,
             duration_ms,
+            job_id: None,
+            total_segments: 0,
+            error: None,
+            source_type: None,
         };
         match Message::new(topics::INGEST_COMPLETE, &event) {
             Ok(msg) => {

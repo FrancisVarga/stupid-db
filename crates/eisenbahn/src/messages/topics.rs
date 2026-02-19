@@ -5,8 +5,17 @@
 
 // ── Event topics ──────────────────────────────────────────────────────────
 
+/// Fired when an ingest job begins processing a source.
+pub const INGEST_STARTED: &str = "eisenbahn.ingest.started";
+
 /// Fired when an ingest batch finishes writing to storage.
 pub const INGEST_COMPLETE: &str = "eisenbahn.ingest.complete";
+
+/// Fired after each record batch is processed during ingest.
+pub const INGEST_RECORD_BATCH: &str = "eisenbahn.ingest.record_batch";
+
+/// Fired when a new ingestion source is registered.
+pub const INGEST_SOURCE_REGISTERED: &str = "eisenbahn.ingest.source_registered";
 
 /// Fired when an anomaly rule triggers above its threshold.
 pub const ANOMALY_DETECTED: &str = "eisenbahn.anomaly.detected";
