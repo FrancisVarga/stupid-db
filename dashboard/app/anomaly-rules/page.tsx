@@ -5,6 +5,7 @@ import Link from "next/link";
 import RuleSidebar from "@/components/db/RuleSidebar";
 import RuleForm from "@/components/db/RuleForm";
 import RuleDetailView from "@/components/db/RuleDetailView";
+import RuleBuilderModal from "@/components/db/RuleBuilderModal";
 import {
   getRule,
   deleteRule,
@@ -30,6 +31,7 @@ export default function RulesPage() {
   const [error, setError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [aiBuilderOpen, setAiBuilderOpen] = useState(false);
 
   const refresh = useCallback(() => {
     setSidebarKey((k) => k + 1);
@@ -134,17 +136,30 @@ export default function RulesPage() {
             Rule Manager
           </h1>
         </div>
-        <button
-          onClick={handleNewRule}
-          className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
-          style={{
-            background: "rgba(249, 115, 22, 0.1)",
-            border: "1px solid rgba(249, 115, 22, 0.3)",
-            color: "#f97316",
-          }}
-        >
-          + New Rule
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAiBuilderOpen(true)}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+            style={{
+              background: "rgba(168, 85, 247, 0.1)",
+              border: "1px solid rgba(168, 85, 247, 0.3)",
+              color: "#a855f7",
+            }}
+          >
+            AI Builder
+          </button>
+          <button
+            onClick={handleNewRule}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all hover:opacity-80"
+            style={{
+              background: "rgba(249, 115, 22, 0.1)",
+              border: "1px solid rgba(249, 115, 22, 0.3)",
+              color: "#f97316",
+            }}
+          >
+            + New Rule
+          </button>
+        </div>
       </header>
 
       {/* Body: sidebar + main */}
@@ -222,6 +237,12 @@ export default function RulesPage() {
           )}
         </div>
       </div>
+
+      <RuleBuilderModal
+        open={aiBuilderOpen}
+        onClose={() => setAiBuilderOpen(false)}
+        onRuleSaved={refresh}
+      />
     </div>
   );
 }
