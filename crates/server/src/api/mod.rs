@@ -16,6 +16,7 @@ pub(crate) mod prompts;
 mod query;
 pub(crate) mod stille_post;
 pub(crate) mod telemetry;
+pub(crate) mod ingestion;
 pub(crate) mod villa;
 
 use axum::Json;
@@ -110,3 +111,8 @@ pub use agent_groups::{
 };
 pub use prompts::{prompts_list, prompts_get, prompts_update};
 pub use villa::suggest::suggest as villa_suggest;
+pub use ingestion::{
+    ingestion_sources_list, ingestion_sources_create, ingestion_sources_get,
+    ingestion_sources_update, ingestion_sources_delete, ingestion_sources_trigger,
+    ingestion_jobs_list, ingestion_jobs_get,
+};

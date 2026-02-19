@@ -125,6 +125,23 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/prompts/{name}",
             get(api::prompts_get).put(api::prompts_update),
         )
+        // Ingestion Manager
+        .route(
+            "/api/ingestion/sources",
+            get(api::ingestion_sources_list).post(api::ingestion_sources_create),
+        )
+        .route(
+            "/api/ingestion/sources/{id}",
+            get(api::ingestion_sources_get)
+                .put(api::ingestion_sources_update)
+                .delete(api::ingestion_sources_delete),
+        )
+        .route(
+            "/api/ingestion/sources/{id}/trigger",
+            post(api::ingestion_sources_trigger),
+        )
+        .route("/api/ingestion/jobs", get(api::ingestion_jobs_list))
+        .route("/api/ingestion/jobs/{id}", get(api::ingestion_jobs_get))
         // Villa layout engine
         .route("/api/villa/suggest", post(api::villa_suggest))
         .route("/ws", get(live::ws_upgrade));
