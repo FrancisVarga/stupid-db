@@ -850,8 +850,7 @@ export async function fetchTelemetryOverview(): Promise<TelemetryStat[]> {
 // Groups
 export async function fetchGroups(): Promise<AgentGroup[]> {
   const res = await checkedFetch(`${API_BASE}/api/agent-groups`);
-  const data = await res.json();
-  return data.groups;
+  return res.json();
 }
 
 export async function createGroup(name: string, description?: string, color?: string): Promise<AgentGroup> {
