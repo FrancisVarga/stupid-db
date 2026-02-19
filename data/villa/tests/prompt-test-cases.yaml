@@ -1,0 +1,214 @@
+# Villa Layout Planner — Prompt Test Cases
+#
+# These test cases validate the LLM system prompt at
+# data/villa/prompts/layout-planner-system.md
+#
+# Valid widget types: stats-card, time-series, data-table, force-graph
+# Valid actions: add, remove, resize, move
+# Rule: max 3 widgets per response (prompt rule #2)
+#
+# Each test case defines:
+#   id             – unique kebab-case identifier
+#   input          – the raw user message sent to the LLM
+#   expected_actions – the LayoutAction[] the LLM should produce
+#   notes          – what edge case or behavior this validates
+
+test_cases:
+
+  # ────────────────────────────────────────────────────────────────
+  # Happy path (5)
+  # ────────────────────────────────────────────────────────────────
+
+  - id: happy-stats
+    input: "Show me system stats"
+    expected_actions:
+      - action: add
+        widget_type: stats-card
+    notes: >
+      Basic happy path — direct mapping from "stats" keyword to stats-card.
+      Mirrors the first example in the system prompt exactly.
+
+  - id: happy-trends
+    input: "I want to see trends over time"
+    expected_actions:
+      - action: add
+        widget_type: time-series
+    notes: >
+      Happy path for time-series. The phrase "trends over time" should
+      clearly trigger a time-series widget, not a stats-card.
+
+  - id: happy-graph
+    input: "Show me entity relationships"
+    expected_actions:
+      - action: add
+        widget_type: force-graph
+    notes: >
+      Happy path for force-graph. "Relationships" is a strong signal
+      for the network/graph widget per the registry description.
+
+  - id: happy-table
+    input: "List all nodes"
+    expected_actions:
+      - action: add
+        widget_type: data-table
+    notes: >
+      Happy path for data-table. "List" implies tabular presentation.
+      Validates the prompt selects data-table over other widget types.
+
+  - id: happy-multi-widget
+    input: "Show me everything"
+    expected_actions:
+      - action: add
+        widget_type: stats-card
+      - action: add
+        widget_type: time-series
+      - action: add
+        widget_type: force-graph
+    notes: >
+      Multi-widget happy path — "everything" should produce exactly 3
+      widgets (the max allowed per prompt rule #2). The combination
+      mirrors the "show me everything" example in the system prompt.
+      Order may vary; all three types must be present.
+
+  # ────────────────────────────────────────────────────────────────
+  # Ambiguous requests (3)
+  # ────────────────────────────────────────────────────────────────
+
+  - id: ambiguous-whats-happening
+    input: "What's happening?"
+    expected_actions:
+      - action: add
+        widget_type: stats-card
+    notes: >
+      Ambiguous but leans toward overview — "what's happening" implies
+      a high-level summary. The LLM should default to stats-card for
+      overview/health queries. Acceptable alternative: stats-card +
+      time-series (2 widgets showing current state + recent trends).
+
+  - id: ambiguous-look-cool
+    input: "Make it look cool"
+    expected_actions: []
+    notes: >
+      Purely aesthetic request with no data intent. The LLM should
+      return empty actions and ask a clarifying question in the
+      explanation field (per prompt rule #3). This tests that the
+      model does not hallucinate widgets for non-data requests.
+
+  - id: ambiguous-show-data
+    input: "Show me the data"
+    expected_actions:
+      - action: add
+        widget_type: data-table
+    notes: >
+      "The data" is vague but implies raw/detailed inspection. The LLM
+      should pick data-table (tabular view of records) as the most
+      literal interpretation. Acceptable alternative: stats-card. The
+      key constraint is that exactly one widget type is chosen, not
+      multiple — the model should commit to a single interpretation.
+
+  # ────────────────────────────────────────────────────────────────
+  # Remove / modify (3)
+  # ────────────────────────────────────────────────────────────────
+
+  - id: remove-single
+    input: "Remove the stats card"
+    current_layout:
+      - id: system-stats-1
+        type: stats-card
+        title: "System Overview"
+    expected_actions:
+      - action: remove
+        widget_id: system-stats-1
+    notes: >
+      Basic remove action. The LLM must reference the existing widget
+      by its ID from the current_layout context, not invent a new ID.
+
+  - id: resize-graph
+    input: "Make the graph bigger"
+    current_layout:
+      - id: entity-graph-1
+        type: force-graph
+        title: "Entity Relationships"
+    expected_actions:
+      - action: resize
+        widget_id: entity-graph-1
+        dimensions:
+          w: 9
+          h: 7
+    notes: >
+      Resize action. The LLM should identify the force-graph widget
+      from current_layout and produce a resize action with larger
+      dimensions than the default (w=6, h=5). Exact dimensions may
+      vary — the key assertion is that both w and h are larger than
+      the widget registry defaults.
+
+  - id: remove-all
+    input: "Remove everything"
+    current_layout:
+      - id: system-stats-1
+        type: stats-card
+        title: "System Overview"
+      - id: event-trends-1
+        type: time-series
+        title: "Event Trends"
+      - id: entity-graph-1
+        type: force-graph
+        title: "Entity Relationships"
+    expected_actions:
+      - action: remove
+        widget_id: system-stats-1
+      - action: remove
+        widget_id: event-trends-1
+      - action: remove
+        widget_id: entity-graph-1
+    notes: >
+      Bulk remove. "Everything" means all widgets in current_layout
+      must each get a separate remove action with matching widgetIds.
+      Tests that the LLM iterates over the layout rather than
+      inventing a single "clear all" action.
+
+  # ────────────────────────────────────────────────────────────────
+  # Edge cases (4)
+  # ────────────────────────────────────────────────────────────────
+
+  - id: edge-unsupported-widget
+    input: "Add a pie chart"
+    expected_actions: []
+    notes: >
+      pie-chart is NOT in the widget registry. Per prompt rule #1
+      and #3, the LLM should return empty actions and explain that
+      pie charts are not available, listing supported types instead.
+      This validates that the model respects the closed widget registry.
+
+  - id: edge-empty-message
+    input: ""
+    expected_actions: []
+    notes: >
+      Empty user message. The LLM should return empty actions and
+      ask the user what they'd like to see. This tests graceful
+      handling of zero-length input — no hallucinated widgets.
+
+  - id: edge-widget-limit
+    input: "Show me 10 different charts"
+    expected_actions:
+      - action: add
+        widget_type: stats-card
+      - action: add
+        widget_type: time-series
+      - action: add
+        widget_type: force-graph
+    notes: >
+      Tests enforcement of the max-3-widgets-per-response rule (#2).
+      Despite the user asking for 10, the LLM must cap at 3 and
+      explain the limit. The specific widget types may vary, but
+      the count MUST NOT exceed 3.
+
+  - id: edge-non-english
+    input: "こんにちは"
+    expected_actions: []
+    notes: >
+      Non-English input (Japanese "hello"). The LLM should return
+      empty actions and respond gracefully — either reply in the
+      user's language asking what they'd like to see, or respond in
+      English with a clarifying question. Tests that the model does
+      not crash or hallucinate widgets for non-data-related messages.
