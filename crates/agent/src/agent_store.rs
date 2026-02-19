@@ -260,6 +260,7 @@ fn load_md_as_yaml(path: &Path) -> Result<AgentYamlConfig> {
         execution: Default::default(),
         system_prompt: body,
         skills: Vec::new(),
+        skill_refs: Vec::new(),
     })
 }
 
@@ -286,6 +287,7 @@ mod tests {
             execution: Default::default(),
             system_prompt: format!("You are {}.", name),
             skills: Vec::new(),
+            skill_refs: Vec::new(),
         }
     }
 

@@ -77,6 +77,8 @@ pub struct AppState {
     pub telemetry_store: Arc<RwLock<stupid_agent::telemetry_store::TelemetryStore>>,
     /// Mutable agent store with CRUD and hot-reload (YAML-backed).
     pub agent_store: Option<Arc<stupid_agent::AgentStore>>,
+    /// Mutable skill store with CRUD and hot-reload (YAML-backed).
+    pub skill_store: Option<Arc<stupid_agent::SkillStore>>,
 }
 
 /// Lock-free atomic counters for queue consumer observability.

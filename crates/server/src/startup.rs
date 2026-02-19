@@ -89,6 +89,19 @@ pub async fn build_app_state(config: &stupid_core::Config, eisenbahn: bool) -> a
         }
     };
 
+    // Initialize mutable skill store (YAML-backed CRUD with hot-reload).
+    let skill_store_dir = config.storage.data_dir.join("bundeswehr").join("skills");
+    let skill_store = match stupid_agent::SkillStore::new(&skill_store_dir) {
+        Ok(store) => {
+            info!("Skill store initialized at {}", skill_store_dir.display());
+            Some(Arc::new(store))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to create skill store: {} — skill CRUD endpoints disabled", e);
+            None
+        }
+    };
+
     // Initialize catalog store for persistent catalog.
     let catalog_store = stupid_catalog::CatalogStore::new(config.storage.data_dir.join("catalog"))
         .expect("Failed to initialize catalog store");
@@ -157,6 +170,7 @@ pub async fn build_app_state(config: &stupid_core::Config, eisenbahn: bool) -> a
         pg_pool,
         telemetry_store: Arc::new(RwLock::new(telemetry_store)),
         agent_store,
+        skill_store,
     });
 
     let ctx = StartupContext {

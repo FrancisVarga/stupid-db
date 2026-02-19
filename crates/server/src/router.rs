@@ -82,6 +82,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/connections/{id}/credentials",
             get(api::connections_credentials),
         )
+        // Bundeswehr fleet overview
+        .route("/api/bundeswehr/overview", get(api::bundeswehr_overview))
+        // Bundeswehr skill CRUD
+        .route(
+            "/api/bundeswehr/skills",
+            get(api::skills_list).post(api::skills_create),
+        )
+        .route(
+            "/api/bundeswehr/skills/{name}",
+            get(api::skills_get)
+                .put(api::skills_update)
+                .delete(api::skills_delete),
+        )
         // Telemetry: overview MUST precede {agent_name} to avoid capture
         .route("/api/telemetry/overview", get(api::telemetry_overview))
         .route("/api/telemetry/{agent_name}", get(api::telemetry_events))
