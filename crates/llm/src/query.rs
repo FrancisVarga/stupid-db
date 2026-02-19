@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::Value;
 use stupid_catalog::{Catalog, QueryExecutor, QueryPlan};
 use stupid_graph::GraphStore;
@@ -5,20 +7,31 @@ use tracing::{debug, info};
 
 use crate::provider::{LlmError, LlmProvider, Message, Role};
 
+/// Path to the externalized query planner system prompt template.
+const QUERY_PLANNER_TEMPLATE_PATH: &str = "data/bundeswehr/prompts/query-planner-system.md";
+
+/// Placeholder in the template that gets replaced with the catalog schema.
+const SCHEMA_PLACEHOLDER: &str = "<<<schema>>>";
+
 /// Converts natural language questions into QueryPlans via an LLM,
 /// then executes them against the GraphStore.
 pub struct QueryGenerator {
     provider: Box<dyn LlmProvider>,
     temperature: f32,
     max_tokens: u32,
+    /// The system prompt template loaded from disk at construction time.
+    system_prompt_template: String,
 }
 
 impl QueryGenerator {
     pub fn new(provider: Box<dyn LlmProvider>, temperature: f32, max_tokens: u32) -> Self {
+        let system_prompt_template = load_template(QUERY_PLANNER_TEMPLATE_PATH)
+            .expect("query planner system prompt template must exist at startup");
         Self {
             provider,
             temperature,
             max_tokens,
+            system_prompt_template,
         }
     }
 
@@ -37,7 +50,9 @@ impl QueryGenerator {
         question: &str,
         catalog: &Catalog,
     ) -> Result<QueryPlan, QueryError> {
-        let system_prompt = build_system_prompt(catalog);
+        let system_prompt = self
+            .system_prompt_template
+            .replace(SCHEMA_PLACEHOLDER, &catalog.to_system_prompt());
         let user_prompt = format!(
             "Convert this question to a QueryPlan JSON:\n\n{}\n\nRespond ONLY with valid JSON, no explanation.",
             question
@@ -119,53 +134,21 @@ pub enum QueryError {
     ExecutionError { reason: String },
 }
 
-/// Build the system prompt that teaches the LLM about our schema and query format.
-fn build_system_prompt(catalog: &Catalog) -> String {
-    let schema = catalog.to_system_prompt();
+/// Load a prompt template from disk, failing eagerly with a clear message.
+fn load_template(path: &str) -> Result<String, String> {
+    let path = Path::new(path);
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read prompt template at {}: {e}", path.display()))?;
 
-    format!(
-        r#"You are a query planner for a graph database. Your job is to convert natural language questions into structured QueryPlan JSON.
+    let count = content.matches(SCHEMA_PLACEHOLDER).count();
+    if count != 1 {
+        return Err(format!(
+            "prompt template at {} must contain exactly one '{SCHEMA_PLACEHOLDER}' placeholder, found {count}",
+            path.display()
+        ));
+    }
 
-## Graph Schema
-{schema}
-
-## QueryPlan Format
-A QueryPlan is a JSON object with a "steps" array. Each step has:
-- "id": unique string identifier
-- "depends_on": array of step IDs this step depends on (empty if none)
-- "type": one of "filter", "traversal", "aggregate"
-
-### Step Types
-
-**filter** — Select nodes by entity type and optional field matching:
-```json
-{{"id": "s1", "type": "filter", "entity_type": "Member", "field": "key", "operator": "equals", "value": "alice"}}
-```
-Operators: "equals", "contains", "starts_with"
-If no field/operator/value, matches all nodes of that entity_type.
-
-**traversal** — Follow edges from input nodes:
-```json
-{{"id": "s2", "depends_on": ["s1"], "type": "traversal", "edge_type": "LoggedInFrom", "direction": "outgoing", "depth": 1}}
-```
-Directions: "outgoing", "incoming", "both"
-
-**aggregate** — Group and count results:
-```json
-{{"id": "s3", "depends_on": ["s2"], "type": "aggregate", "group_by": "entity_type", "metric": "count"}}
-```
-group_by options: "entity_type", "key"
-
-## Rules
-- Always start with a "filter" step to select the starting nodes
-- Use "traversal" to follow edges between entities
-- Use "aggregate" as the final step when the question asks for counts or summaries
-- ALWAYS include field/operator/value in filter steps to narrow results — never filter by entity_type alone without a specific value
-- If the user asks a broad question (e.g. "show all members"), add an aggregate step to summarize instead of returning raw nodes
-- Prefer aggregation over raw node listing — return counts and summaries, not dumps of data
-- When a traversal could fan out to thousands of nodes, aggregate the results
-- Respond with ONLY valid JSON, no explanation or markdown"#
-    )
+    Ok(content)
 }
 
 /// Extract JSON from an LLM response, handling markdown code blocks.
@@ -223,8 +206,44 @@ mod tests {
         assert_eq!(extract_json(input), r#"{"steps": []}"#);
     }
 
+    /// Resolve the template path relative to the workspace root (two levels up from CARGO_MANIFEST_DIR).
+    fn workspace_template_path() -> String {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let workspace_root = std::path::Path::new(manifest_dir)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        workspace_root
+            .join(QUERY_PLANNER_TEMPLATE_PATH)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     #[test]
-    fn build_system_prompt_includes_schema() {
+    fn template_file_exists_and_has_placeholder() {
+        let path = workspace_template_path();
+        let template = load_template(&path)
+            .expect("template file must exist at data/bundeswehr/prompts/query-planner-system.md");
+        assert!(
+            template.contains(SCHEMA_PLACEHOLDER),
+            "template must contain the <<<schema>>> placeholder"
+        );
+        assert_eq!(
+            template.matches(SCHEMA_PLACEHOLDER).count(),
+            1,
+            "template must contain exactly one <<<schema>>> placeholder"
+        );
+        assert!(
+            template.contains("QueryPlan"),
+            "template must describe QueryPlan format"
+        );
+    }
+
+    #[test]
+    fn template_schema_replacement_works() {
+        let path = workspace_template_path();
+        let template = load_template(&path).unwrap();
         let catalog = Catalog {
             entity_types: vec![],
             edge_types: vec![],
@@ -232,8 +251,9 @@ mod tests {
             total_edges: 200,
             external_sources: vec![],
         };
-        let prompt = build_system_prompt(&catalog);
+        let prompt = template.replace(SCHEMA_PLACEHOLDER, &catalog.to_system_prompt());
         assert!(prompt.contains("100 nodes"));
         assert!(prompt.contains("QueryPlan"));
+        assert!(!prompt.contains(SCHEMA_PLACEHOLDER));
     }
 }
