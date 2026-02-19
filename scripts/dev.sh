@@ -124,13 +124,42 @@ fi
 
 # ── Step 3: Cleanup handler ────────────────────────────────────
 PIDS=()
+CLEANED_UP=false
 
 cleanup() {
+    if $CLEANED_UP; then return; fi
+    CLEANED_UP=true
+
     echo ""
     echo "==> Shutting down..."
+
+    # Send SIGTERM to entire process groups (kills children of children)
     for pid in "${PIDS[@]}"; do
-        kill "$pid" 2>/dev/null || true
+        kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
     done
+
+    # Give processes a moment to exit gracefully
+    local timeout=5
+    for ((i = 0; i < timeout; i++)); do
+        local still_alive=false
+        for pid in "${PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                still_alive=true
+                break
+            fi
+        done
+        if ! $still_alive; then break; fi
+        sleep 1
+    done
+
+    # Force-kill anything still lingering
+    for pid in "${PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "    Force-killing PID $pid..."
+            kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+        fi
+    done
+
     wait 2>/dev/null
     echo "    Done."
 }
@@ -147,7 +176,7 @@ if $WATCH_MODE; then
         SERVE_ARGS="serve --eisenbahn"
     fi
 
-    (cd "$ROOT" && cargo watch -c -w crates/ --delay 1 -x "run -- $SERVE_ARGS") &
+    setsid bash -c "cd '$ROOT' && cargo watch -c -w crates/ --delay 1 -x 'run -- $SERVE_ARGS'" &
     PIDS+=($!)
 
 else
@@ -159,7 +188,7 @@ else
     # Start eisenbahn broker + workers if requested
     if $EISENBAHN; then
         echo "==> Starting eisenbahn broker + workers..."
-        "$ROOT/target/${BUILD_PROFILE/dev/debug}/eisenbahn-launcher" --config "$ROOT/config/eisenbahn.toml" &
+        setsid "$ROOT/target/${BUILD_PROFILE/dev/debug}/eisenbahn-launcher" --config "$ROOT/config/eisenbahn.toml" &
         PIDS+=($!)
         # Give broker time to bind sockets
         sleep 2
@@ -172,13 +201,13 @@ else
     fi
 
     echo "==> Starting server..."
-    "$SERVER_BIN" "${SERVE_ARGS[@]}" &
+    setsid "$SERVER_BIN" "${SERVE_ARGS[@]}" &
     PIDS+=($!)
 fi
 
 # Start the Next.js dashboard
 echo "==> Starting dashboard..."
-(cd "$DASHBOARD" && npm run dev) &
+setsid bash -c "cd '$DASHBOARD' && npm run dev" &
 PIDS+=($!)
 
 # ── Banner ──────────────────────────────────────────────────────

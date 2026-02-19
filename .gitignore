@@ -3,8 +3,12 @@
 Cargo.lock
 
 # Data (parquet segments are large — only track rule YAML configs)
-/data/*
-!/data/rules/
+/data/cache/
+/data/segments/
+/data/sqs/
+/data/catalog/
+/data/embeddings/
+/data/agent-sessions/
 
 # Node / TypeScript
 node_modules/
@@ -43,3 +47,8 @@ __pycache__/
 .beads/dolt-access.lock
 .beads/.local_version
 .beads/last-touched
+
+data/.conn_key
+data/athena-connections.json
+data/athena-query-log-ms-athena.json
+data/connections.json
