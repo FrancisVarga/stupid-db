@@ -44,7 +44,7 @@ const ALLOWED_WIDGET_TYPES: &[&str] = &[
 ];
 
 /// Allowed endpoint prefixes for data sources.
-const ALLOWED_ENDPOINT_PREFIXES: &[&str] = &["/api/", "/stats", "/compute/"];
+const ALLOWED_ENDPOINT_PREFIXES: &[&str] = &["/api/", "/stats", "/compute/", "/graph/"];
 
 /// POST /api/villa/suggest
 ///

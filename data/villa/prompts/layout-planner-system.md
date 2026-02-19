@@ -81,31 +81,31 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
 ### stats-card
 - **Shows**: Key metrics — counts, rates, percentages
 - **Default size**: w=3, h=2
-- **Data source**: `GET /api/stats` (type: api, refreshInterval: 30)
+- **Data source**: `GET /stats` (type: api, refreshInterval: 30)
 - **Use when**: User asks for overview numbers, summaries, KPIs, or system health
 
 ### time-series
 - **Shows**: Values over time — event trends, volume charts, temporal patterns
 - **Default size**: w=6, h=3
-- **Data source**: `GET /api/compute/trends` (type: api, refreshInterval: 60)
+- **Data source**: `GET /compute/trends` (type: api, refreshInterval: 60)
 - **Use when**: User asks about trends, history, patterns over time, or "what changed"
 
 ### data-table
 - **Shows**: Tabular data — entity lists, event logs, detailed records
 - **Default size**: w=6, h=4
-- **Data source**: `GET /api/graph/nodes` (type: api, refreshInterval: 60)
+- **Data source**: `GET /graph/nodes` (type: api, refreshInterval: 60)
 - **Use when**: User asks to list, search, browse, or inspect specific records
 
 ### force-graph
 - **Shows**: Entity relationships — network topology, connection patterns
 - **Default size**: w=6, h=5
-- **Data source**: `GET /api/graph/edges` (type: api, refreshInterval: 120)
+- **Data source**: `GET /graph/force` (type: api, refreshInterval: 120)
 - **Use when**: User asks about relationships, connections, networks, or "who connects to what"
 
 ### bar-chart
 - **Shows**: Categorical comparisons — ranked values, distributions, breakdowns by category
 - **Default size**: w=6, h=4
-- **Data source**: `GET /api/stats` or any endpoint returning `[{ label, value }]` (type: api, refreshInterval: 60)
+- **Data source**: `GET /stats` or any endpoint returning `[{ label, value }]` (type: api, refreshInterval: 60)
 - **Use when**: User asks to compare categories, see distributions, breakdowns, or rankings
 
 ### scatter-plot
@@ -117,7 +117,7 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
 ### heatmap
 - **Shows**: Entity co-occurrence matrix — PMI correlation between entity pairs
 - **Default size**: w=6, h=5
-- **Data source**: `GET /api/compute/cooccurrence` (type: api, refreshInterval: 120)
+- **Data source**: `GET /compute/cooccurrence` (type: api, refreshInterval: 120)
 - **Use when**: User asks about co-occurrence, correlations between entities, or "what appears together"
 
 ### sankey
@@ -129,31 +129,31 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
 ### treemap
 - **Shows**: Hierarchical proportions — category breakdowns, space-filling visualization
 - **Default size**: w=6, h=5
-- **Data source**: `GET /api/stats` or any endpoint returning hierarchical data (type: api, refreshInterval: 60)
+- **Data source**: `GET /stats` or any endpoint returning hierarchical data (type: api, refreshInterval: 60)
 - **Use when**: User asks about proportions, composition, "what takes up the most", or hierarchical breakdowns
 
 ### anomaly-chart
 - **Shows**: Anomaly scores — ranked entities by anomaly detection score with severity classification
 - **Default size**: w=6, h=5
-- **Data source**: `GET /api/compute/anomalies` (type: api, refreshInterval: 60)
+- **Data source**: `GET /compute/anomalies` (type: api, refreshInterval: 60)
 - **Use when**: User asks about anomalies, outliers, suspicious activity, or "what's unusual"
 
 ### trend-chart
 - **Shows**: Metric trends — current vs baseline with magnitude and direction indicators
 - **Default size**: w=6, h=5
-- **Data source**: `GET /api/compute/trends` (type: api, refreshInterval: 60)
+- **Data source**: `GET /compute/trends` (type: api, refreshInterval: 60)
 - **Use when**: User asks about metric changes, deviations from baseline, or "what metrics are shifting"
 
 ### page-rank
 - **Shows**: Entity importance — PageRank scores ranked by influence in the entity graph
 - **Default size**: w=6, h=4
-- **Data source**: `GET /api/compute/pagerank` (type: api, refreshInterval: 120)
+- **Data source**: `GET /compute/pagerank` (type: api, refreshInterval: 120)
 - **Use when**: User asks about important entities, influence, centrality, or "who matters most"
 
 ### degree-chart
 - **Shows**: Connection counts — entity degree distribution (in/out/total connections)
 - **Default size**: w=6, h=4
-- **Data source**: `GET /api/compute/degree` (type: api, refreshInterval: 120)
+- **Data source**: `GET /compute/degrees` (type: api, refreshInterval: 120)
 - **Use when**: User asks about connectivity, most-connected entities, or hub analysis
 
 ## Rules
@@ -180,7 +180,7 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
         "id": "system-stats-1",
         "type": "stats-card",
         "title": "System Overview",
-        "dataSource": { "type": "api", "endpoint": "/api/stats", "refreshInterval": 30 }
+        "dataSource": { "type": "api", "endpoint": "/stats", "refreshInterval": 30 }
       }
     }
   ],
@@ -199,7 +199,7 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
         "id": "weekly-trends-1",
         "type": "time-series",
         "title": "Weekly Event Trends",
-        "dataSource": { "type": "api", "endpoint": "/api/compute/trends", "refreshInterval": 60 }
+        "dataSource": { "type": "api", "endpoint": "/compute/trends", "refreshInterval": 60 }
       }
     }
   ],
@@ -232,7 +232,7 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
         "id": "overview-stats-1",
         "type": "stats-card",
         "title": "System Overview",
-        "dataSource": { "type": "api", "endpoint": "/api/stats", "refreshInterval": 30 }
+        "dataSource": { "type": "api", "endpoint": "/stats", "refreshInterval": 30 }
       }
     },
     {
@@ -241,7 +241,7 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
         "id": "event-trends-1",
         "type": "time-series",
         "title": "Event Trends",
-        "dataSource": { "type": "api", "endpoint": "/api/compute/trends", "refreshInterval": 60 }
+        "dataSource": { "type": "api", "endpoint": "/compute/trends", "refreshInterval": 60 }
       }
     },
     {
@@ -250,7 +250,7 @@ You have one tool: `suggest_layout`. Call it with an array of layout actions and
         "id": "entity-graph-1",
         "type": "force-graph",
         "title": "Entity Relationship Graph",
-        "dataSource": { "type": "api", "endpoint": "/api/graph/edges", "refreshInterval": 120 }
+        "dataSource": { "type": "api", "endpoint": "/graph/force", "refreshInterval": 120 }
       }
     }
   ],

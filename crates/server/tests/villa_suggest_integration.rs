@@ -28,7 +28,7 @@ const ALLOWED_WIDGET_TYPES: &[&str] = &[
 ];
 
 /// Allowed endpoint prefixes (must match suggest.rs ALLOWED_ENDPOINT_PREFIXES).
-const ALLOWED_ENDPOINT_PREFIXES: &[&str] = &["/api/", "/stats", "/compute/"];
+const ALLOWED_ENDPOINT_PREFIXES: &[&str] = &["/api/", "/stats", "/compute/", "/graph/"];
 
 /// Path to the layout planner prompt template.
 const LAYOUT_PLANNER_TEMPLATE_PATH: &str = "data/villa/prompts/layout-planner-system.md";
@@ -263,7 +263,7 @@ fn test_reject_external_endpoint() {
     }
 
     // Valid internal endpoints should pass
-    let valid_endpoints = ["/api/stats", "/api/graph/nodes", "/stats", "/compute/trends"];
+    let valid_endpoints = ["/api/stats", "/graph/nodes", "/stats", "/compute/trends", "/graph/force"];
     for ep in &valid_endpoints {
         let valid = ALLOWED_ENDPOINT_PREFIXES
             .iter()

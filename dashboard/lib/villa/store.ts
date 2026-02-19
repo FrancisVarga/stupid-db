@@ -20,14 +20,14 @@ export const DEFAULT_WIDGETS: WidgetConfig[] = [
     id: "default-stats",
     type: "stats-card",
     title: "System Overview",
-    dataSource: { type: "api", endpoint: "/api/stats", refreshInterval: 30000 },
+    dataSource: { type: "api", endpoint: "/stats", refreshInterval: 30000 },
     layout: { x: 0, y: 0, w: 12, h: 2 },
   },
   {
     id: "default-trends",
     type: "time-series",
     title: "Event Trends",
-    dataSource: { type: "api", endpoint: "/api/compute/trends", refreshInterval: 60000 },
+    dataSource: { type: "api", endpoint: "/compute/trends", refreshInterval: 60000 },
     layout: { x: 0, y: 2, w: 6, h: 4 },
   },
 ];
