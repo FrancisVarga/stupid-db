@@ -161,7 +161,7 @@ export default function ChatPanel() {
     try {
       const body: VillaSuggestRequest = {
         message: text,
-        current_layout: widgets,
+        currentLayout: widgets,
       };
 
       const res = await fetch("/api/villa/suggest", {

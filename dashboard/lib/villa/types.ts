@@ -56,8 +56,8 @@ export interface LayoutAction {
 /** POST body sent to /api/villa/suggest. */
 export interface VillaSuggestRequest {
   message: string;
-  current_layout: WidgetConfig[];
-  conversation_id?: string;
+  currentLayout: WidgetConfig[];
+  conversationId?: string;
 }
 
 /** Response from /api/villa/suggest. */
