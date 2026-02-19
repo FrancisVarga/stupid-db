@@ -1,15 +1,16 @@
 # Rust
 /target/
 Cargo.lock
-.venv/
 
 # Data (parquet segments are large — only track rule YAML configs)
 /data/*
 !/data/rules/
 
-# Node
+# Node / TypeScript
 node_modules/
 .next/
+dist/
+*.tsbuildinfo
 
 # IDE
 .idea/
@@ -20,17 +21,25 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment — never commit secrets
 .env
 .env.local
+!.env.example
 
 # Claude Code (local/ephemeral state)
 .claude/*.local.md
 .claude/*.local.json
 .claude/verrueckt-metadata.json
 .claude/insights
+.claude/memory/
 
 # Python
 __pycache__/
 *.pyc
 .venv/
+
+# Beads (local Dolt DB — tracked by its own .gitignore, but belt-and-suspenders)
+.beads/dolt/
+.beads/dolt-access.lock
+.beads/.local_version
+.beads/last-touched
