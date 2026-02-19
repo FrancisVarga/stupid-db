@@ -25,5 +25,9 @@ clap = { workspace = true }
 name = "agent-worker"
 path = "src/bin/agent-worker.rs"
 
+[[bin]]
+name = "migrate-skills"
+path = "src/bin/migrate_skills.rs"
+
 [dev-dependencies]
 tempfile = "3.25.0"
