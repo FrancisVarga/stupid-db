@@ -1,7 +1,8 @@
 //! YAML-based agent configuration schema.
 //!
 //! Supports 4 LLM providers: Anthropic, OpenAI, Gemini, and Ollama.
-//! Agent configs live in `data/agents/*.yaml` and are loaded at startup.
+//! Agent configs live in `data/agents/*.yaml` (user-created) and
+//! `data/bundeswehr/agents/**/*.yaml` (internal, seeded at startup).
 //!
 //! API keys are referenced by environment variable name (`api_key_env`),
 //! never stored directly in config files.

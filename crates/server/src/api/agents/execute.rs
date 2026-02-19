@@ -304,7 +304,7 @@ pub async fn teams_strategies() -> Json<serde_json::Value> {
 ///
 /// Resolution order:
 /// 1. In-memory AgentStore (fastest, populated at startup)
-/// 2. Direct file load from `data/agents/` and `data/bundeswehr/agents/` (fallback)
+/// 2. Direct file load from `data/agents/` and recursive walk of `data/bundeswehr/agents/` (fallback)
 pub async fn resolve_from_agent_store(
     state: &AppState,
     agent_name: &str,
@@ -334,37 +334,72 @@ pub async fn resolve_from_agent_store(
 }
 
 /// Try to load an agent YAML config directly from disk.
-/// Checks `{data_dir}/agents/` and `{data_dir}/bundeswehr/agents/`.
+///
+/// Checks flat paths in `{data_dir}/agents/` first, then recursively walks
+/// `{data_dir}/bundeswehr/agents/` (including subdirectories like `internal/`,
+/// `security/`, `analytics/`) to find a matching agent by name.
 fn resolve_agent_from_disk(
     data_dir: &std::path::Path,
     agent_name: &str,
 ) -> Option<stupid_agent::yaml_schema::AgentYamlConfig> {
-    let candidates = [
+    // First check flat paths in data/agents/ (the mutable CRUD store directory).
+    let flat_candidates = [
         data_dir.join("agents").join(format!("{}.yaml", agent_name)),
         data_dir.join("agents").join(format!("{}.yml", agent_name)),
-        data_dir.join("bundeswehr").join("agents").join(format!("{}.yaml", agent_name)),
-        data_dir.join("bundeswehr").join("agents").join(format!("{}.yml", agent_name)),
     ];
-    for path in &candidates {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            match serde_yaml::from_str::<stupid_agent::yaml_schema::AgentYamlConfig>(&content) {
-                Ok(config) if config.name == agent_name => {
-                    tracing::info!(path = %path.display(), "loaded agent from disk");
-                    return Some(config);
-                }
-                Ok(config) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        expected = agent_name,
-                        found = %config.name,
-                        "agent name mismatch in YAML file"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "failed to parse agent YAML");
-                }
+    for path in &flat_candidates {
+        if let Some(config) = try_load_agent_yaml(path, agent_name) {
+            return Some(config);
+        }
+    }
+
+    // Recursively walk data/bundeswehr/agents/ to cover subdirectories
+    // (internal/, security/, analytics/, etc.) where seeded agents live.
+    let bw_agents_dir = data_dir.join("bundeswehr").join("agents");
+    if bw_agents_dir.exists() {
+        for entry in walkdir::WalkDir::new(&bw_agents_dir).follow_links(true).into_iter().flatten() {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.into_path();
+            if !matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml")) {
+                continue;
+            }
+            if let Some(config) = try_load_agent_yaml(&path, agent_name) {
+                return Some(config);
             }
         }
     }
+
     None
+}
+
+/// Attempt to parse a single YAML file as an `AgentYamlConfig` and verify the name matches.
+fn try_load_agent_yaml(
+    path: &std::path::Path,
+    agent_name: &str,
+) -> Option<stupid_agent::yaml_schema::AgentYamlConfig> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    match serde_yaml::from_str::<stupid_agent::yaml_schema::AgentYamlConfig>(&content) {
+        Ok(config) if config.name == agent_name => {
+            tracing::info!(path = %path.display(), "loaded agent from disk");
+            Some(config)
+        }
+        Ok(config) => {
+            tracing::warn!(
+                path = %path.display(),
+                expected = agent_name,
+                found = %config.name,
+                "agent name mismatch in YAML file"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to parse agent YAML");
+            None
+        }
+    }
 }
