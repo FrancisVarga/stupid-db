@@ -356,13 +356,15 @@ impl OpenSearchConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// "openai", "anthropic", "ollama"
+    /// "openai", "anthropic", "gemini", "ollama"
     pub provider: String,
     pub openai_api_key: Option<String>,
     pub openai_model: String,
     pub openai_base_url: Option<String>,
     pub anthropic_api_key: Option<String>,
     pub anthropic_model: String,
+    pub gemini_api_key: Option<String>,
+    pub gemini_model: String,
     pub temperature: f32,
     pub max_tokens: u32,
 }
@@ -376,6 +378,8 @@ impl LlmConfig {
             openai_base_url: profiled_env_opt(p, "OPENAI_BASE_URL"),
             anthropic_api_key: profiled_env_opt(p, "ANTHROPIC_API_KEY"),
             anthropic_model: profiled_env_or(p, "ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929"),
+            gemini_api_key: profiled_env_opt(p, "GEMINI_API_KEY"),
+            gemini_model: profiled_env_or(p, "GEMINI_MODEL", "gemini-2.0-flash"),
             temperature: profiled_env_or(p, "LLM_TEMPERATURE", "0.1")
                 .parse()
                 .unwrap_or(0.1),
@@ -387,6 +391,7 @@ impl LlmConfig {
         match self.provider.as_str() {
             "openai" => self.openai_api_key.is_some(),
             "anthropic" => self.anthropic_api_key.is_some(),
+            "gemini" => self.gemini_api_key.is_some(),
             "ollama" => true,
             _ => false,
         }

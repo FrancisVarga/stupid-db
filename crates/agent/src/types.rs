@@ -11,6 +11,12 @@ pub enum AgentTier {
     Specialist,
 }
 
+impl Default for AgentTier {
+    fn default() -> Self {
+        Self::Specialist
+    }
+}
+
 /// Metadata about an available agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {

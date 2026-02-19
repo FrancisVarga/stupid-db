@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use tracing::info;
 
 use crate::types::{AgentInfo, AgentTier};
+use crate::yaml_schema::AgentYamlConfig;
 
-/// Agent configuration loaded from a .md file with YAML frontmatter.
+/// Agent configuration loaded from a .md or .yaml file.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
     pub name: String,
@@ -14,7 +16,18 @@ pub struct AgentConfig {
     pub system_prompt: String,
 }
 
-/// Load all agent configs from a directory of .md files.
+impl From<AgentYamlConfig> for AgentConfig {
+    fn from(yaml: AgentYamlConfig) -> Self {
+        Self {
+            name: yaml.name,
+            description: yaml.description,
+            tier: yaml.tier,
+            system_prompt: yaml.system_prompt,
+        }
+    }
+}
+
+/// Load all agent configs from a directory of .md and .yaml files.
 pub fn load_agents(agents_dir: &Path) -> Result<HashMap<String, AgentConfig>, AgentConfigError> {
     let mut agents = HashMap::new();
 
@@ -27,8 +40,10 @@ pub fn load_agents(agents_dir: &Path) -> Result<HashMap<String, AgentConfig>, Ag
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|e| e == "md") {
-            match load_agent_file(&path) {
+        let ext = path.extension().and_then(|e| e.to_str());
+
+        match ext {
+            Some("md") => match load_agent_file(&path) {
                 Ok(config) => {
                     info!(agent = %config.name, tier = ?config.tier, "loaded agent config");
                     agents.insert(config.name.clone(), config);
@@ -36,8 +51,35 @@ pub fn load_agents(agents_dir: &Path) -> Result<HashMap<String, AgentConfig>, Ag
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "skipping agent file");
                 }
-            }
+            },
+            Some("yaml" | "yml") => match load_yaml_agent_file(&path) {
+                Ok(configs) => {
+                    for config in configs {
+                        info!(agent = %config.name, tier = ?config.tier, "loaded YAML agent config");
+                        agents.insert(config.name.clone(), config);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "skipping YAML agent file");
+                }
+            },
+            _ => {}
         }
+    }
+
+    Ok(agents)
+}
+
+/// Load agent configs from a single .yaml file (supports multi-document YAML).
+fn load_yaml_agent_file(path: &Path) -> Result<Vec<AgentConfig>, AgentConfigError> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| AgentConfigError::IoError(path.to_path_buf(), e))?;
+
+    let mut agents = Vec::new();
+    for doc in serde_yaml::Deserializer::from_str(&content) {
+        let yaml_config = AgentYamlConfig::deserialize(doc)
+            .map_err(|e| AgentConfigError::YamlError(path.to_path_buf(), e))?;
+        agents.push(AgentConfig::from(yaml_config));
     }
 
     Ok(agents)
@@ -145,6 +187,8 @@ pub enum AgentConfigError {
     NoFrontmatter(PathBuf),
     #[error("missing field '{1}' in {0}")]
     MissingField(PathBuf, &'static str),
+    #[error("YAML parse error in {0}: {1}")]
+    YamlError(PathBuf, serde_yaml::Error),
 }
 
 impl PartialOrd for AgentTier {
@@ -156,5 +200,163 @@ impl PartialOrd for AgentTier {
 impl Ord for AgentTier {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (*self as u8).cmp(&(*other as u8))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_yaml_agent_from_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = r#"
+name: test-yaml-agent
+description: "Loaded from YAML"
+tier: Lead
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "You are a test agent."
+"#;
+        std::fs::write(dir.path().join("test.yaml"), yaml).unwrap();
+
+        let agents = load_agents(dir.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        let agent = agents.get("test-yaml-agent").unwrap();
+        assert_eq!(agent.name, "test-yaml-agent");
+        assert_eq!(agent.description, "Loaded from YAML");
+        assert!(matches!(agent.tier, AgentTier::Lead));
+        assert_eq!(agent.system_prompt, "You are a test agent.");
+    }
+
+    #[test]
+    fn test_load_yml_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = r#"
+name: yml-agent
+provider:
+  type: anthropic
+  model: claude-sonnet-4-5-20250929
+"#;
+        std::fs::write(dir.path().join("agent.yml"), yaml).unwrap();
+
+        let agents = load_agents(dir.path()).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert!(agents.contains_key("yml-agent"));
+    }
+
+    #[test]
+    fn test_load_mixed_md_and_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // .md agent
+        let md = "---\nname: md-agent\ndescription: From markdown\n---\nYou are md.";
+        std::fs::write(dir.path().join("md-agent.md"), md).unwrap();
+
+        // .yaml agent
+        let yaml = r#"
+name: yaml-agent
+description: "From YAML"
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "You are yaml."
+"#;
+        std::fs::write(dir.path().join("yaml-agent.yaml"), yaml).unwrap();
+
+        let agents = load_agents(dir.path()).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert!(agents.contains_key("md-agent"));
+        assert!(agents.contains_key("yaml-agent"));
+    }
+
+    #[test]
+    fn test_multi_document_yaml_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = r#"---
+name: agent-a
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "Agent A"
+---
+name: agent-b
+tier: Architect
+provider:
+  type: anthropic
+  model: claude-sonnet-4-5-20250929
+system_prompt: "Agent B"
+"#;
+        std::fs::write(dir.path().join("multi.yaml"), yaml).unwrap();
+
+        let agents = load_agents(dir.path()).unwrap();
+        assert_eq!(agents.len(), 2);
+
+        let a = agents.get("agent-a").unwrap();
+        assert!(matches!(a.tier, AgentTier::Specialist)); // default
+        assert_eq!(a.system_prompt, "Agent A");
+
+        let b = agents.get("agent-b").unwrap();
+        assert!(matches!(b.tier, AgentTier::Architect));
+        assert_eq!(b.system_prompt, "Agent B");
+    }
+
+    #[test]
+    fn test_yaml_overrides_md_same_name() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // .md agent with name "shared"
+        let md = "---\nname: shared\ndescription: From MD\n---\nMD prompt.";
+        std::fs::write(dir.path().join("shared.md"), md).unwrap();
+
+        // .yaml agent with same name — last writer wins (HashMap insert)
+        let yaml = r#"
+name: shared
+description: "From YAML"
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "YAML prompt."
+"#;
+        std::fs::write(dir.path().join("shared.yaml"), yaml).unwrap();
+
+        let agents = load_agents(dir.path()).unwrap();
+        // Both loaded, but only one survives in the HashMap
+        assert_eq!(agents.len(), 1);
+        assert!(agents.contains_key("shared"));
+    }
+
+    #[test]
+    fn test_invalid_yaml_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.yaml"), "not: valid: yaml: [").unwrap();
+
+        // Should not error — invalid files are warned and skipped
+        let agents = load_agents(dir.path()).unwrap();
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_from_yaml_config_conversion() {
+        let yaml = r#"
+name: convert-test
+description: "Testing From impl"
+tier: Architect
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "Hello from YAML."
+skills:
+  - name: skill1
+    prompt: "Do something."
+"#;
+        let yaml_config: AgentYamlConfig = serde_yaml::from_str(yaml).unwrap();
+        let config = AgentConfig::from(yaml_config);
+
+        assert_eq!(config.name, "convert-test");
+        assert_eq!(config.description, "Testing From impl");
+        assert!(matches!(config.tier, AgentTier::Architect));
+        assert_eq!(config.system_prompt, "Hello from YAML.");
     }
 }

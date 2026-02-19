@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod claude_tool_provider;
+pub mod gemini;
 pub mod ollama;
 pub mod openai;
 
@@ -36,6 +37,16 @@ pub fn create_provider(
             Ok(Box::new(claude::ClaudeProvider::new(
                 api_key.clone(),
                 llm_config.anthropic_model.clone(),
+            )))
+        }
+        "gemini" => {
+            let api_key = llm_config
+                .gemini_api_key
+                .as_ref()
+                .ok_or_else(|| LlmError::NotConfigured("GEMINI_API_KEY not set".into()))?;
+            Ok(Box::new(gemini::GeminiProvider::new(
+                api_key.clone(),
+                llm_config.gemini_model.clone(),
             )))
         }
         "ollama" => Ok(Box::new(ollama::OllamaProvider::new(

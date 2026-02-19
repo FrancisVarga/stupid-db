@@ -8,6 +8,7 @@ stupid-core = { path = "../core" }
 stupid-llm = { path = "../llm" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -23,3 +24,6 @@ clap = { workspace = true }
 [[bin]]
 name = "agent-worker"
 path = "src/bin/agent-worker.rs"
+
+[dev-dependencies]
+tempfile = "3.25.0"
