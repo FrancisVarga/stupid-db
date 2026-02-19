@@ -16,8 +16,8 @@ use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use stupid_eisenbahn::{
-    EisenbahnConfig, EisenbahnError, EventSubscriber, Message, RequestSender, Worker,
-    WorkerBuilder, WorkerRunner, ZmqPublisher, ZmqRequestClient, ZmqSubscriber,
+    EisenbahnConfig, EisenbahnError, EventPublisher, EventSubscriber, Message, RequestSender,
+    Worker, WorkerBuilder, WorkerRunner, ZmqPublisher, ZmqRequestClient, ZmqSubscriber,
 };
 use stupid_eisenbahn::services::{
     AgentServiceRequest, AgentServiceResponse, AthenaServiceRequest,
@@ -193,6 +193,19 @@ impl EisenbahnClient {
             // Best-effort broadcast — if no WebSocket clients are listening, that's fine
             let _ = self.ws_broadcast.send(text);
         }
+    }
+
+    /// Publish an event message to a topic (best-effort, non-panicking).
+    ///
+    /// Returns `Ok(())` on success, `Err` if serialization or publishing fails.
+    /// Callers should treat failures as non-fatal (logging a warning).
+    pub async fn publish_event<T: serde::Serialize>(
+        &self,
+        topic: &str,
+        event: &T,
+    ) -> Result<(), EisenbahnError> {
+        let msg = Message::new(topic, event)?;
+        self.publisher.publish(msg).await
     }
 
     /// Trigger graceful shutdown of the eisenbahn client.

@@ -297,6 +297,10 @@ mod tests {
             source: "test.parquet".into(),
             record_count: 1000,
             duration_ms: 42,
+            job_id: None,
+            total_segments: 0,
+            error: None,
+            source_type: None,
         };
         let msg = Message::new(topics::INGEST_COMPLETE, &event).unwrap();
         let correlation_id = msg.correlation_id;

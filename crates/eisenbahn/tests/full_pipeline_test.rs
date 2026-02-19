@@ -134,6 +134,10 @@ async fn full_ingest_compute_graph_roundtrip() {
                     source: "raw_batch".into(),
                     record_count: batch.records.len() as u64,
                     duration_ms: 15,
+                    job_id: None,
+                    total_segments: 0,
+                    error: None,
+                    source_type: None,
                 },
             )
             .unwrap(),

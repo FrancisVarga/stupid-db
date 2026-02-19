@@ -47,6 +47,10 @@ async fn broker_proxies_single_message() {
         source: "test.parquet".into(),
         record_count: 500,
         duration_ms: 10,
+        job_id: None,
+        total_segments: 0,
+        error: None,
+        source_type: None,
     };
     let msg = Message::new(topics::INGEST_COMPLETE, &event).unwrap();
     let cid = msg.correlation_id;
@@ -93,6 +97,10 @@ async fn broker_proxies_multiple_topics() {
         source: "a.parquet".into(),
         record_count: 100,
         duration_ms: 5,
+        job_id: None,
+        total_segments: 0,
+        error: None,
+        source_type: None,
     };
     publisher
         .publish(Message::new(topics::INGEST_COMPLETE, &ingest_event).unwrap())

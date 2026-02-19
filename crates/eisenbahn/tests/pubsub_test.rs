@@ -44,6 +44,10 @@ async fn multiple_publishers_single_subscriber() {
         source: "pub1.parquet".into(),
         record_count: 200,
         duration_ms: 20,
+        job_id: None,
+        total_segments: 0,
+        error: None,
+        source_type: None,
     };
     pub1.publish(Message::new(topics::INGEST_COMPLETE, &ingest).unwrap())
         .await
@@ -152,6 +156,10 @@ async fn all_event_types_through_broker() {
                     source: "s".into(),
                     record_count: 1,
                     duration_ms: 1,
+                    job_id: None,
+                    total_segments: 0,
+                    error: None,
+                    source_type: None,
                 },
             )
             .unwrap(),
