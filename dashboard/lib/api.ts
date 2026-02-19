@@ -652,6 +652,76 @@ export async function deleteEmbeddingDocument(id: string): Promise<void> {
   );
 }
 
+// ── Bundeswehr: Skill Management ────────────────────────────
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  tags: string[];
+  version: string;
+}
+
+export interface SkillDetail extends SkillInfo {
+  prompt: string;
+  used_by: string[];
+}
+
+export interface SkillInput {
+  name: string;
+  description?: string;
+  prompt: string;
+  tags?: string[];
+  version?: string;
+}
+
+export async function fetchSkills(search?: string): Promise<SkillInfo[]> {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  const qs = params.toString();
+  const res = await checkedFetch(
+    `${API_BASE}/api/bundeswehr/skills${qs ? `?${qs}` : ""}`,
+    { cache: "no-store" },
+  );
+  const data = await res.json();
+  return data.skills;
+}
+
+export async function fetchSkill(name: string): Promise<SkillDetail> {
+  const res = await checkedFetch(
+    `${API_BASE}/api/bundeswehr/skills/${encodeURIComponent(name)}`,
+    { cache: "no-store" },
+  );
+  return res.json();
+}
+
+export async function createSkill(input: SkillInput): Promise<SkillDetail> {
+  const res = await checkedFetch(`${API_BASE}/api/bundeswehr/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return res.json();
+}
+
+export async function updateSkill(name: string, input: SkillInput): Promise<SkillDetail> {
+  const res = await checkedFetch(
+    `${API_BASE}/api/bundeswehr/skills/${encodeURIComponent(name)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  return res.json();
+}
+
+export async function deleteSkill(name: string): Promise<void> {
+  await checkedFetch(
+    `${API_BASE}/api/bundeswehr/skills/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+}
+
 // ── Bundeswehr: Agent Management ────────────────────────────
 
 // Types
@@ -667,6 +737,7 @@ export interface AgentDetail {
   };
   system_prompt: string;
   skills: { name: string; prompt: string }[];
+  skill_refs?: string[];
 }
 
 export interface AgentSummary {
@@ -707,6 +778,23 @@ export interface AgentGroup {
   agent_names: string[];
   created_at: string;
   updated_at: string;
+}
+
+// Bundeswehr fleet overview
+export interface BundeswehrOverview {
+  total_agents: number;
+  agents_by_tier: { architect: number; lead: number; specialist: number };
+  total_executions: number;
+  avg_error_rate: number;
+  top_agents: { name: string; executions: number }[];
+  worst_agents: { name: string; error_rate: number }[];
+}
+
+export async function fetchBundeswehrOverview(): Promise<BundeswehrOverview> {
+  const res = await checkedFetch(`${API_BASE}/api/bundeswehr/overview`, {
+    cache: "no-store",
+  });
+  return res.json();
 }
 
 // Agent CRUD
