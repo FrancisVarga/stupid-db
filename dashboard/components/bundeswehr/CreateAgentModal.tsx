@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { createAgent } from "@/lib/api";
+import { createAgent, fetchSkills, type SkillInfo } from "@/lib/api";
 
 interface CreateAgentModalProps {
   isOpen: boolean;
@@ -30,6 +30,8 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
   const [systemPrompt, setSystemPrompt] = useState("");
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(4096);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,7 +45,7 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
     return () => window.removeEventListener("keydown", handleKey);
   }, [isOpen, onClose]);
 
-  // Reset form when opened
+  // Reset form and load skills when opened
   useEffect(() => {
     if (isOpen) {
       setName("");
@@ -54,7 +56,9 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
       setSystemPrompt("");
       setTemperature(0.7);
       setMaxTokens(4096);
+      setSelectedSkills([]);
       setError(null);
+      fetchSkills().then(setAvailableSkills).catch(() => setAvailableSkills([]));
     }
   }, [isOpen]);
 
@@ -63,6 +67,16 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
     : null;
 
   const canSubmit = name.length > 0 && !nameError && !submitting;
+
+  const addSkill = (skillName: string) => {
+    if (!selectedSkills.includes(skillName)) {
+      setSelectedSkills((prev) => [...prev, skillName]);
+    }
+  };
+
+  const removeSkill = (skillName: string) => {
+    setSelectedSkills((prev) => prev.filter((s) => s !== skillName));
+  };
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -80,6 +94,7 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
         system_prompt: systemPrompt,
         tags: [],
         skills: [],
+        skill_refs: selectedSkills,
       });
       onCreated();
       onClose();
@@ -88,9 +103,13 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
     } finally {
       setSubmitting(false);
     }
-  }, [canSubmit, name, description, tier, provider, model, systemPrompt, onCreated, onClose]);
+  }, [canSubmit, name, description, tier, provider, model, systemPrompt, selectedSkills, onCreated, onClose]);
 
   if (!isOpen) return null;
+
+  const unselectedSkills = availableSkills.filter(
+    (s) => !selectedSkills.includes(s.name)
+  );
 
   return (
     <div
@@ -252,6 +271,62 @@ export default function CreateAgentModal({ isOpen, onClose, onCreated }: CreateA
               }}
               placeholder="You are a helpful agent..."
             />
+          </Field>
+
+          {/* Skills */}
+          <Field label="Skills">
+            {/* Selected skills as tags */}
+            {selectedSkills.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {selectedSkills.map((skillName) => (
+                  <span
+                    key={skillName}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-mono"
+                    style={{
+                      background: "rgba(168, 85, 247, 0.1)",
+                      border: "1px solid rgba(168, 85, 247, 0.2)",
+                      color: "#a855f7",
+                    }}
+                  >
+                    {skillName}
+                    <button
+                      onClick={() => removeSkill(skillName)}
+                      className="text-slate-500 hover:text-red-400 transition-colors ml-0.5 text-sm leading-none"
+                    >
+                      &times;
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Skill selector */}
+            {unselectedSkills.length > 0 ? (
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) addSkill(e.target.value);
+                }}
+                className="w-full rounded-lg px-3 py-2 text-sm text-slate-200 outline-none cursor-pointer"
+                style={{
+                  background: "#0f1724",
+                  border: "1px solid rgba(168, 85, 247, 0.15)",
+                }}
+              >
+                <option value="">Add a skill...</option>
+                {unselectedSkills.map((s) => (
+                  <option key={s.name} value={s.name}>
+                    {s.name}{s.description ? ` — ${s.description}` : ""}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-[10px] text-slate-600 font-mono">
+                {availableSkills.length === 0
+                  ? "No skills available. Create skills in the Skills tab first."
+                  : "All available skills selected."}
+              </div>
+            )}
           </Field>
 
           {/* Temperature & Max Tokens */}
