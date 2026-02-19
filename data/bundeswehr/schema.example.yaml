@@ -1,0 +1,189 @@
+# ──────────────────────────────────────────────────────────────────────
+# Agent YAML Configuration Schema — Examples for all 4 providers
+# ──────────────────────────────────────────────────────────────────────
+#
+# Each agent is a single YAML file in data/agents/*.yaml
+# Fields marked (required) must be present; everything else has defaults.
+#
+# Environment variables for API keys are referenced by name (api_key_env),
+# NEVER store actual secrets in these files.
+# ──────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════
+# Example 1: Anthropic (Claude) agent
+# ═══════════════════════════════════════════════════════════════════════
+---
+name: security-analyst                    # (required) unique agent identifier
+description: "Analyzes security events and produces threat assessments"
+tier: specialist                          # architect | lead | specialist (default: specialist)
+tags:
+  - security
+  - analysis
+group: threat-detection                   # optional grouping for UI organization
+
+provider:
+  type: anthropic                         # (required) anthropic | openai | gemini | ollama
+  model: claude-sonnet-4-5-20250929       # (required) model identifier
+  api_key_env: ANTHROPIC_API_KEY          # env var name holding the API key
+  # Provider-specific settings
+  anthropic:
+    version: "2023-06-01"                 # Anthropic API version header
+
+execution:
+  temperature: 0.1                        # 0.0–2.0 (default: 0.1)
+  max_tokens: 4096                        # default: 4096
+  top_p: 0.95                             # optional nucleus sampling
+  timeout_seconds: 120                    # per-request timeout (default: 120)
+
+system_prompt: |
+  You are a security analyst specializing in threat detection and incident response.
+  Analyze events for indicators of compromise and produce structured threat assessments.
+  Always cite specific event IDs and timestamps in your analysis.
+
+skills:
+  - name: threat-scoring
+    prompt: |
+      Score the threat level of the following events on a scale of 1-10.
+      Consider frequency, source reputation, and target sensitivity.
+  - name: ioc-extraction
+    prompt: |
+      Extract all indicators of compromise (IOCs) from the provided data.
+      Return structured JSON with type, value, and confidence.
+
+# ═══════════════════════════════════════════════════════════════════════
+# Example 2: OpenAI agent
+# ═══════════════════════════════════════════════════════════════════════
+---
+name: data-engineer
+description: "Designs data pipelines and optimizes query performance"
+tier: lead
+tags:
+  - data
+  - pipelines
+  - optimization
+
+provider:
+  type: openai
+  model: gpt-4o
+  api_key_env: OPENAI_API_KEY
+  base_url: "https://api.openai.com"      # optional, for Azure/custom endpoints
+  openai:
+    organization: "org-example123"         # optional OpenAI org ID
+    response_format: text                  # json_object | text (default: text)
+
+execution:
+  temperature: 0.2
+  max_tokens: 8192
+  timeout_seconds: 180
+
+system_prompt: |
+  You are a data engineering specialist. Design efficient data pipelines,
+  optimize query performance, and ensure data quality across the platform.
+
+skills:
+  - name: query-optimizer
+    prompt: "Analyze and optimize the following SQL/query for performance."
+
+# ═══════════════════════════════════════════════════════════════════════
+# Example 3: Google Gemini agent
+# ═══════════════════════════════════════════════════════════════════════
+---
+name: research-assistant
+description: "Performs deep research and synthesizes findings"
+tier: specialist
+tags:
+  - research
+  - synthesis
+
+provider:
+  type: gemini
+  model: gemini-2.0-flash
+  api_key_env: GEMINI_API_KEY
+  gemini:
+    safety_settings:
+      harassment: block_only_high
+      hate_speech: block_only_high
+      sexually_explicit: block_only_high
+      dangerous_content: block_only_high
+    generation_config:
+      candidate_count: 1
+      stop_sequences: ["---END---"]
+
+execution:
+  temperature: 0.3
+  max_tokens: 4096
+  top_p: 0.9
+  timeout_seconds: 120
+
+system_prompt: |
+  You are a research assistant. Synthesize information from multiple sources,
+  identify key patterns, and produce well-structured research summaries.
+
+skills: []
+
+# ═══════════════════════════════════════════════════════════════════════
+# Example 4: Ollama (local) agent — no API key required
+# ═══════════════════════════════════════════════════════════════════════
+---
+name: code-reviewer
+description: "Reviews code changes for quality, correctness, and style"
+tier: specialist
+tags:
+  - code-review
+  - quality
+
+provider:
+  type: ollama
+  model: llama3.1:70b
+  base_url: "http://localhost:11434"       # Ollama server URL (default)
+  ollama:
+    num_ctx: 8192                          # context window size
+    num_gpu: 1                             # number of GPUs to use
+
+execution:
+  temperature: 0.1
+  max_tokens: 4096
+  timeout_seconds: 300                     # local models may be slower
+
+system_prompt: |
+  You are a code reviewer. Analyze code changes for bugs, security issues,
+  performance problems, and style violations. Be specific and actionable.
+
+skills:
+  - name: security-review
+    prompt: "Focus specifically on security vulnerabilities in this code."
+
+# ═══════════════════════════════════════════════════════════════════════
+# Example 5: Architect-tier agent (demonstrates tier hierarchy)
+# ═══════════════════════════════════════════════════════════════════════
+---
+name: architect
+description: "System architect for cross-cutting design decisions"
+tier: architect
+tags:
+  - architecture
+  - design
+group: leadership
+
+provider:
+  type: anthropic
+  model: claude-opus-4-20250514
+  api_key_env: ANTHROPIC_API_KEY
+  anthropic:
+    version: "2023-06-01"
+
+execution:
+  temperature: 0.3
+  max_tokens: 8192
+  timeout_seconds: 300
+
+system_prompt: |
+  You are the system architect. Make cross-cutting design decisions,
+  coordinate between domain leads, and ensure architectural consistency.
+  Consider scalability, maintainability, and security in all decisions.
+
+skills:
+  - name: adr-writer
+    prompt: |
+      Write an Architecture Decision Record (ADR) for the proposed change.
+      Include context, decision, consequences, and alternatives considered.
