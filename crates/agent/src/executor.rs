@@ -227,17 +227,35 @@ impl AgentExecutor {
         })
     }
 
-    /// Execute directly against the LLM with session history, no agent config needed.
-    pub async fn execute_direct(
+    /// Execute as the default assistant with session history.
+    ///
+    /// First tries `execute_with_history("assistant", ...)` to use a named
+    /// agent from the AgentStore. If the "assistant" agent is not found,
+    /// falls back to an inline hardcoded prompt for unconfigured deployments.
+    pub async fn execute_as_assistant(
         &self,
         task: &str,
         history: &[crate::session::SessionMessage],
         context: Option<&serde_json::Value>,
         max_history: usize,
     ) -> Result<AgentResponse, AgentExecutionError> {
-        let start = Instant::now();
+        // Try named "assistant" agent first
+        match self
+            .execute_with_history("assistant", task, history, context, max_history)
+            .await
+        {
+            Ok(resp) => {
+                info!("execute_as_assistant: used named 'assistant' agent");
+                return Ok(resp);
+            }
+            Err(AgentExecutionError::AgentNotFound(_)) => {
+                info!("execute_as_assistant: 'assistant' agent not found, using inline fallback");
+            }
+            Err(e) => return Err(e),
+        }
 
-        info!(history_len = history.len(), max_history, "executing direct (no agent)");
+        // Inline fallback for deployments without a configured "assistant" agent
+        let start = Instant::now();
 
         let mut system_content =
             "You are a helpful AI assistant. Answer questions clearly and concisely.".to_string();
@@ -302,7 +320,7 @@ impl AgentExecutor {
             .map_err(AgentExecutionError::LlmError)?;
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        info!(elapsed_ms, "direct execution complete");
+        info!(elapsed_ms, "execute_as_assistant: inline fallback complete");
 
         Ok(AgentResponse {
             agent_name: "assistant".to_string(),

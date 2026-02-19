@@ -439,7 +439,7 @@ pub async fn sessions_execute(
             )
         })?;
         executor
-            .execute_direct(&req.task, &history, context, req.max_history)
+            .execute_as_assistant(&req.task, &history, context, req.max_history)
             .await
             .map_err(|e| {
                 (
