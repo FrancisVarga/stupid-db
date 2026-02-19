@@ -30,7 +30,16 @@ export async function spProxy(
     init.body = await req.text();
   }
 
-  const res = await fetch(`${API_BASE}${backendPath}${query}`, init);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${backendPath}${query}`, init);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return new Response(
+      JSON.stringify({ error: `Backend unreachable: ${msg}` }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   // Stream the response body through without buffering
   return new Response(res.body, {
