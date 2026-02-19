@@ -1,0 +1,11 @@
+name: summarize
+description: "Summarize text into concise bullet points"
+prompt: |
+  Summarize the following text into concise bullet points.
+  Focus on key facts, decisions, and action items.
+  Keep each bullet to one sentence.
+tags:
+  - nlp
+  - text
+  - reporting
+version: "1.0.0"

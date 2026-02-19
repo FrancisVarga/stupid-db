@@ -126,6 +126,12 @@ pub async fn build_app_state(config: &stupid_core::Config, eisenbahn: bool) -> a
     // Initialize PostgreSQL connection pool and run migrations.
     let pg_pool = db::init_pg_pool(&config.postgres).await;
 
+    // Seed SpAgent prompts from version-controlled YAML into PostgreSQL.
+    if let Some(ref pool) = pg_pool {
+        seed_sp_agents(pool, &config.storage.data_dir).await;
+        seed_prompts(pool, &config.storage.data_dir).await;
+    }
+
     // Optionally connect the eisenbahn messaging client (ZMQ broker integration).
     let eb_client = if eisenbahn {
         info!("--eisenbahn flag active — connecting to broker");
@@ -263,19 +269,124 @@ pub fn spawn_background_tasks(
     Ok(())
 }
 
-/// Seed internal agents required by dashboard features.
+/// Seed SpAgent prompts from version-controlled YAML files into PostgreSQL.
 ///
-/// Reads YAML configs from `data/bundeswehr/agents/` and creates them in the
-/// main AgentStore if they don't already exist. This ensures agents like
-/// `playground-assistant` are always available on fresh deployments.
-async fn seed_internal_agents(store: &stupid_agent::AgentStore, data_dir: &std::path::Path) {
-    let seed_dir = data_dir.join("bundeswehr").join("agents");
+/// Reads `data/stille-post/*.yml` files with `kind: SpAgent`, parses them
+/// using the existing `SpYamlEnvelope` schema, and upserts into the
+/// `sp_agents` table. YAML is source of truth — existing rows are overwritten.
+async fn seed_sp_agents(pool: &sqlx::PgPool, data_dir: &std::path::Path) {
+    use crate::api::stille_post::yaml_types::{SpAgentSpec, SpYamlEnvelope, SpYamlKind};
+
+    let seed_dir = data_dir.join("stille-post");
     let entries = match std::fs::read_dir(&seed_dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            tracing::warn!("stille-post seed dir not readable: {} — skipping SpAgent seed", e);
+            return;
+        }
     };
+
+    let mut seeded = 0u32;
     for entry in entries.flatten() {
         let path = entry.path();
+        if !matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml")) {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("failed to read stille-post YAML {}: {}", path.display(), e);
+                continue;
+            }
+        };
+
+        // Support multi-document YAML files (split on `---` separators).
+        for doc_str in content.split("\n---") {
+            let trimmed = doc_str.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let envelope: SpYamlEnvelope = match serde_yaml::from_str(trimmed) {
+                Ok(env) => env,
+                Err(_) => continue, // skip non-envelope fragments (comments, non-agent docs)
+            };
+            if envelope.kind != SpYamlKind::SpAgent {
+                continue;
+            }
+            let spec: SpAgentSpec = match serde_yaml::from_value(envelope.spec) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("failed to parse SpAgent spec in {}: {}", path.display(), e);
+                    continue;
+                }
+            };
+
+            let name = &envelope.metadata.name;
+            let model = spec.model.as_deref().unwrap_or("claude-sonnet-4-6");
+            let skills = serde_json::to_value(&spec.skills_config).unwrap_or_default();
+            let mcp = serde_json::to_value(&spec.mcp_servers_config).unwrap_or_default();
+            let tools = serde_json::to_value(&spec.tools_config).unwrap_or_default();
+
+            let result = sqlx::query(
+                "INSERT INTO sp_agents (name, description, system_prompt, model,
+                     skills_config, mcp_servers_config, tools_config, template_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT (name) DO UPDATE SET
+                     description = EXCLUDED.description,
+                     system_prompt = EXCLUDED.system_prompt,
+                     model = EXCLUDED.model,
+                     skills_config = EXCLUDED.skills_config,
+                     mcp_servers_config = EXCLUDED.mcp_servers_config,
+                     tools_config = EXCLUDED.tools_config,
+                     template_id = EXCLUDED.template_id,
+                     updated_at = now()",
+            )
+            .bind(name)
+            .bind(&envelope.metadata.description)
+            .bind(&spec.system_prompt)
+            .bind(model)
+            .bind(&skills)
+            .bind(&mcp)
+            .bind(&tools)
+            .bind(&spec.template_id)
+            .execute(pool)
+            .await;
+
+            match result {
+                Ok(_) => seeded += 1,
+                Err(e) => error!("failed to upsert SpAgent '{}': {}", name, e),
+            }
+        }
+    }
+
+    if seeded > 0 {
+        info!("Seeded {} SpAgents from {}", seeded, seed_dir.display());
+    }
+}
+
+/// Seed internal agents required by dashboard features.
+///
+/// Recursively scans `data/bundeswehr/agents/` (including subdirectories like
+/// `internal/`, `security/`, `analytics/`) and creates any missing agents in
+/// the main AgentStore. This ensures agents like `playground-assistant` are
+/// always available on fresh deployments.
+async fn seed_internal_agents(store: &stupid_agent::AgentStore, data_dir: &std::path::Path) {
+    let seed_dir = data_dir.join("bundeswehr").join("agents");
+    if !seed_dir.exists() {
+        return;
+    }
+    for entry in walkdir::WalkDir::new(&seed_dir).follow_links(true).into_iter() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("walkdir error scanning seed agents: {}", e);
+                continue;
+            }
+        };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.into_path();
         if !matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml")) {
             continue;
         }
@@ -300,5 +411,112 @@ async fn seed_internal_agents(store: &stupid_agent::AgentStore, data_dir: &std::
                 Err(e) => tracing::warn!("failed to seed agent {}: {}", name, e),
             }
         }
+    }
+}
+
+/// Seed prompt templates from version-controlled markdown files into PostgreSQL.
+///
+/// Reads `data/bundeswehr/prompts/*.md` files, extracts `<<<placeholder>>>`
+/// patterns, and upserts into the `prompts` table. YAML/markdown files are
+/// source of truth — existing rows are overwritten on each startup.
+async fn seed_prompts(pool: &sqlx::PgPool, data_dir: &std::path::Path) {
+    let seed_dir = data_dir.join("bundeswehr").join("prompts");
+    let entries = match std::fs::read_dir(&seed_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("prompts seed dir not readable: {} — skipping prompt seed", e);
+            return;
+        }
+    };
+
+    let mut seeded = 0u32;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !matches!(path.extension().and_then(|e| e.to_str()), Some("md")) {
+            continue;
+        }
+        let name = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("failed to read prompt template {}: {}", path.display(), e);
+                continue;
+            }
+        };
+
+        let placeholders = crate::api::prompts::extract_placeholders(&content);
+
+        let result = sqlx::query(
+            "INSERT INTO prompts (name, content, placeholders, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (name) DO UPDATE SET
+                 content = EXCLUDED.content,
+                 placeholders = EXCLUDED.placeholders,
+                 updated_at = NOW()",
+        )
+        .bind(&name)
+        .bind(&content)
+        .bind(&placeholders)
+        .execute(pool)
+        .await;
+
+        match result {
+            Ok(_) => seeded += 1,
+            Err(e) => error!("failed to upsert prompt '{}': {}", name, e),
+        }
+    }
+
+    if seeded > 0 {
+        info!("Seeded {} prompt templates from {}", seeded, seed_dir.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::api::stille_post::yaml_types::{SpAgentSpec, SpYamlEnvelope, SpYamlKind};
+
+    /// Verify all YAML files in data/stille-post/ with kind=SpAgent parse correctly.
+    /// Handles both single-document and multi-document YAML files.
+    #[test]
+    fn test_stille_post_agent_yamls_parse() {
+        let seed_dir = std::path::Path::new("../../data/stille-post");
+        if !seed_dir.exists() {
+            // CI may not have the data dir — skip gracefully.
+            return;
+        }
+        let mut agent_count = 0;
+        for entry in std::fs::read_dir(seed_dir).unwrap().flatten() {
+            let path = entry.path();
+            if !matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml")) {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+
+            for doc_str in content.split("\n---") {
+                let trimmed = doc_str.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let envelope: SpYamlEnvelope = match serde_yaml::from_str(trimmed) {
+                    Ok(e) => e,
+                    Err(_) => continue, // skip non-envelope fragments
+                };
+                if envelope.kind != SpYamlKind::SpAgent {
+                    continue;
+                }
+
+                let spec: SpAgentSpec = serde_yaml::from_value(envelope.spec)
+                    .unwrap_or_else(|e| panic!("failed to parse SpAgent spec {}: {}", path.display(), e));
+
+                assert!(!envelope.metadata.name.is_empty(), "agent name empty in {}", path.display());
+                assert!(!spec.system_prompt.is_empty(), "system_prompt empty in {}", path.display());
+                agent_count += 1;
+            }
+        }
+        assert!(agent_count >= 2, "expected at least 2 SpAgent YAMLs, found {}", agent_count);
     }
 }
