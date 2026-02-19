@@ -17,7 +17,7 @@ interface Pipeline {
 interface PipelineStep {
   id?: string;
   step_order: number;
-  agent_id: string;
+  agent_id: string | null;
   parallel_group: number | null;
   input_mapping: Record<string, unknown> | null;
 }
@@ -115,7 +115,8 @@ function formatDate(iso: string): string {
   });
 }
 
-function agentName(agents: Agent[], id: string): string {
+function agentName(agents: Agent[], id: string | null): string {
+  if (!id) return "(unassigned)";
   const a = agents.find((a) => a.id === id);
   return a ? a.name : id.slice(0, 8) + "...";
 }
@@ -923,9 +924,11 @@ export default function PipelineBuilder({ refreshKey }: PipelineBuilderProps) {
 
                       {/* Agent select */}
                       <select
-                        value={step.agent_id}
+                        value={step.agent_id ?? ""}
                         onChange={(e) =>
-                          updateStep(idx, { agent_id: e.target.value })
+                          updateStep(idx, {
+                            agent_id: e.target.value || null,
+                          })
                         }
                         style={{
                           ...inputStyle,
@@ -937,6 +940,7 @@ export default function PipelineBuilder({ refreshKey }: PipelineBuilderProps) {
                             "auto" as React.CSSProperties["appearance"],
                         }}
                       >
+                        <option value="">(unassigned)</option>
                         {agents.map((a) => (
                           <option key={a.id} value={a.id}>
                             {a.name}
