@@ -153,6 +153,26 @@ impl SessionStore {
         Ok(session)
     }
 
+    /// Get an existing session by ID, or create a new one with that ID if it doesn't exist.
+    pub fn get_or_create(&self, id: &str) -> Result<Session> {
+        if let Some(session) = self.get(id)? {
+            return Ok(session);
+        }
+        let now = Utc::now();
+        let session = Session {
+            id: id.to_string(),
+            name: format!("Session {}", now.format("%Y-%m-%d %H:%M")),
+            created_at: now,
+            updated_at: now,
+            messages: Vec::new(),
+            last_agent: None,
+            last_mode: None,
+        };
+        self.save(&session)?;
+        info!(id = %session.id, "session auto-created");
+        Ok(session)
+    }
+
     /// Rename a session.
     pub fn rename(&self, id: &str, name: &str) -> Result<Option<Session>> {
         let Some(mut session) = self.get(id)? else {
