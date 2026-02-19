@@ -1,8 +1,10 @@
 //! Mutable agent store with CRUD operations and file write-back.
 //!
-//! Stores agents as `AgentYamlConfig` in memory with `Arc<RwLock<_>>` for
-//! concurrent access. Mutations are persisted to individual `.yaml` files
-//! in the agents directory.
+//! Stores agents as `AgentEntry` (config + source file path) in memory with
+//! `Arc<RwLock<_>>` for concurrent access. Mutations are persisted to individual
+//! `.yaml` files. The directory is scanned recursively via `walkdir`, so agents
+//! in subdirectories are discovered automatically. Each agent tracks its
+//! original file path so write-back targets the correct location.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,19 +14,28 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 use tracing::info;
+use walkdir::WalkDir;
 
 use crate::config::AgentConfig;
 use crate::types::AgentTier;
 use crate::yaml_schema::AgentYamlConfig;
 
+/// An agent config paired with its source file path for correct write-back.
+#[derive(Debug, Clone)]
+struct AgentEntry {
+    config: AgentYamlConfig,
+    /// Absolute path to the file this agent was loaded from (or will be written to).
+    file_path: PathBuf,
+}
+
 /// Mutable agent store with CRUD and file write-back.
 pub struct AgentStore {
     dir: PathBuf,
-    agents: Arc<RwLock<HashMap<String, AgentYamlConfig>>>,
+    agents: Arc<RwLock<HashMap<String, AgentEntry>>>,
 }
 
 impl AgentStore {
-    /// Load all agents from directory (.md and .yaml/.yml files).
+    /// Load all agents from directory recursively (.md and .yaml/.yml files).
     pub fn new(agents_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(agents_dir)
             .with_context(|| format!("failed to create agents dir: {}", agents_dir.display()))?;
@@ -43,13 +54,13 @@ impl AgentStore {
     /// List all agents.
     pub async fn list(&self) -> Vec<AgentYamlConfig> {
         let map = self.agents.read().await;
-        map.values().cloned().collect()
+        map.values().map(|e| e.config.clone()).collect()
     }
 
     /// Get a single agent by name.
     pub async fn get(&self, name: &str) -> Option<AgentYamlConfig> {
         let map = self.agents.read().await;
-        let result = map.get(name).cloned();
+        let result = map.get(name).map(|e| e.config.clone());
         if result.is_none() {
             let available: Vec<_> = map.keys().collect();
             tracing::debug!(requested = name, ?available, "agent store lookup miss");
@@ -57,15 +68,22 @@ impl AgentStore {
         result
     }
 
-    /// Create a new agent (writes .yaml file to disk).
+    /// Create a new agent (writes .yaml file to root agents dir).
     pub async fn create(&self, config: AgentYamlConfig) -> Result<AgentYamlConfig> {
         let mut map = self.agents.write().await;
         if map.contains_key(&config.name) {
             bail!("agent already exists: {}", config.name);
         }
-        self.write_yaml(&config)?;
-        info!(agent = %config.name, "agent created");
-        map.insert(config.name.clone(), config.clone());
+        let file_path = self.default_file_path(&config.name);
+        write_yaml_to(&file_path, &config)?;
+        info!(agent = %config.name, path = %file_path.display(), "agent created");
+        map.insert(
+            config.name.clone(),
+            AgentEntry {
+                config: config.clone(),
+                file_path,
+            },
+        );
         Ok(config)
     }
 
@@ -76,9 +94,10 @@ impl AgentStore {
         config: AgentYamlConfig,
     ) -> Result<Option<AgentYamlConfig>> {
         let mut map = self.agents.write().await;
-        if !map.contains_key(name) {
-            return Ok(None);
-        }
+        let existing = match map.get(name) {
+            Some(e) => e.clone(),
+            None => return Ok(None),
+        };
 
         // If the name changed, remove old file and old map entry
         if config.name != name {
@@ -89,37 +108,68 @@ impl AgentStore {
                     config.name
                 );
             }
-            let old_path = self.agent_file_path(name);
-            if old_path.exists() {
-                std::fs::remove_file(&old_path)
-                    .with_context(|| format!("failed to remove old agent file: {}", old_path.display()))?;
+            if existing.file_path.exists() {
+                std::fs::remove_file(&existing.file_path).with_context(|| {
+                    format!(
+                        "failed to remove old agent file: {}",
+                        existing.file_path.display()
+                    )
+                })?;
             }
             map.remove(name);
+
+            // Renamed agents get a new file in the same directory as the original
+            let new_path = existing
+                .file_path
+                .parent()
+                .unwrap_or(&self.dir)
+                .join(format!("{}.yaml", config.name));
+            write_yaml_to(&new_path, &config)?;
+            info!(agent = %config.name, path = %new_path.display(), "agent updated (renamed)");
+            map.insert(
+                config.name.clone(),
+                AgentEntry {
+                    config: config.clone(),
+                    file_path: new_path,
+                },
+            );
+        } else {
+            // Write back to the tracked path
+            write_yaml_to(&existing.file_path, &config)?;
+            info!(agent = %config.name, path = %existing.file_path.display(), "agent updated");
+            map.insert(
+                config.name.clone(),
+                AgentEntry {
+                    config: config.clone(),
+                    file_path: existing.file_path,
+                },
+            );
         }
 
-        self.write_yaml(&config)?;
-        info!(agent = %config.name, "agent updated");
-        map.insert(config.name.clone(), config.clone());
         Ok(Some(config))
     }
 
     /// Delete an agent (removes file from disk). Returns `true` if it existed.
     pub async fn delete(&self, name: &str) -> Result<bool> {
         let mut map = self.agents.write().await;
-        if map.remove(name).is_none() {
-            return Ok(false);
-        }
+        let entry = match map.remove(name) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
 
-        let path = self.agent_file_path(name);
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("failed to delete agent file: {}", path.display()))?;
+        if entry.file_path.exists() {
+            std::fs::remove_file(&entry.file_path).with_context(|| {
+                format!(
+                    "failed to delete agent file: {}",
+                    entry.file_path.display()
+                )
+            })?;
         }
-        info!(agent = %name, "agent deleted");
+        info!(agent = %name, path = %entry.file_path.display(), "agent deleted");
         Ok(true)
     }
 
-    /// Hot-reload: re-scan directory and refresh in-memory state.
+    /// Hot-reload: re-scan directory recursively and refresh in-memory state.
     /// Returns the number of agents loaded.
     pub async fn reload(&self) -> Result<usize> {
         let fresh = load_all(&self.dir)?;
@@ -139,46 +189,62 @@ impl AgentStore {
     pub async fn to_agent_configs(&self) -> HashMap<String, AgentConfig> {
         let map = self.agents.read().await;
         map.iter()
-            .map(|(k, v)| (k.clone(), AgentConfig::from(v.clone())))
+            .map(|(k, e)| (k.clone(), AgentConfig::from(e.config.clone())))
             .collect()
     }
 
-    fn agent_file_path(&self, name: &str) -> PathBuf {
+    /// Default file path for newly created agents (root agents dir).
+    fn default_file_path(&self, name: &str) -> PathBuf {
         self.dir.join(format!("{}.yaml", name))
     }
+}
 
-    fn write_yaml(&self, config: &AgentYamlConfig) -> Result<()> {
-        let path = self.agent_file_path(&config.name);
-        let yaml = serde_yaml::to_string(config)
-            .with_context(|| format!("failed to serialize agent: {}", config.name))?;
-        std::fs::write(&path, yaml)
-            .with_context(|| format!("failed to write agent file: {}", path.display()))?;
-        Ok(())
-    }
+/// Serialize an `AgentYamlConfig` to a YAML file at `path`.
+fn write_yaml_to(path: &Path, config: &AgentYamlConfig) -> Result<()> {
+    let yaml = serde_yaml::to_string(config)
+        .with_context(|| format!("failed to serialize agent: {}", config.name))?;
+    std::fs::write(path, yaml)
+        .with_context(|| format!("failed to write agent file: {}", path.display()))?;
+    Ok(())
 }
 
 // ── Directory loading ─────────────────────────────────────────────
 
-/// Scan a directory and load all .md and .yaml/.yml agents into a HashMap.
-fn load_all(dir: &Path) -> Result<HashMap<String, AgentYamlConfig>> {
+/// Recursively scan a directory and load all .md and .yaml/.yml agents.
+fn load_all(dir: &Path) -> Result<HashMap<String, AgentEntry>> {
     let mut agents = HashMap::new();
 
     if !dir.exists() {
         return Ok(agents);
     }
 
-    let entries =
-        std::fs::read_dir(dir).with_context(|| format!("failed to read agents dir: {}", dir.display()))?;
+    for entry in WalkDir::new(dir).follow_links(true).into_iter() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "walkdir error, skipping entry");
+                continue;
+            }
+        };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.into_path();
         let ext = path.extension().and_then(|e| e.to_str());
 
         match ext {
             Some("yaml" | "yml") => match load_yaml_file(&path) {
                 Ok(configs) => {
                     for c in configs {
-                        agents.insert(c.name.clone(), c);
+                        agents.insert(
+                            c.name.clone(),
+                            AgentEntry {
+                                config: c,
+                                file_path: path.clone(),
+                            },
+                        );
                     }
                 }
                 Err(e) => {
@@ -187,7 +253,14 @@ fn load_all(dir: &Path) -> Result<HashMap<String, AgentYamlConfig>> {
             },
             Some("md") => match load_md_as_yaml(&path) {
                 Ok(config) => {
-                    agents.insert(config.name.clone(), config);
+                    let name = config.name.clone();
+                    agents.insert(
+                        name,
+                        AgentEntry {
+                            config,
+                            file_path: path,
+                        },
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "skipping .md agent file");
@@ -487,5 +560,204 @@ system_prompt: "I was added externally."
         // Old name gone, new name present
         assert!(store.get("old-name").await.is_none());
         assert!(store.get("new-name").await.is_some());
+    }
+
+    // ── Recursive scan + write-back path tracking tests ───────────
+
+    #[tokio::test]
+    async fn test_loads_agents_from_subdirectories() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("team-alpha");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        // Agent in root
+        let root_yaml = r#"
+name: root-agent
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "I live at root."
+"#;
+        std::fs::write(tmp.path().join("root-agent.yaml"), root_yaml).unwrap();
+
+        // Agent in subdirectory
+        let sub_yaml = r#"
+name: sub-agent
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "I live in a subdirectory."
+"#;
+        std::fs::write(subdir.join("sub-agent.yaml"), sub_yaml).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+        let list = store.list().await;
+        assert_eq!(list.len(), 2);
+
+        let root = store.get("root-agent").await.unwrap();
+        assert_eq!(root.system_prompt, "I live at root.");
+
+        let sub = store.get("sub-agent").await.unwrap();
+        assert_eq!(sub.system_prompt, "I live in a subdirectory.");
+    }
+
+    #[tokio::test]
+    async fn test_loads_agents_from_nested_subdirectories() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("level1").join("level2");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let yaml = r#"
+name: deeply-nested
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "I am deeply nested."
+"#;
+        std::fs::write(nested.join("deeply-nested.yaml"), yaml).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+        let agent = store.get("deeply-nested").await.unwrap();
+        assert_eq!(agent.system_prompt, "I am deeply nested.");
+    }
+
+    #[tokio::test]
+    async fn test_write_back_targets_original_subdirectory_path() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("custom-team");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let yaml = r#"
+name: tracked-agent
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "Original prompt."
+"#;
+        std::fs::write(subdir.join("tracked-agent.yaml"), yaml).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+
+        // Update the agent — should write back to subdir, not root
+        let mut updated = store.get("tracked-agent").await.unwrap();
+        updated.system_prompt = "Updated prompt.".to_string();
+        store.update("tracked-agent", updated).await.unwrap();
+
+        // Verify the file in subdir was updated
+        let content = std::fs::read_to_string(subdir.join("tracked-agent.yaml")).unwrap();
+        assert!(content.contains("Updated prompt."));
+
+        // Verify NO file was created in root
+        assert!(!tmp.path().join("tracked-agent.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn test_delete_removes_file_from_subdirectory() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("deletable-team");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let yaml = r#"
+name: to-delete
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "Delete me."
+"#;
+        let file_path = subdir.join("to-delete.yaml");
+        std::fs::write(&file_path, yaml).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+        assert!(store.get("to-delete").await.is_some());
+
+        store.delete("to-delete").await.unwrap();
+        assert!(store.get("to-delete").await.is_none());
+        assert!(!file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_new_agent_created_in_root_dir() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("existing-team");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+
+        // Create via API should go to root
+        store.create(make_config("api-created")).await.unwrap();
+        assert!(tmp.path().join("api-created.yaml").exists());
+        assert!(!subdir.join("api-created.yaml").exists());
+    }
+
+    #[tokio::test]
+    async fn test_rename_in_subdirectory_stays_in_subdirectory() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("rename-team");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let yaml = r#"
+name: before-rename
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "Will be renamed."
+"#;
+        std::fs::write(subdir.join("before-rename.yaml"), yaml).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+
+        let mut renamed = store.get("before-rename").await.unwrap();
+        renamed.name = "after-rename".to_string();
+        store.update("before-rename", renamed).await.unwrap();
+
+        // Old file gone
+        assert!(!subdir.join("before-rename.yaml").exists());
+        // New file in same subdirectory, not root
+        assert!(subdir.join("after-rename.yaml").exists());
+        assert!(!tmp.path().join("after-rename.yaml").exists());
+
+        // Store has correct state
+        assert!(store.get("before-rename").await.is_none());
+        assert!(store.get("after-rename").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_reload_preserves_subdirectory_agents() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("reload-team");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let yaml = r#"
+name: reload-sub
+provider:
+  type: ollama
+  model: llama3.1
+system_prompt: "Survives reload."
+"#;
+        std::fs::write(subdir.join("reload-sub.yaml"), yaml).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+        assert!(store.get("reload-sub").await.is_some());
+
+        // Reload and verify still found
+        store.reload().await.unwrap();
+        let agent = store.get("reload-sub").await.unwrap();
+        assert_eq!(agent.system_prompt, "Survives reload.");
+    }
+
+    #[tokio::test]
+    async fn test_md_in_subdirectory() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("md-team");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let md = "---\nname: nested-md\ndescription: Nested markdown agent\n---\nYou are nested-md.";
+        std::fs::write(subdir.join("nested-md.md"), md).unwrap();
+
+        let store = AgentStore::new(tmp.path()).unwrap();
+        let agent = store.get("nested-md").await.unwrap();
+        assert_eq!(agent.name, "nested-md");
+        assert_eq!(agent.description, "Nested markdown agent");
+        assert_eq!(agent.system_prompt, "You are nested-md.");
     }
 }
