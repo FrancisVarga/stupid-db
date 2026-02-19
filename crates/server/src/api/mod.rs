@@ -3,6 +3,7 @@
 //! Each sub-module owns a single responsibility area.
 //! Shared types and the loading guard live here in mod.rs.
 
+mod agent_groups;
 mod agents;
 mod athena_query;
 mod compute;
@@ -13,6 +14,7 @@ mod graph;
 mod health;
 mod query;
 pub(crate) mod stille_post;
+pub(crate) mod telemetry;
 
 use axum::Json;
 use serde::Serialize;
@@ -64,6 +66,7 @@ pub use compute::{
 pub use query::query;
 pub use agents::{
     agents_list, agents_execute, agents_chat,
+    agents_get, agents_create, agents_update, agents_delete, agents_reload,
     teams_execute, teams_strategies,
     sessions_list, sessions_create, sessions_get, sessions_update, sessions_delete,
     sessions_execute_agent, sessions_execute_team, sessions_execute,
@@ -94,4 +97,10 @@ pub use stille_post::{
     sp_agents_list, sp_agents_create, sp_agents_get, sp_agents_update, sp_agents_delete,
     sp_runs_list, sp_runs_get, sp_runs_create, sp_runs_delete,
     sp_reports_list, sp_reports_get,
+    sp_export, sp_import,
+};
+pub use telemetry::{telemetry_events, telemetry_stats, telemetry_overview};
+pub use agent_groups::{
+    agent_groups_list, agent_groups_create, agent_groups_update, agent_groups_delete,
+    agent_groups_add_agent, agent_groups_remove_agent,
 };

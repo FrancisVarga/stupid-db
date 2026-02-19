@@ -218,6 +218,27 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         .expect("Failed to initialize session store");
     info!("Session store initialized");
 
+    // Initialize agent group store for agent-to-group mappings.
+    let group_store = stupid_agent::group_store::AgentGroupStore::new(&config.storage.data_dir)
+        .expect("Failed to initialize agent group store");
+
+    // Initialize telemetry store for per-agent execution metrics.
+    let telemetry_store = stupid_agent::telemetry_store::TelemetryStore::new(&config.storage.data_dir)
+        .expect("Failed to initialize telemetry store");
+
+    // Initialize mutable agent store (YAML-backed CRUD with hot-reload).
+    let agent_store_dir = config.storage.data_dir.join("agents");
+    let agent_store = match stupid_agent::AgentStore::new(&agent_store_dir) {
+        Ok(store) => {
+            info!("Agent store initialized at {}", agent_store_dir.display());
+            Some(Arc::new(store))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to create agent store: {} — CRUD endpoints disabled", e);
+            None
+        }
+    };
+
     // Initialize catalog store for persistent catalog.
     let catalog_store = stupid_catalog::CatalogStore::new(config.storage.data_dir.join("catalog"))
         .expect("Failed to initialize catalog store");
@@ -277,12 +298,15 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         athena_connections: Arc::new(RwLock::new(athena_conn_store)),
         embedder: build_embedder(config),
         session_store: Arc::new(RwLock::new(session_store)),
+        group_store: Arc::new(RwLock::new(group_store)),
         eisenbahn: eb_client.clone(),
         rule_loader,
         trigger_history: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         audit_log: stupid_rules::audit_log::AuditLog::new(),
         athena_query_log: crate::athena_query_log::AthenaQueryLog::new(&config.storage.data_dir),
         pg_pool,
+        telemetry_store: Arc::new(RwLock::new(telemetry_store)),
+        agent_store,
     });
 
     let app = Router::new()
@@ -306,6 +330,10 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         .route("/agents/list", get(api::agents_list))
         .route("/agents/execute", post(api::agents_execute))
         .route("/agents/chat", post(api::agents_chat))
+        // Agent CRUD: /reload MUST precede /{name} to avoid "reload" being captured
+        .route("/api/agents/reload", post(api::agents_reload))
+        .route("/api/agents/{name}", get(api::agents_get).put(api::agents_update).delete(api::agents_delete))
+        .route("/api/agents", post(api::agents_create))
         .route("/teams/execute", post(api::teams_execute))
         .route("/teams/strategies", get(api::teams_strategies))
         .route("/sessions", get(api::sessions_list).post(api::sessions_create))
@@ -317,6 +345,15 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         .route("/connections", get(api::connections_list).post(api::connections_add))
         .route("/connections/{id}", get(api::connections_get).put(api::connections_update).delete(api::connections_delete))
         .route("/connections/{id}/credentials", get(api::connections_credentials))
+        // Telemetry: overview MUST precede {agent_name} to avoid capture
+        .route("/api/telemetry/overview", get(api::telemetry_overview))
+        .route("/api/telemetry/{agent_name}", get(api::telemetry_events))
+        .route("/api/telemetry/{agent_name}/stats", get(api::telemetry_stats))
+        // Agent Groups
+        .route("/api/agent-groups", get(api::agent_groups_list).post(api::agent_groups_create))
+        .route("/api/agent-groups/{name}", axum::routing::put(api::agent_groups_update).delete(api::agent_groups_delete))
+        .route("/api/agent-groups/{name}/agents", post(api::agent_groups_add_agent))
+        .route("/api/agent-groups/{group_name}/{agent_name}", axum::routing::delete(api::agent_groups_remove_agent))
         .route("/ws", get(live::ws_upgrade));
 
     let app = app
@@ -354,7 +391,10 @@ async fn serve(config: &stupid_core::Config, segment_id: Option<&str>, eisenbahn
         .route("/sp/runs", get(api::sp_runs_list).post(api::sp_runs_create))
         .route("/sp/runs/{id}", get(api::sp_runs_get).delete(api::sp_runs_delete))
         .route("/sp/reports", get(api::sp_reports_list))
-        .route("/sp/reports/{id}", get(api::sp_reports_get));
+        .route("/sp/reports/{id}", get(api::sp_reports_get))
+        // Stille Post: YAML import/export
+        .route("/sp/export", get(api::sp_export))
+        .route("/sp/import", post(api::sp_import));
 
     let app = app
         .route("/embeddings/upload", post(api::embedding::upload)

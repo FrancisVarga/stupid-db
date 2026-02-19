@@ -27,6 +27,8 @@ use utoipa::OpenApi;
         (name = "Sessions", description = "Persistent agent chat sessions"),
         (name = "Anomaly Rules", description = "Anomaly detection rule CRUD, execution, and history"),
         (name = "Rules", description = "Generic rule CRUD (anomaly, schema, feature, scoring, trend, pattern)"),
+        (name = "Agent Groups", description = "Agent group management and membership"),
+        (name = "Telemetry", description = "Per-agent execution telemetry and aggregated stats"),
     ),
     paths(
         // Health
@@ -134,6 +136,19 @@ use utoipa::OpenApi;
         crate::rules::delete_rule,
         crate::rules::toggle_rule,
         crate::rules::recent_triggers,
+        crate::rules::validate_rule,
+        crate::rules::dry_run_rule,
+        // Agent Groups
+        crate::api::agent_groups::agent_groups_list,
+        crate::api::agent_groups::agent_groups_create,
+        crate::api::agent_groups::agent_groups_update,
+        crate::api::agent_groups::agent_groups_delete,
+        crate::api::agent_groups::agent_groups_add_agent,
+        crate::api::agent_groups::agent_groups_remove_agent,
+        // Telemetry
+        crate::api::telemetry::telemetry_events,
+        crate::api::telemetry::telemetry_stats,
+        crate::api::telemetry::telemetry_overview,
     ),
     components(schemas(
         // Shared
@@ -193,6 +208,10 @@ use utoipa::OpenApi;
         crate::api::agents::SessionExecuteTeamRequest,
         crate::api::agents::SessionExecuteRequest,
         crate::api::agents::SessionStreamRequest,
+        // Agent Groups
+        crate::api::agent_groups::CreateGroupRequest,
+        crate::api::agent_groups::UpdateGroupRequest,
+        crate::api::agent_groups::AgentMemberRequest,
         // Catalog
         crate::catalog_api::SegmentListResponse,
         crate::catalog_api::RebuildResponse,
@@ -210,6 +229,13 @@ use utoipa::OpenApi;
         // Rules
         crate::rules::RecentTrigger,
         crate::rules::GenericRuleSummary,
+        crate::rules::ValidateSuccess,
+        crate::rules::ValidateError,
+        crate::rules::DryRunResult,
+        // Telemetry
+        crate::api::telemetry::TelemetryEventsResponse,
+        crate::api::telemetry::TelemetryStatsResponse,
+        crate::api::telemetry::TelemetryOverviewResponse,
     ))
 )]
 pub struct ApiDoc;

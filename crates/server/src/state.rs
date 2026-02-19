@@ -59,6 +59,8 @@ pub struct AppState {
     pub embedder: Option<Arc<dyn stupid_ingest::embedding::Embedder>>,
     /// Session store for agent chat history persistence.
     pub session_store: Arc<tokio::sync::RwLock<stupid_agent::session::SessionStore>>,
+    /// Agent group store for managing agent-to-group mappings.
+    pub group_store: Arc<tokio::sync::RwLock<stupid_agent::group_store::AgentGroupStore>>,
     /// Eisenbahn messaging client for ZMQ-based service routing.
     pub eisenbahn: Option<Arc<crate::eisenbahn_client::EisenbahnClient>>,
     /// Anomaly rule loader (filesystem-backed with hot-reload).
@@ -71,6 +73,10 @@ pub struct AppState {
     pub athena_query_log: crate::athena_query_log::AthenaQueryLog,
     /// PostgreSQL connection pool for pgvector embedding storage.
     pub pg_pool: Option<sqlx::PgPool>,
+    /// Per-agent execution telemetry store (JSONL-backed).
+    pub telemetry_store: Arc<RwLock<stupid_agent::telemetry_store::TelemetryStore>>,
+    /// Mutable agent store with CRUD and hot-reload (YAML-backed).
+    pub agent_store: Option<Arc<stupid_agent::AgentStore>>,
 }
 
 /// Lock-free atomic counters for queue consumer observability.
