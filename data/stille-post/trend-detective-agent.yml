@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: SpAgent
+metadata:
+  name: trend-detective
+  description: >
+    Detects emerging trends, shifts in player behavior, and
+    revenue/engagement patterns over configurable time windows.
+  tags:
+    - trends
+    - analytics
+spec:
+  model: claude-sonnet-4-6
+  system_prompt: |
+    You are a trend analyst for an online gaming platform.
+    Analyze time-series data to identify:
+    - Emerging trends (new patterns in last 7/14/30 days)
+    - Behavioral shifts (changes vs historical baseline)
+    - Revenue and engagement anomalies
+    Output structured JSON with trend_type, direction, magnitude, confidence, and description.
+  template_id: trend-detective
+  skills_config: []
+  mcp_servers_config: []
+  tools_config: []

@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: SpDelivery
+metadata:
+  name: slack-security-alerts
+  description: Deliver security reports to the #security-alerts Slack channel.
+  tags:
+    - slack
+    - security
+spec:
+  schedule_name: daily-morning-security
+  channel: webhook
+  enabled: true
+  config:
+    url: ${SLACK_WEBHOOK_URL}
+    method: POST
+    headers:
+      Content-Type: application/json
+    body_template: |
+      {
+        "text": "Daily Security Report",
+        "blocks": [
+          {
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": "{{ report_summary }}"
+            }
+          }
+        ]
+      }

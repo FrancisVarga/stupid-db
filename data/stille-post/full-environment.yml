@@ -1,0 +1,101 @@
+# Full Stille Post environment export
+# Import this file to recreate the complete pipeline configuration.
+# Resources are created in dependency order: agents -> data sources -> pipelines -> schedules -> deliveries
+
+---
+apiVersion: v1
+kind: SpAgent
+metadata:
+  name: security-analyst
+  description: Analyzes security events and produces threat assessments.
+  tags: [security, analysis]
+spec:
+  model: claude-sonnet-4-6
+  system_prompt: |
+    You are a security analyst specializing in online platform monitoring.
+    Analyze the provided data for security threats, anomalies, and suspicious patterns.
+  template_id: security-analyst
+  skills_config: []
+  mcp_servers_config: []
+  tools_config: []
+---
+apiVersion: v1
+kind: SpAgent
+metadata:
+  name: trend-detective
+  description: Detects emerging trends and behavioral shifts.
+  tags: [trends, analytics]
+spec:
+  model: claude-sonnet-4-6
+  system_prompt: |
+    You are a trend analyst for an online gaming platform.
+    Analyze time-series data to identify emerging trends and behavioral shifts.
+  template_id: trend-detective
+  skills_config: []
+  mcp_servers_config: []
+  tools_config: []
+---
+apiVersion: v1
+kind: SpDataSource
+metadata:
+  name: athena-login-events
+  description: Login event data from the Athena data warehouse.
+  tags: [athena, security]
+spec:
+  source_type: athena
+  config:
+    database: analytics
+    table: login_events
+    region: eu-central-1
+    workgroup: primary
+---
+apiVersion: v1
+kind: SpPipeline
+metadata:
+  name: daily-security-report
+  description: Daily security analysis pipeline with parallel first stage.
+  tags: [security, daily]
+spec:
+  steps:
+    - step_order: 1
+      agent_name: security-analyst
+      data_source_name: athena-login-events
+      parallel_group: 1
+      input_mapping: {}
+      output_mapping: {}
+    - step_order: 2
+      agent_name: trend-detective
+      data_source_name: athena-login-events
+      parallel_group: 1
+      input_mapping: {}
+      output_mapping: {}
+    - step_order: 3
+      agent_name: security-analyst
+      parallel_group: null
+      input_mapping: {}
+      output_mapping: {}
+---
+apiVersion: v1
+kind: SpSchedule
+metadata:
+  name: daily-morning-security
+  description: Run the daily security report every morning at 07:00 UTC.
+  tags: [daily, morning]
+spec:
+  pipeline_name: daily-security-report
+  cron_expression: "0 7 * * *"
+  timezone: UTC
+  enabled: true
+---
+apiVersion: v1
+kind: SpDelivery
+metadata:
+  name: slack-security-alerts
+  description: Deliver security reports to Slack.
+  tags: [slack, security]
+spec:
+  schedule_name: daily-morning-security
+  channel: webhook
+  enabled: true
+  config:
+    url: ${SLACK_WEBHOOK_URL}

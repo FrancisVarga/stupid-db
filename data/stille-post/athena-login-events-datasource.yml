@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: SpDataSource
+metadata:
+  name: athena-login-events
+  description: Login event data from the Athena data warehouse.
+  tags:
+    - athena
+    - security
+spec:
+  source_type: athena
+  config:
+    database: analytics
+    table: login_events
+    region: eu-central-1
+    workgroup: primary

@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: SpAgent
+metadata:
+  name: security-analyst
+  description: >
+    Analyzes security events, login anomalies, and suspicious patterns.
+    Produces structured threat assessments with severity scores.
+  tags:
+    - security
+    - analysis
+spec:
+  model: claude-sonnet-4-6
+  system_prompt: |
+    You are a security analyst specializing in online platform monitoring.
+    Analyze the provided data for security threats, anomalies, and suspicious patterns.
+    Always produce structured output with:
+    - threat_level: critical | high | medium | low | info
+    - findings: array of { type, description, evidence, severity }
+    - recommendations: array of actionable steps
+    - summary: one-paragraph executive summary
+  template_id: security-analyst
+  skills_config:
+    - name: anomaly-detection
+      enabled: true
+    - name: pattern-matching
+      enabled: true
+  mcp_servers_config: []
+  tools_config:
+    - name: athena-query
+      description: Query the Athena data warehouse

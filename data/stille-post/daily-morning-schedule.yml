@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: SpSchedule
+metadata:
+  name: daily-morning-security
+  description: Run the daily security report every morning at 07:00 UTC.
+  tags:
+    - daily
+    - morning
+spec:
+  pipeline_name: daily-security-report
+  cron_expression: "0 7 * * *"
+  timezone: UTC
+  enabled: true

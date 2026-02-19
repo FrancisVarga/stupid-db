@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: SpPipeline
+metadata:
+  name: daily-security-report
+  description: >
+    Daily security analysis pipeline: fetches login and transaction data,
+    runs security analysis, detects trends, then generates a combined report.
+  tags:
+    - security
+    - daily
+spec:
+  steps:
+    - step_order: 1
+      agent_name: security-analyst
+      data_source_name: athena-login-events
+      parallel_group: 1
+      input_mapping:
+        query: "SELECT * FROM login_events WHERE ts >= now() - interval '24 hours'"
+      output_mapping:
+        threat_assessment: "$.findings"
+    - step_order: 2
+      agent_name: trend-detective
+      data_source_name: athena-login-events
+      parallel_group: 1
+      input_mapping:
+        query: "SELECT * FROM daily_aggregates WHERE date >= current_date - 30"
+      output_mapping:
+        trends: "$.trends"
+    - step_order: 3
+      agent_name: security-analyst
+      parallel_group: null
+      input_mapping:
+        previous_findings: "$.steps[0].threat_assessment"
+        previous_trends: "$.steps[1].trends"
+      output_mapping:
+        final_report: "$.summary"
