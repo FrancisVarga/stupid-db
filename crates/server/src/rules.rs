@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use stupid_rules::schema::{RuleEnvelope, RuleKind};
+use stupid_rules::schema::{RuleDocument, RuleEnvelope, RuleKind};
 
 use crate::anomaly_rules::MatchSummary;
 use crate::state::AppState;
@@ -414,10 +414,226 @@ pub(crate) async fn recent_triggers(
     Json(all)
 }
 
+/// Response for a successful validation.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ValidateSuccess {
+    pub valid: bool,
+    #[schema(value_type = String)]
+    pub kind: RuleKind,
+    pub id: String,
+    pub name: String,
+}
+
+/// Response for a failed validation.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ValidateError {
+    pub valid: bool,
+    pub errors: Vec<String>,
+}
+
+/// Validate a raw YAML rule without saving it.
+///
+/// Runs two-pass deserialization (RuleEnvelope → RuleDocument) and returns
+/// whether the YAML is a valid rule definition. Supports all 6 rule kinds.
+#[utoipa::path(
+    post,
+    path = "/rules/validate",
+    tag = "Rules",
+    request_body(content = String, content_type = "application/yaml", description = "Rule YAML to validate"),
+    responses(
+        (status = 200, description = "YAML is valid", body = ValidateSuccess),
+        (status = 400, description = "Validation failed", body = ValidateError)
+    )
+)]
+pub(crate) async fn validate_rule(
+    body: String,
+) -> Result<Json<ValidateSuccess>, (StatusCode, Json<ValidateError>)> {
+    // First pass: parse the envelope header.
+    let envelope: RuleEnvelope = serde_yaml::from_str(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateError {
+                valid: false,
+                errors: vec![format!("Invalid YAML: {}", e)],
+            }),
+        )
+    })?;
+
+    // Second pass: full type-specific deserialization.
+    let doc = envelope.parse_full().map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateError {
+                valid: false,
+                errors: vec![format!("Failed to parse rule: {}", e)],
+            }),
+        )
+    })?;
+
+    let meta = doc.metadata();
+    if meta.id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ValidateError {
+                valid: false,
+                errors: vec!["Rule metadata.id must not be empty".to_string()],
+            }),
+        ));
+    }
+
+    Ok(Json(ValidateSuccess {
+        valid: true,
+        kind: doc.kind(),
+        id: meta.id.clone(),
+        name: meta.name.clone(),
+    }))
+}
+
+/// Result of a dry-run evaluation.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DryRunResult {
+    pub rule_id: String,
+    #[schema(value_type = String)]
+    pub kind: RuleKind,
+    pub matches_found: usize,
+    pub evaluation_ms: u64,
+    pub message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<MatchSummary>,
+}
+
+/// Dry-run a rule against live data without saving it.
+///
+/// Accepts raw YAML, validates it, and for AnomalyRule kind evaluates against
+/// the current entity data and signal scores. Returns matches found and
+/// evaluation timing. The rule is never persisted to disk.
+#[utoipa::path(
+    post,
+    path = "/rules/dry-run",
+    tag = "Rules",
+    request_body(content = String, content_type = "application/yaml", description = "Rule YAML to dry-run"),
+    responses(
+        (status = 200, description = "Dry-run result", body = DryRunResult),
+        (status = 400, description = "Validation failed", body = ValidateError)
+    )
+)]
+pub(crate) async fn dry_run_rule(
+    State(state): State<Arc<AppState>>,
+    body: String,
+) -> Result<Json<DryRunResult>, (StatusCode, Json<ValidateError>)> {
+    // Two-pass parse: envelope → full document.
+    let envelope: RuleEnvelope = serde_yaml::from_str(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateError {
+                valid: false,
+                errors: vec![format!("Invalid YAML: {}", e)],
+            }),
+        )
+    })?;
+
+    let doc = envelope.parse_full().map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateError {
+                valid: false,
+                errors: vec![format!("Failed to parse rule: {}", e)],
+            }),
+        )
+    })?;
+
+    let meta = doc.metadata();
+    if meta.id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ValidateError {
+                valid: false,
+                errors: vec!["Rule metadata.id must not be empty".to_string()],
+            }),
+        ));
+    }
+
+    let rule_id = meta.id.clone();
+    let kind = doc.kind();
+
+    // Only AnomalyRule supports evaluation; other kinds get a validation-only result.
+    let rule = match doc {
+        RuleDocument::Anomaly(rule) => rule,
+        _ => {
+            return Ok(Json(DryRunResult {
+                rule_id,
+                kind,
+                matches_found: 0,
+                evaluation_ms: 0,
+                message: format!(
+                    "YAML is valid (kind: {}). Dry-run evaluation is only supported for AnomalyRule.",
+                    kind
+                ),
+                matches: vec![],
+            }));
+        }
+    };
+
+    // Evaluate against live data.
+    let start = std::time::Instant::now();
+    let (entities, cluster_stats, signal_scores) =
+        crate::rule_runner::build_evaluation_context(&state);
+
+    let (matches_found, match_summaries) =
+        match stupid_rules::evaluator::RuleEvaluator::evaluate(
+            &rule,
+            &entities,
+            &cluster_stats,
+            &signal_scores,
+        ) {
+            Ok(mut matches) => {
+                let count = matches.len();
+                matches.sort_by(|a, b| {
+                    b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let summaries: Vec<MatchSummary> = matches
+                    .iter()
+                    .take(50)
+                    .map(|m| MatchSummary {
+                        entity_key: m.entity_key.clone(),
+                        entity_type: m.entity_type.clone(),
+                        score: m.score,
+                        reason: m.matched_reason.clone(),
+                    })
+                    .collect();
+                (count, summaries)
+            }
+            Err(e) => {
+                let evaluation_ms = start.elapsed().as_millis() as u64;
+                return Ok(Json(DryRunResult {
+                    rule_id,
+                    kind,
+                    matches_found: 0,
+                    evaluation_ms,
+                    message: format!("Evaluation error: {}", e),
+                    matches: vec![],
+                }));
+            }
+        };
+
+    let evaluation_ms = start.elapsed().as_millis() as u64;
+
+    Ok(Json(DryRunResult {
+        rule_id,
+        kind,
+        matches_found,
+        evaluation_ms,
+        message: format!("{} entities matched", matches_found),
+        matches: match_summaries,
+    }))
+}
+
 /// Build the generic rules sub-router.
 pub fn rules_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/rules", get(list_rules).post(create_rule))
+        .route("/rules/validate", post(validate_rule))
+        .route("/rules/dry-run", post(dry_run_rule))
         .route("/rules/recent-triggers", get(recent_triggers))
         .route("/rules/{id}", get(get_rule).put(update_rule).delete(delete_rule))
         .route("/rules/{id}/yaml", get(get_rule_yaml))
