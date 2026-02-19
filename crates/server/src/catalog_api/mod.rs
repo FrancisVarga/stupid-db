@@ -75,6 +75,7 @@ pub fn catalog_router() -> Router<Arc<AppState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
     use stupid_catalog::{ExternalColumn, ExternalDatabase, ExternalSource, ExternalTable};
 
     fn sample_source() -> ExternalSource {
