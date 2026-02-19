@@ -80,6 +80,8 @@ pub async fn build_app_state(config: &stupid_core::Config, eisenbahn: bool) -> a
     let agent_store_dir = config.storage.data_dir.join("agents");
     let agent_store = match stupid_agent::AgentStore::new(&agent_store_dir) {
         Ok(store) => {
+            // Seed internal agents that are required by dashboard features.
+            seed_internal_agents(&store, &config.storage.data_dir).await;
             info!("Agent store initialized at {}", agent_store_dir.display());
             Some(Arc::new(store))
         }
@@ -259,4 +261,44 @@ pub fn spawn_background_tasks(
     }
 
     Ok(())
+}
+
+/// Seed internal agents required by dashboard features.
+///
+/// Reads YAML configs from `data/bundeswehr/agents/` and creates them in the
+/// main AgentStore if they don't already exist. This ensures agents like
+/// `playground-assistant` are always available on fresh deployments.
+async fn seed_internal_agents(store: &stupid_agent::AgentStore, data_dir: &std::path::Path) {
+    let seed_dir = data_dir.join("bundeswehr").join("agents");
+    let entries = match std::fs::read_dir(&seed_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !matches!(path.extension().and_then(|e| e.to_str()), Some("yml" | "yaml")) {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("failed to read seed agent {}: {}", path.display(), e);
+                continue;
+            }
+        };
+        let config: stupid_agent::yaml_schema::AgentYamlConfig = match serde_yaml::from_str(&content) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("failed to parse seed agent {}: {}", path.display(), e);
+                continue;
+            }
+        };
+        if store.get(&config.name).await.is_none() {
+            let name = config.name.clone();
+            match store.create(config).await {
+                Ok(_) => info!("seeded internal agent: {}", name),
+                Err(e) => tracing::warn!("failed to seed agent {}: {}", name, e),
+            }
+        }
+    }
 }
