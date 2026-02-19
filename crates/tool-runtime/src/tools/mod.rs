@@ -11,6 +11,7 @@ pub mod file_write;
 pub mod graph_query;
 pub mod rule_list;
 pub mod rule_evaluate;
+pub mod rule_builder;
 
 pub use bash::BashExecuteTool;
 pub use file_read::FileReadTool;
@@ -18,3 +19,6 @@ pub use file_write::FileWriteTool;
 pub use graph_query::GraphQueryTool;
 pub use rule_list::RuleListTool;
 pub use rule_evaluate::RuleEvaluateTool;
+pub use rule_builder::{
+    ListRulesTool, GetRuleYamlTool, ValidateRuleTool, DryRunRuleTool, SaveRuleTool,
+};

@@ -20,6 +20,9 @@ anyhow = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# HTTP client (for API-backed tools)
+reqwest = { workspace = true }
+
 # Internal
 stupid-core = { path = "../core" }
 

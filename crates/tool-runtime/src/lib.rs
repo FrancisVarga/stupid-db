@@ -21,4 +21,5 @@ pub use bridge::{BridgeError, LlmProviderBridge, SimpleLlmProvider, SimpleMessag
 pub use tools::{
     BashExecuteTool, FileReadTool, FileWriteTool,
     GraphQueryTool, RuleListTool, RuleEvaluateTool,
+    ListRulesTool, GetRuleYamlTool, ValidateRuleTool, DryRunRuleTool, SaveRuleTool,
 };
