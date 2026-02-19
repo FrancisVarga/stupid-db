@@ -11,7 +11,7 @@ mod pipelines;
 mod runs;
 mod schedules;
 mod yaml_io;
-mod yaml_types;
+pub(crate) mod yaml_types;
 
 // ── Re-exports ───────────────────────────────────────────────────
 // Preserves flat `stille_post::sp_*` import paths used by api/mod.rs.

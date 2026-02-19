@@ -15,11 +15,12 @@ import OverviewTab from "@/components/bundeswehr/OverviewTab";
 import SkillsTab from "@/components/bundeswehr/SkillsTab";
 import PlaygroundTab from "@/components/bundeswehr/PlaygroundTab";
 
-type Tab = "overview" | "agents" | "skills" | "playground";
-const TABS: { key: Tab; label: string }[] = [
+type Tab = "overview" | "agents" | "skills" | "prompts" | "playground";
+const TABS: { key: Tab; label: string; href?: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "agents", label: "Agents" },
   { key: "skills", label: "Skills" },
+  { key: "prompts", label: "Prompts", href: "/bundeswehr/prompts" },
   { key: "playground", label: "Playground" },
 ];
 
@@ -158,6 +159,18 @@ export default function BundeswehrPage() {
       >
         {TABS.map((tab) => {
           const isActive = activeTab === tab.key;
+          if (tab.href) {
+            return (
+              <Link
+                key={tab.key}
+                href={tab.href}
+                className="px-4 py-2.5 text-xs font-medium tracking-wide transition-colors relative"
+                style={{ color: "#64748b" }}
+              >
+                {tab.label}
+              </Link>
+            );
+          }
           return (
             <button
               key={tab.key}

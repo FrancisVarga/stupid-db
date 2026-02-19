@@ -119,6 +119,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/agent-groups/{group_name}/{agent_name}",
             axum::routing::delete(api::agent_groups_remove_agent),
         )
+        // Prompt templates
+        .route("/api/prompts", get(api::prompts_list))
+        .route(
+            "/api/prompts/{name}",
+            get(api::prompts_get).put(api::prompts_update),
+        )
         .route("/ws", get(live::ws_upgrade));
 
     let app = app

@@ -12,6 +12,7 @@ pub(crate) mod doc;
 pub mod embedding;
 mod graph;
 mod health;
+pub(crate) mod prompts;
 mod query;
 pub(crate) mod stille_post;
 pub(crate) mod telemetry;
@@ -106,3 +107,4 @@ pub use agent_groups::{
     agent_groups_list, agent_groups_create, agent_groups_update, agent_groups_delete,
     agent_groups_add_agent, agent_groups_remove_agent,
 };
+pub use prompts::{prompts_list, prompts_get, prompts_update};

@@ -887,3 +887,35 @@ export async function addAgentToGroup(groupName: string, agentName: string): Pro
 export async function removeAgentFromGroup(groupName: string, agentName: string): Promise<void> {
   await checkedFetch(`${API_BASE}/api/agent-groups/${encodeURIComponent(groupName)}/${encodeURIComponent(agentName)}`, { method: "DELETE" });
 }
+
+// ── Prompt Templates ────────────────────────────────────────
+
+export interface PromptSummary {
+  name: string;
+  description: string;
+  placeholders: string[];
+  updated_at: string;
+}
+
+export interface PromptDetail extends PromptSummary {
+  content: string;
+}
+
+export async function fetchPrompts(): Promise<PromptSummary[]> {
+  const res = await checkedFetch(`${API_BASE}/api/prompts`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function fetchPrompt(name: string): Promise<PromptDetail> {
+  const res = await checkedFetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`, { cache: "no-store" });
+  return res.json();
+}
+
+export async function updatePrompt(name: string, content: string, description?: string): Promise<PromptDetail> {
+  const res = await checkedFetch(`${API_BASE}/api/prompts/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content, description }),
+  });
+  return res.json();
+}
